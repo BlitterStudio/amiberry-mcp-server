@@ -36,13 +36,17 @@ http = [
     "uvicorn>=0.20.0",
     "pydantic>=2.0.0",
 ]
+dbus = [
+    # D-Bus support for Linux runtime control (optional)
+    "jeepney>=0.8.0",
+]
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "ruff>=0.1.0",
 ]
 all = [
-    "amiberry-mcp-server[http,dev]",
+    "amiberry-mcp-server[http,dbus,dev]",
 ]
 
 [project.scripts]

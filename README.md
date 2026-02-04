@@ -12,6 +12,14 @@ An MCP (Model Context Protocol) server for controlling Amiberry, the Amiga emula
 - Launch emulator with specific models (A500, A500+, A600, A1200, A4000, CD32, CDTV)
 - HTTP API for voice assistants (Siri, Google Assistant) and automation
 
+### Runtime Control (NEW)
+- **Pause/Resume**: Control running emulation via IPC
+- **Save/Load State**: Save and restore states while running
+- **Disk Swapping**: Insert floppy/CD images into running emulation
+- **Live Configuration**: Query and modify config options at runtime
+- **Screenshots**: Capture screenshots from running emulation
+- **Cross-platform**: Works on Linux, macOS, and FreeBSD
+
 ### Developer/Debug Features
 - **Log Capture**: Launch with logging enabled and capture output to files
 - **Config Editor**: Parse, modify, and create .uae configuration files
@@ -40,8 +48,9 @@ amiberry-mcp-server/
 │   └── amiberry_mcp/
 │       ├── __init__.py
 │       ├── config.py          # Shared configuration
-│       ├── server.py          # MCP server (20 tools)
+│       ├── server.py          # MCP server (32 tools)
 │       ├── http_server.py     # HTTP API server
+│       ├── ipc_client.py      # IPC client for runtime control
 │       ├── uae_config.py      # Config file parser/generator
 │       ├── savestate.py       # Savestate metadata parser
 │       └── rom_manager.py     # ROM identification
@@ -203,6 +212,24 @@ Try asking Claude:
 | `identify_rom` | Get ROM details by checksum |
 | `get_amiberry_version` | Get Amiberry version info |
 
+### Runtime Control Tools
+| Tool | Description |
+|------|-------------|
+| `pause_emulation` | Pause a running emulation |
+| `resume_emulation` | Resume a paused emulation |
+| `reset_emulation` | Soft or hard reset |
+| `runtime_screenshot` | Take a screenshot |
+| `runtime_save_state` | Save state while running |
+| `runtime_load_state` | Load a savestate |
+| `runtime_insert_floppy` | Insert floppy disk |
+| `runtime_insert_cd` | Insert CD image |
+| `get_runtime_status` | Get emulation status |
+| `runtime_get_config` | Get config option value |
+| `runtime_set_config` | Set config option |
+| `check_ipc_connection` | Check IPC availability |
+
+> **Note:** Runtime control requires Amiberry built with `USE_IPC_SOCKET=ON`
+
 ## Usage Examples
 
 ### Basic Usage
@@ -235,6 +262,14 @@ Ask Claude:
 ### Savestate Analysis
 - "What CPU and chipset is my savestate using?"
 - "Show me metadata from my Shadow of the Beast savestate"
+
+### Runtime Control
+- "Pause the emulation"
+- "Take a screenshot of the current state"
+- "Save the game state to checkpoint.uss"
+- "Insert disk 2 into drive DF0"
+- "What's the current emulation status?"
+- "Set the floppy speed to 800"
 
 ## HTTP API
 
@@ -286,6 +321,17 @@ curl http://localhost:8080/savestates/mysave.uss/inspect
 
 # List ROMs
 curl http://localhost:8080/roms
+
+# Runtime control (requires Amiberry with USE_IPC_SOCKET=ON)
+curl http://localhost:8080/runtime/status
+curl -X POST http://localhost:8080/runtime/pause
+curl -X POST http://localhost:8080/runtime/resume
+curl -X POST http://localhost:8080/runtime/screenshot \
+  -H "Content-Type: application/json" \
+  -d '{"filename": "/tmp/screenshot.png"}'
+curl -X POST http://localhost:8080/runtime/insert-floppy \
+  -H "Content-Type: application/json" \
+  -d '{"drive": 0, "image_path": "/path/to/disk2.adf"}'
 ```
 
 ### API Endpoints
@@ -331,6 +377,25 @@ curl http://localhost:8080/roms
 | `/roms` | GET | List identified ROMs |
 | `/roms/identify` | POST | Identify ROM by path |
 | `/version` | GET | Get Amiberry version |
+
+#### Runtime Control Endpoints
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/runtime/status` | GET | Get emulation status |
+| `/runtime/pause` | POST | Pause emulation |
+| `/runtime/resume` | POST | Resume emulation |
+| `/runtime/reset` | POST | Soft or hard reset |
+| `/runtime/quit` | POST | Quit Amiberry |
+| `/runtime/screenshot` | POST | Take a screenshot |
+| `/runtime/save-state` | POST | Save state while running |
+| `/runtime/load-state` | POST | Load a savestate |
+| `/runtime/insert-floppy` | POST | Insert floppy disk |
+| `/runtime/insert-cd` | POST | Insert CD image |
+| `/runtime/config/{option}` | GET | Get config option value |
+| `/runtime/config` | POST | Set config option |
+| `/runtime/ipc-check` | GET | Check IPC availability |
+
+> **Note:** Runtime endpoints require Amiberry built with `USE_IPC_SOCKET=ON`
 
 See [docs/HTTP_API_GUIDE.md](docs/HTTP_API_GUIDE.md) for complete documentation.
 
@@ -394,6 +459,12 @@ ls ~/Amiberry/logs/
 # Linux
 ls ~/Amiberry/logs/
 ```
+
+### Runtime control not working
+- Ensure Amiberry was built with `USE_IPC_SOCKET=ON` (CMake option)
+- Check if the socket exists: `ls /tmp/amiberry.sock` (or `$XDG_RUNTIME_DIR/amiberry.sock` on Linux)
+- Verify Amiberry is running before using runtime control tools
+- Test the socket directly: `echo "GET_STATUS" | nc -U /tmp/amiberry.sock`
 
 ## Uninstall
 
