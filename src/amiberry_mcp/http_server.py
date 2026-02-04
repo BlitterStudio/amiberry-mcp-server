@@ -239,6 +239,128 @@ class RuntimeSendKeyRequest(BaseModel):
     state: int
 
 
+# Round 2 request models
+class RuntimeQuickSaveRequest(BaseModel):
+    slot: int = 0
+
+
+class RuntimeQuickLoadRequest(BaseModel):
+    slot: int = 0
+
+
+class RuntimeSetJoyportModeRequest(BaseModel):
+    port: int
+    mode: int
+
+
+class RuntimeSetAutofireRequest(BaseModel):
+    port: int
+    mode: int
+
+
+class RuntimeSetDisplayModeRequest(BaseModel):
+    mode: int
+
+
+class RuntimeSetNTSCRequest(BaseModel):
+    enabled: bool
+
+
+class RuntimeSetSoundModeRequest(BaseModel):
+    mode: int
+
+
+# Round 3 request models
+class RuntimeSetCPUSpeedRequest(BaseModel):
+    speed: int
+
+
+class RuntimeToggleRTGRequest(BaseModel):
+    monid: int = 0
+
+
+class RuntimeSetFloppySpeedRequest(BaseModel):
+    speed: int
+
+
+class RuntimeDiskWriteProtectRequest(BaseModel):
+    drive: int
+    protect: bool
+
+
+class RuntimeSetChipsetRequest(BaseModel):
+    chipset: str
+
+
+# Round 4 request models - Memory and Window Control
+class RuntimeSetChipMemRequest(BaseModel):
+    size_kb: int
+
+
+class RuntimeSetFastMemRequest(BaseModel):
+    size_kb: int
+
+
+class RuntimeSetSlowMemRequest(BaseModel):
+    size_kb: int
+
+
+class RuntimeSetZ3MemRequest(BaseModel):
+    size_mb: int
+
+
+class RuntimeSetCPUModelRequest(BaseModel):
+    model: str
+
+
+class RuntimeSetWindowSizeRequest(BaseModel):
+    width: int
+    height: int
+
+
+class RuntimeSetScalingRequest(BaseModel):
+    mode: int
+
+
+class RuntimeSetLineModeRequest(BaseModel):
+    mode: int
+
+
+class RuntimeSetResolutionRequest(BaseModel):
+    mode: int
+
+
+# Round 5 - Autocrop and WHDLoad
+class RuntimeSetAutocropRequest(BaseModel):
+    enabled: bool
+
+
+class RuntimeInsertWHDLoadRequest(BaseModel):
+    path: str
+
+
+# Round 6 - Debugging and Diagnostics
+class RuntimeDebugStepRequest(BaseModel):
+    count: int = 1
+
+
+class RuntimeDisassembleRequest(BaseModel):
+    address: str
+    count: int = 10
+
+
+class RuntimeSetBreakpointRequest(BaseModel):
+    address: str
+
+
+class RuntimeClearBreakpointRequest(BaseModel):
+    address: str
+
+
+class RuntimeGetDriveStateRequest(BaseModel):
+    drive: Optional[int] = None
+
+
 def _is_amiberry_running() -> bool:
     """Check if Amiberry process is currently running."""
     try:
@@ -1855,6 +1977,1616 @@ async def runtime_set_mouse_speed(request: RuntimeSetMouseSpeedRequest):
             )
         else:
             raise HTTPException(status_code=500, detail="Failed to set mouse speed")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+# Round 2 runtime control endpoints
+
+
+@app.post("/runtime/quicksave")
+async def runtime_quicksave(request: RuntimeQuickSaveRequest):
+    """
+    Quick save to a slot (0-9).
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if not 0 <= request.slot <= 9:
+        raise HTTPException(status_code=400, detail="Slot must be 0-9")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.quicksave(request.slot)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Quick saved to slot {request.slot}",
+                data={"slot": request.slot},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to quick save")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/quickload")
+async def runtime_quickload(request: RuntimeQuickLoadRequest):
+    """
+    Quick load from a slot (0-9).
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if not 0 <= request.slot <= 9:
+        raise HTTPException(status_code=400, detail="Slot must be 0-9")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.quickload(request.slot)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Quick loading from slot {request.slot}",
+                data={"slot": request.slot},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to quick load")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/joyport/{port}")
+async def runtime_get_joyport_mode(port: int):
+    """
+    Get joystick port mode.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if not 0 <= port <= 3:
+        raise HTTPException(status_code=400, detail="Port must be 0-3")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        result = await client.get_joyport_mode(port)
+
+        if result:
+            mode, mode_name = result
+            return StatusResponse(
+                success=True,
+                message=f"Port {port} mode: {mode_name}",
+                data={"port": port, "mode": mode, "mode_name": mode_name},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to get port mode")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/joyport")
+async def runtime_set_joyport_mode(request: RuntimeSetJoyportModeRequest):
+    """
+    Set joystick port mode.
+    Modes: 0=default, 2=mouse, 3=joystick, 4=gamepad, 7=cd32.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if not 0 <= request.port <= 3:
+        raise HTTPException(status_code=400, detail="Port must be 0-3")
+    if not 0 <= request.mode <= 8:
+        raise HTTPException(status_code=400, detail="Mode must be 0-8")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_joyport_mode(request.port, request.mode)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Port {request.port} mode set to {request.mode}",
+                data={"port": request.port, "mode": request.mode},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set port mode")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/autofire/{port}")
+async def runtime_get_autofire(port: int):
+    """
+    Get autofire mode for a port.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if not 0 <= port <= 3:
+        raise HTTPException(status_code=400, detail="Port must be 0-3")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        mode = await client.get_autofire(port)
+
+        if mode is not None:
+            modes = {0: "off", 1: "normal", 2: "toggle", 3: "always", 4: "toggle_noaf"}
+            return StatusResponse(
+                success=True,
+                message=f"Port {port} autofire: {modes.get(mode, 'unknown')}",
+                data={"port": port, "mode": mode, "mode_name": modes.get(mode, "unknown")},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to get autofire mode")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/autofire")
+async def runtime_set_autofire(request: RuntimeSetAutofireRequest):
+    """
+    Set autofire mode for a port.
+    Modes: 0=off, 1=normal, 2=toggle, 3=always, 4=toggle_noaf.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if not 0 <= request.port <= 3:
+        raise HTTPException(status_code=400, detail="Port must be 0-3")
+    if not 0 <= request.mode <= 4:
+        raise HTTPException(status_code=400, detail="Mode must be 0-4")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_autofire(request.port, request.mode)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Port {request.port} autofire set to {request.mode}",
+                data={"port": request.port, "mode": request.mode},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set autofire mode")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/led-status")
+async def runtime_get_led_status():
+    """
+    Get all LED states (power, floppy, HD, CD, caps).
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        status = await client.get_led_status()
+
+        return StatusResponse(
+            success=True,
+            message="LED status",
+            data={"leds": status},
+        )
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/harddrives")
+async def runtime_list_harddrives():
+    """
+    List all mounted hard drives.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        drives = await client.list_harddrives()
+
+        return StatusResponse(
+            success=True,
+            message="Mounted hard drives",
+            data={"drives": drives},
+        )
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/display-mode")
+async def runtime_get_display_mode():
+    """
+    Get current display mode.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        result = await client.get_display_mode()
+
+        if result:
+            mode, mode_name = result
+            return StatusResponse(
+                success=True,
+                message=f"Display mode: {mode_name}",
+                data={"mode": mode, "mode_name": mode_name},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to get display mode")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/display-mode")
+async def runtime_set_display_mode(request: RuntimeSetDisplayModeRequest):
+    """
+    Set display mode.
+    Modes: 0=window, 1=fullscreen, 2=fullwindow.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if not 0 <= request.mode <= 2:
+        raise HTTPException(status_code=400, detail="Mode must be 0-2")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_display_mode(request.mode)
+
+        modes = {0: "window", 1: "fullscreen", 2: "fullwindow"}
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Display mode set to {modes.get(request.mode)}",
+                data={"mode": request.mode, "mode_name": modes.get(request.mode)},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set display mode")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/ntsc")
+async def runtime_get_ntsc():
+    """
+    Get current video mode (PAL or NTSC).
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        result = await client.get_ntsc()
+
+        if result:
+            is_ntsc, mode_name = result
+            return StatusResponse(
+                success=True,
+                message=f"Video mode: {mode_name}",
+                data={"ntsc": is_ntsc, "mode_name": mode_name},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to get video mode")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/ntsc")
+async def runtime_set_ntsc(request: RuntimeSetNTSCRequest):
+    """
+    Set video mode to PAL or NTSC.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_ntsc(request.enabled)
+
+        mode = "NTSC" if request.enabled else "PAL"
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Video mode set to {mode}",
+                data={"ntsc": request.enabled, "mode_name": mode},
+            )
+        else:
+            raise HTTPException(status_code=500, detail=f"Failed to set video mode to {mode}")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/sound-mode")
+async def runtime_get_sound_mode():
+    """
+    Get current sound mode.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        result = await client.get_sound_mode()
+
+        if result:
+            mode, mode_name = result
+            return StatusResponse(
+                success=True,
+                message=f"Sound mode: {mode_name}",
+                data={"mode": mode, "mode_name": mode_name},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to get sound mode")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/sound-mode")
+async def runtime_set_sound_mode(request: RuntimeSetSoundModeRequest):
+    """
+    Set sound mode.
+    Modes: 0=off, 1=normal, 2=stereo, 3=best.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if not 0 <= request.mode <= 3:
+        raise HTTPException(status_code=400, detail="Mode must be 0-3")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_sound_mode(request.mode)
+
+        modes = {0: "off", 1: "normal", 2: "stereo", 3: "best"}
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Sound mode set to {modes.get(request.mode)}",
+                data={"mode": request.mode, "mode_name": modes.get(request.mode)},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set sound mode")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+# Round 3 runtime control endpoints
+
+
+@app.post("/runtime/mouse-grab")
+async def runtime_toggle_mouse_grab():
+    """
+    Toggle mouse capture.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.toggle_mouse_grab()
+
+        if success:
+            return StatusResponse(success=True, message="Mouse grab toggled")
+        else:
+            raise HTTPException(status_code=500, detail="Failed to toggle mouse grab")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/mouse-speed")
+async def runtime_get_mouse_speed():
+    """
+    Get current mouse speed.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        speed = await client.get_mouse_speed()
+
+        if speed is not None:
+            return StatusResponse(
+                success=True,
+                message=f"Mouse speed: {speed}",
+                data={"speed": speed},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to get mouse speed")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/cpu-speed")
+async def runtime_get_cpu_speed():
+    """
+    Get current CPU speed setting.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        result = await client.get_cpu_speed()
+
+        if result:
+            speed, desc = result
+            return StatusResponse(
+                success=True,
+                message=f"CPU speed: {desc}",
+                data={"speed": speed, "description": desc},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to get CPU speed")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/cpu-speed")
+async def runtime_set_cpu_speed(request: RuntimeSetCPUSpeedRequest):
+    """
+    Set CPU speed.
+    Speed: -1=max, 0=cycle-exact, >0=percentage.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_cpu_speed(request.speed)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"CPU speed set to {request.speed}",
+                data={"speed": request.speed},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set CPU speed")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/rtg")
+async def runtime_toggle_rtg(request: RuntimeToggleRTGRequest = RuntimeToggleRTGRequest()):
+    """
+    Toggle between RTG and chipset display.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        result = await client.toggle_rtg(request.monid)
+
+        if result:
+            return StatusResponse(
+                success=True,
+                message=f"Display mode: {result}",
+                data={"mode": result},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to toggle RTG")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/floppy-speed")
+async def runtime_get_floppy_speed():
+    """
+    Get current floppy drive speed.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        result = await client.get_floppy_speed()
+
+        if result:
+            speed, desc = result
+            return StatusResponse(
+                success=True,
+                message=f"Floppy speed: {desc}",
+                data={"speed": speed, "description": desc},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to get floppy speed")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/floppy-speed")
+async def runtime_set_floppy_speed(request: RuntimeSetFloppySpeedRequest):
+    """
+    Set floppy drive speed.
+    Speed: 0=turbo, 100=1x, 200=2x, 400=4x, 800=8x.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if request.speed not in (0, 100, 200, 400, 800):
+        raise HTTPException(status_code=400, detail="Speed must be 0, 100, 200, 400, or 800")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_floppy_speed(request.speed)
+
+        descs = {0: "turbo", 100: "1x", 200: "2x", 400: "4x", 800: "8x"}
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Floppy speed set to {descs.get(request.speed)}",
+                data={"speed": request.speed, "description": descs.get(request.speed)},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set floppy speed")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/disk-write-protect/{drive}")
+async def runtime_get_disk_write_protect(drive: int):
+    """
+    Get write protection status for a floppy disk.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if not 0 <= drive <= 3:
+        raise HTTPException(status_code=400, detail="Drive must be 0-3")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        result = await client.get_disk_write_protect(drive)
+
+        if result:
+            is_protected, status = result
+            return StatusResponse(
+                success=True,
+                message=f"Drive DF{drive}: {status}",
+                data={"drive": drive, "protected": is_protected, "status": status},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to get write protection status")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/disk-write-protect")
+async def runtime_disk_write_protect(request: RuntimeDiskWriteProtectRequest):
+    """
+    Set write protection on a floppy disk.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if not 0 <= request.drive <= 3:
+        raise HTTPException(status_code=400, detail="Drive must be 0-3")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.disk_write_protect(request.drive, request.protect)
+
+        status = "protected" if request.protect else "writable"
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Drive DF{request.drive} set to {status}",
+                data={"drive": request.drive, "protected": request.protect},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set write protection")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/status-line")
+async def runtime_toggle_status_line():
+    """
+    Toggle on-screen status line (cycle: off/chipset/rtg/both).
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        result = await client.toggle_status_line()
+
+        if result:
+            mode, mode_name = result
+            return StatusResponse(
+                success=True,
+                message=f"Status line: {mode_name}",
+                data={"mode": mode, "mode_name": mode_name},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to toggle status line")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/chipset")
+async def runtime_get_chipset():
+    """
+    Get current chipset.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        result = await client.get_chipset()
+
+        if result:
+            mask, name = result
+            return StatusResponse(
+                success=True,
+                message=f"Chipset: {name}",
+                data={"mask": mask, "name": name},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to get chipset")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/chipset")
+async def runtime_set_chipset(request: RuntimeSetChipsetRequest):
+    """
+    Set chipset.
+    Valid values: OCS, ECS_AGNUS, ECS_DENISE, ECS, AGA.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    valid = ("OCS", "ECS_AGNUS", "ECS_DENISE", "ECS", "AGA")
+    if request.chipset.upper() not in valid:
+        raise HTTPException(status_code=400, detail=f"Chipset must be one of: {valid}")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_chipset(request.chipset)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Chipset set to {request.chipset.upper()}",
+                data={"chipset": request.chipset.upper()},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set chipset")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/memory-config")
+async def runtime_get_memory_config():
+    """
+    Get all memory sizes (chip, fast, bogo, z3, rtg).
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        config = await client.get_memory_config()
+
+        return StatusResponse(
+            success=True,
+            message="Memory configuration",
+            data={"memory": config},
+        )
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/fps")
+async def runtime_get_fps():
+    """
+    Get current frame rate and performance info.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        info = await client.get_fps()
+
+        return StatusResponse(
+            success=True,
+            message="Performance info",
+            data=info,
+        )
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+# Round 4 runtime control endpoints - Memory and Window Control
+
+
+@app.post("/runtime/chip-mem")
+async def runtime_set_chip_mem(request: RuntimeSetChipMemRequest):
+    """
+    Set Chip RAM size.
+    Valid sizes: 256, 512, 1024, 2048, 4096, 8192 KB.
+    Note: Memory changes require a reset to take effect.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    valid_sizes = (256, 512, 1024, 2048, 4096, 8192)
+    if request.size_kb not in valid_sizes:
+        raise HTTPException(status_code=400, detail=f"Size must be one of: {valid_sizes}")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_chip_mem(request.size_kb)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Chip RAM set to {request.size_kb} KB. Reset required for changes to take effect.",
+                data={"size_kb": request.size_kb},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set Chip RAM size")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/fast-mem")
+async def runtime_set_fast_mem(request: RuntimeSetFastMemRequest):
+    """
+    Set Fast RAM size.
+    Valid sizes: 0, 64, 128, 256, 512, 1024, 2048, 4096, 8192 KB.
+    Note: Memory changes require a reset to take effect.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    valid_sizes = (0, 64, 128, 256, 512, 1024, 2048, 4096, 8192)
+    if request.size_kb not in valid_sizes:
+        raise HTTPException(status_code=400, detail=f"Size must be one of: {valid_sizes}")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_fast_mem(request.size_kb)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Fast RAM set to {request.size_kb} KB. Reset required for changes to take effect.",
+                data={"size_kb": request.size_kb},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set Fast RAM size")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/slow-mem")
+async def runtime_set_slow_mem(request: RuntimeSetSlowMemRequest):
+    """
+    Set Slow RAM (Bogo) size.
+    Valid sizes: 0, 256, 512, 1024, 1536, 1792 KB.
+    Note: Memory changes require a reset to take effect.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    valid_sizes = (0, 256, 512, 1024, 1536, 1792)
+    if request.size_kb not in valid_sizes:
+        raise HTTPException(status_code=400, detail=f"Size must be one of: {valid_sizes}")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_slow_mem(request.size_kb)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Slow RAM set to {request.size_kb} KB. Reset required for changes to take effect.",
+                data={"size_kb": request.size_kb},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set Slow RAM size")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/z3-mem")
+async def runtime_set_z3_mem(request: RuntimeSetZ3MemRequest):
+    """
+    Set Zorro III Fast RAM size.
+    Valid sizes: 0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024 MB.
+    Note: Memory changes require a reset to take effect.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    valid_sizes = (0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024)
+    if request.size_mb not in valid_sizes:
+        raise HTTPException(status_code=400, detail=f"Size must be one of: {valid_sizes}")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_z3_mem(request.size_mb)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Z3 Fast RAM set to {request.size_mb} MB. Reset required for changes to take effect.",
+                data={"size_mb": request.size_mb},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set Z3 Fast RAM size")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/cpu-model")
+async def runtime_get_cpu_model():
+    """
+    Get CPU model information.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        info = await client.get_cpu_model()
+
+        return StatusResponse(
+            success=True,
+            message="CPU model information",
+            data=info,
+        )
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/cpu-model")
+async def runtime_set_cpu_model(request: RuntimeSetCPUModelRequest):
+    """
+    Set CPU model.
+    Valid models: 68000, 68010, 68020, 68030, 68040, 68060.
+    Note: CPU changes require a reset to take effect.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    valid_models = ("68000", "68010", "68020", "68030", "68040", "68060")
+    if request.model not in valid_models:
+        raise HTTPException(status_code=400, detail=f"Model must be one of: {valid_models}")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_cpu_model(request.model)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"CPU model set to {request.model}. Reset required for changes to take effect.",
+                data={"model": request.model},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set CPU model")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/window-size")
+async def runtime_get_window_size():
+    """
+    Get current window size.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        info = await client.get_window_size()
+
+        return StatusResponse(
+            success=True,
+            message=f"Window size: {info.get('width', '?')}x{info.get('height', '?')}",
+            data=info,
+        )
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/window-size")
+async def runtime_set_window_size(request: RuntimeSetWindowSizeRequest):
+    """
+    Set window size.
+    Width: 320-3840, Height: 200-2160.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if not 320 <= request.width <= 3840:
+        raise HTTPException(status_code=400, detail="Width must be 320-3840")
+    if not 200 <= request.height <= 2160:
+        raise HTTPException(status_code=400, detail="Height must be 200-2160")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_window_size(request.width, request.height)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Window size set to {request.width}x{request.height}",
+                data={"width": request.width, "height": request.height},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set window size")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/scaling")
+async def runtime_get_scaling():
+    """
+    Get current scaling mode.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        info = await client.get_scaling()
+
+        return StatusResponse(
+            success=True,
+            message="Scaling mode",
+            data=info,
+        )
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/scaling")
+async def runtime_set_scaling(request: RuntimeSetScalingRequest):
+    """
+    Set scaling mode.
+    Modes: -1=auto, 0=nearest, 1=linear, 2=integer.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if not -1 <= request.mode <= 2:
+        raise HTTPException(status_code=400, detail="Mode must be -1..2")
+
+    mode_names = ["auto", "nearest", "linear", "integer"]
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_scaling(request.mode)
+
+        if success:
+            mode_index = request.mode + 1  # -1..2 -> 0..3
+            return StatusResponse(
+                success=True,
+                message=f"Scaling mode set to {mode_names[mode_index]}",
+                data={"mode": request.mode, "mode_name": mode_names[mode_index]},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set scaling mode")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/line-mode")
+async def runtime_get_line_mode():
+    """
+    Get current line mode.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        info = await client.get_line_mode()
+
+        return StatusResponse(
+            success=True,
+            message="Line mode",
+            data=info,
+        )
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/line-mode")
+async def runtime_set_line_mode(request: RuntimeSetLineModeRequest):
+    """
+    Set line mode.
+    Modes: 0=single, 1=double, 2=scanlines.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if not 0 <= request.mode <= 2:
+        raise HTTPException(status_code=400, detail="Mode must be 0-2")
+
+    mode_names = ["single", "double", "scanlines"]
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_line_mode(request.mode)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Line mode set to {mode_names[request.mode]}",
+                data={"mode": request.mode, "mode_name": mode_names[request.mode]},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set line mode")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/resolution")
+async def runtime_get_resolution():
+    """
+    Get current display resolution.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        result = await client.get_resolution()
+
+        if result:
+            mode, mode_name = result
+            return StatusResponse(
+                success=True,
+                message=f"Resolution: {mode_name}",
+                data={"mode": mode, "mode_name": mode_name},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to get resolution")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/resolution")
+async def runtime_set_resolution(request: RuntimeSetResolutionRequest):
+    """
+    Set display resolution.
+    Modes: 0=lores, 1=hires, 2=superhires.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if not 0 <= request.mode <= 2:
+        raise HTTPException(status_code=400, detail="Mode must be 0-2")
+
+    mode_names = ["lores", "hires", "superhires"]
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_resolution(request.mode)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Resolution set to {mode_names[request.mode]}",
+                data={"mode": request.mode, "mode_name": mode_names[request.mode]},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set resolution")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+# Round 5 - Autocrop and WHDLoad
+@app.get("/runtime/autocrop")
+async def runtime_get_autocrop():
+    """
+    Get current autocrop status.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        result = await client.get_autocrop()
+
+        if result is not None:
+            return StatusResponse(
+                success=True,
+                message=f"Autocrop: {'enabled' if result else 'disabled'}",
+                data={"enabled": result},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to get autocrop status")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/autocrop")
+async def runtime_set_autocrop(request: RuntimeSetAutocropRequest):
+    """
+    Enable or disable automatic display cropping.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_autocrop(request.enabled)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Autocrop {'enabled' if request.enabled else 'disabled'}",
+                data={"enabled": request.enabled},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set autocrop")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/whdload")
+async def runtime_get_whdload():
+    """
+    Get information about the currently loaded WHDLoad game.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        info = await client.get_whdload()
+
+        if info:
+            loaded = info.get("loaded") == "1"
+            return StatusResponse(
+                success=True,
+                message="WHDLoad game loaded" if loaded else "No WHDLoad game loaded",
+                data=info,
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to get WHDLoad info")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/whdload")
+async def runtime_insert_whdload(request: RuntimeInsertWHDLoadRequest):
+    """
+    Load a WHDLoad game from an LHA archive or directory.
+    Note: A reset may be required for the game to start.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.insert_whdload(request.path)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"WHDLoad game loaded: {request.path}. Note: A reset may be required.",
+                data={"path": request.path},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to load WHDLoad game")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.delete("/runtime/whdload")
+async def runtime_eject_whdload():
+    """
+    Eject the currently loaded WHDLoad game.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.eject_whdload()
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message="WHDLoad game ejected",
+                data={},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to eject WHDLoad game")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+# === Round 6 - Debugging and Diagnostics ===
+
+
+@app.post("/runtime/debug/activate")
+async def runtime_debug_activate():
+    """
+    Activate the built-in debugger.
+    Requires Amiberry to be built with debugger support.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.debug_activate()
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message="Debugger activated",
+                data={},
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to activate debugger. Amiberry may not be built with debugger support.",
+            )
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/debug/deactivate")
+async def runtime_debug_deactivate():
+    """
+    Deactivate the debugger and resume emulation.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.debug_deactivate()
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message="Debugger deactivated, emulation resumed",
+                data={},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to deactivate debugger")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/debug/status")
+async def runtime_debug_status():
+    """
+    Get debugger status (active/inactive).
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        info = await client.debug_status()
+
+        if info:
+            return StatusResponse(
+                success=True,
+                message="Debugger status retrieved",
+                data=info,
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to get debugger status")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/debug/step")
+async def runtime_debug_step(request: RuntimeDebugStepRequest):
+    """
+    Single-step CPU instructions when debugger is active.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.debug_step(request.count)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Stepped {request.count} instruction(s)",
+                data={"count": request.count},
+            )
+        else:
+            raise HTTPException(
+                status_code=500, detail="Failed to step. Debugger may not be active."
+            )
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/debug/continue")
+async def runtime_debug_continue():
+    """
+    Continue execution until next breakpoint.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.debug_continue()
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message="Execution continued",
+                data={},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to continue execution")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/cpu/regs")
+async def runtime_get_cpu_regs():
+    """
+    Get all CPU registers (D0-D7, A0-A7, PC, SR, USP, ISP).
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        info = await client.get_cpu_regs()
+
+        if info:
+            return StatusResponse(
+                success=True,
+                message="CPU registers retrieved",
+                data=info,
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to get CPU registers")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/custom/regs")
+async def runtime_get_custom_regs():
+    """
+    Get key custom chip registers (DMACON, INTENA, INTREQ, Copper addresses).
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        info = await client.get_custom_regs()
+
+        if info:
+            return StatusResponse(
+                success=True,
+                message="Custom registers retrieved",
+                data=info,
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to get custom registers")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/disassemble")
+async def runtime_disassemble(request: RuntimeDisassembleRequest):
+    """
+    Disassemble instructions at a memory address.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        lines = await client.disassemble(request.address, request.count)
+
+        return StatusResponse(
+            success=True,
+            message=f"Disassembly at {request.address}",
+            data={"address": request.address, "count": request.count, "lines": lines},
+        )
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/breakpoints")
+async def runtime_list_breakpoints():
+    """
+    List all active breakpoints.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        breakpoints = await client.list_breakpoints()
+
+        return StatusResponse(
+            success=True,
+            message=f"Found {len(breakpoints)} breakpoint(s)",
+            data={"breakpoints": breakpoints},
+        )
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/breakpoints")
+async def runtime_set_breakpoint(request: RuntimeSetBreakpointRequest):
+    """
+    Set a breakpoint at a memory address. Maximum 20 breakpoints.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_breakpoint(request.address)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Breakpoint set at {request.address}",
+                data={"address": request.address},
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to set breakpoint. Maximum 20 breakpoints allowed.",
+            )
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.delete("/runtime/breakpoints")
+async def runtime_clear_breakpoint(request: RuntimeClearBreakpointRequest):
+    """
+    Clear a breakpoint at a specific address or all breakpoints (address='ALL').
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.clear_breakpoint(request.address)
+
+        if success:
+            if request.address.upper() == "ALL":
+                return StatusResponse(
+                    success=True,
+                    message="All breakpoints cleared",
+                    data={},
+                )
+            else:
+                return StatusResponse(
+                    success=True,
+                    message=f"Breakpoint at {request.address} cleared",
+                    data={"address": request.address},
+                )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to clear breakpoint")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/copper/state")
+async def runtime_get_copper_state():
+    """
+    Get Copper coprocessor state (addresses, enabled status).
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        info = await client.get_copper_state()
+
+        if info:
+            return StatusResponse(
+                success=True,
+                message="Copper state retrieved",
+                data=info,
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to get Copper state")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/blitter/state")
+async def runtime_get_blitter_state():
+    """
+    Get Blitter state (busy status, channels, dimensions, addresses).
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        info = await client.get_blitter_state()
+
+        if info:
+            return StatusResponse(
+                success=True,
+                message="Blitter state retrieved",
+                data=info,
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to get Blitter state")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/drive/state")
+async def runtime_get_drive_state(drive: Optional[int] = None):
+    """
+    Get floppy drive state (track, side, motor, disk inserted).
+    Optionally specify drive number 0-3, or omit for all drives.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        info = await client.get_drive_state(drive)
+
+        if info:
+            return StatusResponse(
+                success=True,
+                message=f"Drive state retrieved{' (DF' + str(drive) + ')' if drive is not None else ''}",
+                data=info,
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to get drive state")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/audio/state")
+async def runtime_get_audio_state():
+    """
+    Get audio channel states (volume, period, enabled).
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        info = await client.get_audio_state()
+
+        if info:
+            return StatusResponse(
+                success=True,
+                message="Audio state retrieved",
+                data=info,
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to get audio state")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/dma/state")
+async def runtime_get_dma_state():
+    """
+    Get DMA channel states (bitplane, sprite, audio, disk, copper, blitter).
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        info = await client.get_dma_state()
+
+        if info:
+            return StatusResponse(
+                success=True,
+                message="DMA state retrieved",
+                data=info,
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to get DMA state")
     except IPCConnectionError as e:
         raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
     except Exception as e:

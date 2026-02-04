@@ -780,6 +780,760 @@ async def list_tools() -> list[Tool]:
                 "properties": {},
             },
         ),
+        # Round 2 runtime control tools
+        Tool(
+            name="runtime_quicksave",
+            description="Quick save to a slot (0-9). Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "slot": {
+                        "type": "integer",
+                        "description": "Slot number (0-9, default: 0)",
+                        "minimum": 0,
+                        "maximum": 9,
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="runtime_quickload",
+            description="Quick load from a slot (0-9). Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "slot": {
+                        "type": "integer",
+                        "description": "Slot number (0-9, default: 0)",
+                        "minimum": 0,
+                        "maximum": 9,
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="runtime_get_joyport_mode",
+            description="Get joystick port mode. Returns mode number and name. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "port": {
+                        "type": "integer",
+                        "description": "Port number (0-3)",
+                        "minimum": 0,
+                        "maximum": 3,
+                    },
+                },
+                "required": ["port"],
+            },
+        ),
+        Tool(
+            name="runtime_set_joyport_mode",
+            description="Set joystick port mode. Modes: 0=default, 2=mouse, 3=joystick, 4=gamepad, 7=cd32. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "port": {
+                        "type": "integer",
+                        "description": "Port number (0-3)",
+                        "minimum": 0,
+                        "maximum": 3,
+                    },
+                    "mode": {
+                        "type": "integer",
+                        "description": "Mode (0=default, 2=mouse, 3=joystick, 4=gamepad, 7=cd32)",
+                        "minimum": 0,
+                        "maximum": 8,
+                    },
+                },
+                "required": ["port", "mode"],
+            },
+        ),
+        Tool(
+            name="runtime_get_autofire",
+            description="Get autofire mode for a port. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "port": {
+                        "type": "integer",
+                        "description": "Port number (0-3)",
+                        "minimum": 0,
+                        "maximum": 3,
+                    },
+                },
+                "required": ["port"],
+            },
+        ),
+        Tool(
+            name="runtime_set_autofire",
+            description="Set autofire mode for a port. Modes: 0=off, 1=normal, 2=toggle, 3=always, 4=toggle_noaf. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "port": {
+                        "type": "integer",
+                        "description": "Port number (0-3)",
+                        "minimum": 0,
+                        "maximum": 3,
+                    },
+                    "mode": {
+                        "type": "integer",
+                        "description": "Autofire mode (0=off, 1=normal, 2=toggle, 3=always, 4=toggle_noaf)",
+                        "minimum": 0,
+                        "maximum": 4,
+                    },
+                },
+                "required": ["port", "mode"],
+            },
+        ),
+        Tool(
+            name="runtime_get_led_status",
+            description="Get all LED states (power, floppy drives, HD, CD, caps lock). Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_list_harddrives",
+            description="List all mounted hard drives and directories. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_set_display_mode",
+            description="Set display mode. Modes: 0=window, 1=fullscreen, 2=fullwindow. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "integer",
+                        "description": "Display mode (0=window, 1=fullscreen, 2=fullwindow)",
+                        "minimum": 0,
+                        "maximum": 2,
+                    },
+                },
+                "required": ["mode"],
+            },
+        ),
+        Tool(
+            name="runtime_get_display_mode",
+            description="Get current display mode. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_set_ntsc",
+            description="Set video mode to PAL or NTSC. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "enabled": {
+                        "type": "boolean",
+                        "description": "True for NTSC, False for PAL",
+                    },
+                },
+                "required": ["enabled"],
+            },
+        ),
+        Tool(
+            name="runtime_get_ntsc",
+            description="Get current video mode (PAL or NTSC). Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_set_sound_mode",
+            description="Set sound mode. Modes: 0=off, 1=normal, 2=stereo, 3=best. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "integer",
+                        "description": "Sound mode (0=off, 1=normal, 2=stereo, 3=best)",
+                        "minimum": 0,
+                        "maximum": 3,
+                    },
+                },
+                "required": ["mode"],
+            },
+        ),
+        Tool(
+            name="runtime_get_sound_mode",
+            description="Get current sound mode. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        # Round 3 runtime control tools
+        Tool(
+            name="runtime_toggle_mouse_grab",
+            description="Toggle mouse capture. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_get_mouse_speed",
+            description="Get current mouse speed. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_set_cpu_speed",
+            description="Set CPU speed. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "speed": {
+                        "type": "integer",
+                        "description": "CPU speed (-1=max, 0=cycle-exact, >0=percentage)",
+                    },
+                },
+                "required": ["speed"],
+            },
+        ),
+        Tool(
+            name="runtime_get_cpu_speed",
+            description="Get current CPU speed. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_toggle_rtg",
+            description="Toggle between RTG and chipset display. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "monid": {
+                        "type": "integer",
+                        "description": "Monitor ID (default 0)",
+                        "minimum": 0,
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="runtime_set_floppy_speed",
+            description="Set floppy drive speed. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "speed": {
+                        "type": "integer",
+                        "description": "Floppy speed (0=turbo, 100=1x, 200=2x, 400=4x, 800=8x)",
+                        "enum": [0, 100, 200, 400, 800],
+                    },
+                },
+                "required": ["speed"],
+            },
+        ),
+        Tool(
+            name="runtime_get_floppy_speed",
+            description="Get current floppy speed. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_disk_write_protect",
+            description="Set write protection on a floppy disk. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "drive": {
+                        "type": "integer",
+                        "description": "Drive number (0-3)",
+                        "minimum": 0,
+                        "maximum": 3,
+                    },
+                    "protect": {
+                        "type": "boolean",
+                        "description": "True to protect, False to allow writes",
+                    },
+                },
+                "required": ["drive", "protect"],
+            },
+        ),
+        Tool(
+            name="runtime_get_disk_write_protect",
+            description="Get write protection status for a floppy disk. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "drive": {
+                        "type": "integer",
+                        "description": "Drive number (0-3)",
+                        "minimum": 0,
+                        "maximum": 3,
+                    },
+                },
+                "required": ["drive"],
+            },
+        ),
+        Tool(
+            name="runtime_toggle_status_line",
+            description="Toggle on-screen status line (cycle: off/chipset/rtg/both). Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_set_chipset",
+            description="Set chipset. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "chipset": {
+                        "type": "string",
+                        "description": "Chipset name",
+                        "enum": ["OCS", "ECS_AGNUS", "ECS_DENISE", "ECS", "AGA"],
+                    },
+                },
+                "required": ["chipset"],
+            },
+        ),
+        Tool(
+            name="runtime_get_chipset",
+            description="Get current chipset. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_get_memory_config",
+            description="Get all memory sizes (chip, fast, bogo, z3, rtg). Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_get_fps",
+            description="Get current frame rate and performance info. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        # Round 4 runtime control tools - Memory and Window Control
+        Tool(
+            name="runtime_set_chip_mem",
+            description="Set Chip RAM size. Requires Amiberry to be running with IPC enabled. Note: Memory changes require a reset to take effect.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "size_kb": {
+                        "type": "integer",
+                        "description": "Chip RAM size in KB",
+                        "enum": [256, 512, 1024, 2048, 4096, 8192],
+                    },
+                },
+                "required": ["size_kb"],
+            },
+        ),
+        Tool(
+            name="runtime_set_fast_mem",
+            description="Set Fast RAM size. Requires Amiberry to be running with IPC enabled. Note: Memory changes require a reset to take effect.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "size_kb": {
+                        "type": "integer",
+                        "description": "Fast RAM size in KB",
+                        "enum": [0, 64, 128, 256, 512, 1024, 2048, 4096, 8192],
+                    },
+                },
+                "required": ["size_kb"],
+            },
+        ),
+        Tool(
+            name="runtime_set_slow_mem",
+            description="Set Slow RAM (Bogo) size. Requires Amiberry to be running with IPC enabled. Note: Memory changes require a reset to take effect.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "size_kb": {
+                        "type": "integer",
+                        "description": "Slow RAM size in KB",
+                        "enum": [0, 256, 512, 1024, 1536, 1792],
+                    },
+                },
+                "required": ["size_kb"],
+            },
+        ),
+        Tool(
+            name="runtime_set_z3_mem",
+            description="Set Zorro III Fast RAM size. Requires Amiberry to be running with IPC enabled. Note: Memory changes require a reset to take effect.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "size_mb": {
+                        "type": "integer",
+                        "description": "Z3 Fast RAM size in MB",
+                        "enum": [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024],
+                    },
+                },
+                "required": ["size_mb"],
+            },
+        ),
+        Tool(
+            name="runtime_get_cpu_model",
+            description="Get CPU model information. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_set_cpu_model",
+            description="Set CPU model. Requires Amiberry to be running with IPC enabled. Note: CPU changes require a reset to take effect.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "model": {
+                        "type": "string",
+                        "description": "CPU model",
+                        "enum": ["68000", "68010", "68020", "68030", "68040", "68060"],
+                    },
+                },
+                "required": ["model"],
+            },
+        ),
+        Tool(
+            name="runtime_set_window_size",
+            description="Set window size. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "width": {
+                        "type": "integer",
+                        "description": "Window width (320-3840)",
+                        "minimum": 320,
+                        "maximum": 3840,
+                    },
+                    "height": {
+                        "type": "integer",
+                        "description": "Window height (200-2160)",
+                        "minimum": 200,
+                        "maximum": 2160,
+                    },
+                },
+                "required": ["width", "height"],
+            },
+        ),
+        Tool(
+            name="runtime_get_window_size",
+            description="Get current window size. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_set_scaling",
+            description="Set scaling mode. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "integer",
+                        "description": "Scaling mode (-1=auto, 0=nearest, 1=linear, 2=integer)",
+                        "minimum": -1,
+                        "maximum": 2,
+                    },
+                },
+                "required": ["mode"],
+            },
+        ),
+        Tool(
+            name="runtime_get_scaling",
+            description="Get current scaling mode. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_set_line_mode",
+            description="Set line mode (single/double/scanlines). Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "integer",
+                        "description": "Line mode (0=single, 1=double, 2=scanlines)",
+                        "minimum": 0,
+                        "maximum": 2,
+                    },
+                },
+                "required": ["mode"],
+            },
+        ),
+        Tool(
+            name="runtime_get_line_mode",
+            description="Get current line mode. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_set_resolution",
+            description="Set display resolution. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "integer",
+                        "description": "Resolution (0=lores, 1=hires, 2=superhires)",
+                        "minimum": 0,
+                        "maximum": 2,
+                    },
+                },
+                "required": ["mode"],
+            },
+        ),
+        Tool(
+            name="runtime_get_resolution",
+            description="Get current display resolution. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        # Round 5 - Autocrop and WHDLoad
+        Tool(
+            name="runtime_set_autocrop",
+            description="Enable or disable automatic display cropping. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "enabled": {
+                        "type": "boolean",
+                        "description": "True to enable autocrop, False to disable",
+                    },
+                },
+                "required": ["enabled"],
+            },
+        ),
+        Tool(
+            name="runtime_get_autocrop",
+            description="Get current autocrop status. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_insert_whdload",
+            description="Load a WHDLoad game from an LHA archive or directory. Requires Amiberry to be running with IPC enabled. Note: A reset may be required for the game to start.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the LHA archive or WHDLoad game directory",
+                    },
+                },
+                "required": ["path"],
+            },
+        ),
+        Tool(
+            name="runtime_eject_whdload",
+            description="Eject the currently loaded WHDLoad game. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_get_whdload",
+            description="Get information about the currently loaded WHDLoad game. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        # === Debugging Tools ===
+        Tool(
+            name="runtime_debug_activate",
+            description="Activate the built-in debugger. Requires Amiberry to be built with debugger support.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_debug_deactivate",
+            description="Deactivate the debugger and resume emulation.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_debug_status",
+            description="Get debugger status (active/inactive).",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_debug_step",
+            description="Single-step CPU instructions when debugger is active.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "count": {
+                        "type": "integer",
+                        "description": "Number of instructions to step (default: 1)",
+                        "default": 1,
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="runtime_debug_continue",
+            description="Continue execution until next breakpoint when debugger is active.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_get_cpu_regs",
+            description="Get all CPU registers (D0-D7, A0-A7, PC, SR, USP, ISP).",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_get_custom_regs",
+            description="Get key custom chip registers (DMACON, INTENA, INTREQ, Copper addresses).",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_disassemble",
+            description="Disassemble instructions at a memory address.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "address": {
+                        "type": "string",
+                        "description": "Memory address (hex e.g., '0xFC0000' or decimal)",
+                    },
+                    "count": {
+                        "type": "integer",
+                        "description": "Number of instructions to disassemble (default: 10)",
+                        "default": 10,
+                    },
+                },
+                "required": ["address"],
+            },
+        ),
+        Tool(
+            name="runtime_set_breakpoint",
+            description="Set a breakpoint at a memory address. Maximum 20 breakpoints.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "address": {
+                        "type": "string",
+                        "description": "Memory address (hex e.g., '0x400' or decimal)",
+                    },
+                },
+                "required": ["address"],
+            },
+        ),
+        Tool(
+            name="runtime_clear_breakpoint",
+            description="Clear a breakpoint at a specific address or all breakpoints.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "address": {
+                        "type": "string",
+                        "description": "Memory address (hex e.g., '0x400') or 'ALL' to clear all",
+                    },
+                },
+                "required": ["address"],
+            },
+        ),
+        Tool(
+            name="runtime_list_breakpoints",
+            description="List all active breakpoints.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_get_copper_state",
+            description="Get Copper coprocessor state (addresses, enabled status).",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_get_blitter_state",
+            description="Get Blitter state (busy status, channels, dimensions, addresses).",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_get_drive_state",
+            description="Get floppy drive state (track, side, motor, disk inserted).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "drive": {
+                        "type": "integer",
+                        "description": "Drive number 0-3 (default: all drives)",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="runtime_get_audio_state",
+            description="Get audio channel states (volume, period, enabled).",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_get_dma_state",
+            description="Get DMA channel states (bitplane, sprite, audio, disk, copper, blitter).",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
     ]
 
 
@@ -2141,6 +2895,986 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                 return [TextContent(type="text", text="PONG - Amiberry IPC connection is working.")]
             else:
                 return [TextContent(type="text", text="Ping failed - no response from Amiberry.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    # Round 2 runtime control tools
+    elif name == "runtime_quicksave":
+        slot = arguments.get("slot", 0)
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.quicksave(slot)
+            if success:
+                return [TextContent(type="text", text=f"Quick saved to slot {slot}.")]
+            else:
+                return [TextContent(type="text", text=f"Failed to quick save to slot {slot}.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_quickload":
+        slot = arguments.get("slot", 0)
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.quickload(slot)
+            if success:
+                return [TextContent(type="text", text=f"Quick loading from slot {slot}.")]
+            else:
+                return [TextContent(type="text", text=f"Failed to quick load from slot {slot}.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_joyport_mode":
+        port = arguments["port"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            result = await client.get_joyport_mode(port)
+            if result:
+                mode, mode_name = result
+                return [TextContent(type="text", text=f"Port {port} mode: {mode} ({mode_name})")]
+            else:
+                return [TextContent(type="text", text=f"Failed to get port {port} mode.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_set_joyport_mode":
+        port = arguments["port"]
+        mode = arguments["mode"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_joyport_mode(port, mode)
+            if success:
+                return [TextContent(type="text", text=f"Port {port} mode set to {mode}.")]
+            else:
+                return [TextContent(type="text", text=f"Failed to set port {port} mode.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_autofire":
+        port = arguments["port"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            mode = await client.get_autofire(port)
+            if mode is not None:
+                modes = {0: "off", 1: "normal", 2: "toggle", 3: "always", 4: "toggle (no autofire)"}
+                mode_name = modes.get(mode, "unknown")
+                return [TextContent(type="text", text=f"Port {port} autofire: {mode} ({mode_name})")]
+            else:
+                return [TextContent(type="text", text=f"Failed to get port {port} autofire mode.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_set_autofire":
+        port = arguments["port"]
+        mode = arguments["mode"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_autofire(port, mode)
+            if success:
+                return [TextContent(type="text", text=f"Port {port} autofire set to {mode}.")]
+            else:
+                return [TextContent(type="text", text=f"Failed to set port {port} autofire.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_led_status":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            status = await client.get_led_status()
+
+            result = "LED Status:\n\n"
+            for key, value in sorted(status.items()):
+                result += f"  {key}: {value}\n"
+
+            return [TextContent(type="text", text=result)]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except CommandError as e:
+            return [TextContent(type="text", text=f"Command error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_list_harddrives":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            drives = await client.list_harddrives()
+
+            if not drives or (len(drives) == 1 and "<no harddrives mounted>" in str(drives)):
+                return [TextContent(type="text", text="No hard drives mounted.")]
+
+            result = "Mounted Hard Drives:\n\n"
+            for key, value in sorted(drives.items()):
+                result += f"  {key}: {value}\n"
+
+            return [TextContent(type="text", text=result)]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except CommandError as e:
+            return [TextContent(type="text", text=f"Command error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_set_display_mode":
+        mode = arguments["mode"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_display_mode(mode)
+            modes = {0: "window", 1: "fullscreen", 2: "fullwindow"}
+            if success:
+                return [TextContent(type="text", text=f"Display mode set to {modes.get(mode, mode)}.")]
+            else:
+                return [TextContent(type="text", text="Failed to set display mode.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_display_mode":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            result = await client.get_display_mode()
+            if result:
+                mode, mode_name = result
+                return [TextContent(type="text", text=f"Display mode: {mode} ({mode_name})")]
+            else:
+                return [TextContent(type="text", text="Failed to get display mode.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_set_ntsc":
+        enabled = arguments["enabled"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_ntsc(enabled)
+            mode = "NTSC" if enabled else "PAL"
+            if success:
+                return [TextContent(type="text", text=f"Video mode set to {mode}.")]
+            else:
+                return [TextContent(type="text", text=f"Failed to set video mode to {mode}.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_ntsc":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            result = await client.get_ntsc()
+            if result:
+                is_ntsc, mode_name = result
+                return [TextContent(type="text", text=f"Video mode: {mode_name}")]
+            else:
+                return [TextContent(type="text", text="Failed to get video mode.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_set_sound_mode":
+        mode = arguments["mode"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_sound_mode(mode)
+            modes = {0: "off", 1: "normal", 2: "stereo", 3: "best"}
+            if success:
+                return [TextContent(type="text", text=f"Sound mode set to {modes.get(mode, mode)}.")]
+            else:
+                return [TextContent(type="text", text="Failed to set sound mode.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_sound_mode":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            result = await client.get_sound_mode()
+            if result:
+                mode, mode_name = result
+                return [TextContent(type="text", text=f"Sound mode: {mode} ({mode_name})")]
+            else:
+                return [TextContent(type="text", text="Failed to get sound mode.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    # Round 3 runtime control tools
+    elif name == "runtime_toggle_mouse_grab":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.toggle_mouse_grab()
+            if success:
+                return [TextContent(type="text", text="Mouse grab toggled.")]
+            else:
+                return [TextContent(type="text", text="Failed to toggle mouse grab.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_mouse_speed":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            speed = await client.get_mouse_speed()
+            if speed is not None:
+                return [TextContent(type="text", text=f"Mouse speed: {speed}")]
+            else:
+                return [TextContent(type="text", text="Failed to get mouse speed.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_set_cpu_speed":
+        speed = arguments["speed"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_cpu_speed(speed)
+            if success:
+                return [TextContent(type="text", text=f"CPU speed set to {speed}.")]
+            else:
+                return [TextContent(type="text", text="Failed to set CPU speed.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_cpu_speed":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            result = await client.get_cpu_speed()
+            if result:
+                speed, desc = result
+                return [TextContent(type="text", text=f"CPU speed: {speed} ({desc})")]
+            else:
+                return [TextContent(type="text", text="Failed to get CPU speed.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_toggle_rtg":
+        monid = arguments.get("monid", 0)
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            result = await client.toggle_rtg(monid)
+            if result:
+                return [TextContent(type="text", text=f"Display mode: {result}")]
+            else:
+                return [TextContent(type="text", text="Failed to toggle RTG.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_set_floppy_speed":
+        speed = arguments["speed"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_floppy_speed(speed)
+            if success:
+                desc = {0: "turbo", 100: "1x", 200: "2x", 400: "4x", 800: "8x"}.get(speed, str(speed))
+                return [TextContent(type="text", text=f"Floppy speed set to {speed} ({desc}).")]
+            else:
+                return [TextContent(type="text", text="Failed to set floppy speed.")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_floppy_speed":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            result = await client.get_floppy_speed()
+            if result:
+                speed, desc = result
+                return [TextContent(type="text", text=f"Floppy speed: {speed} ({desc})")]
+            else:
+                return [TextContent(type="text", text="Failed to get floppy speed.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_disk_write_protect":
+        drive = arguments["drive"]
+        protect = arguments["protect"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.disk_write_protect(drive, protect)
+            if success:
+                status = "protected" if protect else "writable"
+                return [TextContent(type="text", text=f"Drive DF{drive} set to {status}.")]
+            else:
+                return [TextContent(type="text", text="Failed to set write protection.")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_disk_write_protect":
+        drive = arguments["drive"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            result = await client.get_disk_write_protect(drive)
+            if result:
+                is_protected, status = result
+                return [TextContent(type="text", text=f"Drive DF{drive}: {status}")]
+            else:
+                return [TextContent(type="text", text="Failed to get write protection status.")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_toggle_status_line":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            result = await client.toggle_status_line()
+            if result:
+                mode, mode_name = result
+                return [TextContent(type="text", text=f"Status line: {mode_name}")]
+            else:
+                return [TextContent(type="text", text="Failed to toggle status line.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_set_chipset":
+        chipset = arguments["chipset"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_chipset(chipset)
+            if success:
+                return [TextContent(type="text", text=f"Chipset set to {chipset}.")]
+            else:
+                return [TextContent(type="text", text="Failed to set chipset.")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_chipset":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            result = await client.get_chipset()
+            if result:
+                mask, name = result
+                return [TextContent(type="text", text=f"Chipset: {name} (mask={mask})")]
+            else:
+                return [TextContent(type="text", text="Failed to get chipset.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_memory_config":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            config = await client.get_memory_config()
+            result = "Memory configuration:\n"
+            for key, value in config.items():
+                result += f"  {key}: {value}\n"
+            return [TextContent(type="text", text=result)]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_fps":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            info = await client.get_fps()
+            result = "Performance info:\n"
+            for key, value in info.items():
+                result += f"  {key}: {value}\n"
+            return [TextContent(type="text", text=result)]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    # Round 4 runtime control tools - Memory and Window Control
+    elif name == "runtime_set_chip_mem":
+        size_kb = arguments["size_kb"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_chip_mem(size_kb)
+            if success:
+                return [TextContent(type="text", text=f"Chip RAM set to {size_kb} KB. Reset required for changes to take effect.")]
+            else:
+                return [TextContent(type="text", text="Failed to set Chip RAM size.")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_set_fast_mem":
+        size_kb = arguments["size_kb"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_fast_mem(size_kb)
+            if success:
+                return [TextContent(type="text", text=f"Fast RAM set to {size_kb} KB. Reset required for changes to take effect.")]
+            else:
+                return [TextContent(type="text", text="Failed to set Fast RAM size.")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_set_slow_mem":
+        size_kb = arguments["size_kb"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_slow_mem(size_kb)
+            if success:
+                return [TextContent(type="text", text=f"Slow RAM set to {size_kb} KB. Reset required for changes to take effect.")]
+            else:
+                return [TextContent(type="text", text="Failed to set Slow RAM size.")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_set_z3_mem":
+        size_mb = arguments["size_mb"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_z3_mem(size_mb)
+            if success:
+                return [TextContent(type="text", text=f"Z3 Fast RAM set to {size_mb} MB. Reset required for changes to take effect.")]
+            else:
+                return [TextContent(type="text", text="Failed to set Z3 Fast RAM size.")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_cpu_model":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            info = await client.get_cpu_model()
+            result = "CPU Model:\n"
+            for key, value in info.items():
+                result += f"  {key}: {value}\n"
+            return [TextContent(type="text", text=result)]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_set_cpu_model":
+        model = arguments["model"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_cpu_model(model)
+            if success:
+                return [TextContent(type="text", text=f"CPU model set to {model}. Reset required for changes to take effect.")]
+            else:
+                return [TextContent(type="text", text="Failed to set CPU model.")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_set_window_size":
+        width = arguments["width"]
+        height = arguments["height"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_window_size(width, height)
+            if success:
+                return [TextContent(type="text", text=f"Window size set to {width}x{height}.")]
+            else:
+                return [TextContent(type="text", text="Failed to set window size.")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_window_size":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            info = await client.get_window_size()
+            width = info.get("width", "?")
+            height = info.get("height", "?")
+            return [TextContent(type="text", text=f"Window size: {width}x{height}")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_set_scaling":
+        mode = arguments["mode"]
+        mode_names = ["auto", "nearest", "linear", "integer"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_scaling(mode)
+            if success:
+                mode_index = mode + 1  # -1..2 -> 0..3
+                mode_name = mode_names[mode_index] if 0 <= mode_index < len(mode_names) else str(mode)
+                return [TextContent(type="text", text=f"Scaling mode set to {mode_name}.")]
+            else:
+                return [TextContent(type="text", text="Failed to set scaling mode.")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_scaling":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            info = await client.get_scaling()
+            result = "Scaling:\n"
+            for key, value in info.items():
+                result += f"  {key}: {value}\n"
+            return [TextContent(type="text", text=result)]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_set_line_mode":
+        mode = arguments["mode"]
+        mode_names = ["single", "double", "scanlines"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_line_mode(mode)
+            if success:
+                mode_name = mode_names[mode] if 0 <= mode < len(mode_names) else str(mode)
+                return [TextContent(type="text", text=f"Line mode set to {mode_name}.")]
+            else:
+                return [TextContent(type="text", text="Failed to set line mode.")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_line_mode":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            info = await client.get_line_mode()
+            result = "Line mode:\n"
+            for key, value in info.items():
+                result += f"  {key}: {value}\n"
+            return [TextContent(type="text", text=result)]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_set_resolution":
+        mode = arguments["mode"]
+        mode_names = ["lores", "hires", "superhires"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_resolution(mode)
+            if success:
+                mode_name = mode_names[mode] if 0 <= mode < len(mode_names) else str(mode)
+                return [TextContent(type="text", text=f"Resolution set to {mode_name}.")]
+            else:
+                return [TextContent(type="text", text="Failed to set resolution.")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_resolution":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            result = await client.get_resolution()
+            if result:
+                mode, mode_name = result
+                return [TextContent(type="text", text=f"Resolution: {mode_name} ({mode})")]
+            else:
+                return [TextContent(type="text", text="Failed to get resolution.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    # Round 5 - Autocrop and WHDLoad
+    elif name == "runtime_set_autocrop":
+        enabled = arguments["enabled"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_autocrop(enabled)
+            if success:
+                return [TextContent(type="text", text=f"Autocrop {'enabled' if enabled else 'disabled'}.")]
+            else:
+                return [TextContent(type="text", text="Failed to set autocrop.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_autocrop":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            result = await client.get_autocrop()
+            if result is not None:
+                return [TextContent(type="text", text=f"Autocrop: {'enabled' if result else 'disabled'}")]
+            else:
+                return [TextContent(type="text", text="Failed to get autocrop status.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_insert_whdload":
+        path = arguments["path"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.insert_whdload(path)
+            if success:
+                return [TextContent(type="text", text=f"WHDLoad game loaded: {path}\nNote: A reset may be required for the game to start.")]
+            else:
+                return [TextContent(type="text", text="Failed to load WHDLoad game.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_eject_whdload":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.eject_whdload()
+            if success:
+                return [TextContent(type="text", text="WHDLoad game ejected.")]
+            else:
+                return [TextContent(type="text", text="Failed to eject WHDLoad game.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_whdload":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            info = await client.get_whdload()
+            if info:
+                if info.get("loaded") == "0":
+                    return [TextContent(type="text", text="No WHDLoad game loaded.")]
+                result = "WHDLoad game:\n"
+                for key, value in info.items():
+                    if value:  # Only show non-empty values
+                        result += f"  {key}: {value}\n"
+                return [TextContent(type="text", text=result)]
+            else:
+                return [TextContent(type="text", text="Failed to get WHDLoad info.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    # Round 6 - Debugging and Diagnostics
+    elif name == "runtime_debug_activate":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.debug_activate()
+            if success:
+                return [TextContent(type="text", text="Debugger activated.")]
+            else:
+                return [TextContent(type="text", text="Failed to activate debugger. Amiberry may not be built with debugger support.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_debug_deactivate":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.debug_deactivate()
+            if success:
+                return [TextContent(type="text", text="Debugger deactivated, emulation resumed.")]
+            else:
+                return [TextContent(type="text", text="Failed to deactivate debugger.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_debug_status":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            info = await client.debug_status()
+            if info:
+                result = "Debugger status:\n"
+                for key, value in info.items():
+                    result += f"  {key}: {value}\n"
+                return [TextContent(type="text", text=result)]
+            else:
+                return [TextContent(type="text", text="Failed to get debugger status.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_debug_step":
+        count = arguments.get("count", 1)
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.debug_step(count)
+            if success:
+                return [TextContent(type="text", text=f"Stepped {count} instruction(s).")]
+            else:
+                return [TextContent(type="text", text="Failed to step. Debugger may not be active.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_debug_continue":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.debug_continue()
+            if success:
+                return [TextContent(type="text", text="Execution continued.")]
+            else:
+                return [TextContent(type="text", text="Failed to continue execution.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_cpu_regs":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            info = await client.get_cpu_regs()
+            if info:
+                result = "CPU Registers:\n"
+                # Format nicely: D0-D7 on one section, A0-A7 on another
+                data_regs = [f"  {k}: {v}" for k, v in info.items() if k.startswith("D")]
+                addr_regs = [f"  {k}: {v}" for k, v in info.items() if k.startswith("A")]
+                other_regs = [f"  {k}: {v}" for k, v in info.items() if not k.startswith("D") and not k.startswith("A")]
+                result += "Data registers:\n" + "\n".join(data_regs) + "\n"
+                result += "Address registers:\n" + "\n".join(addr_regs) + "\n"
+                result += "Other:\n" + "\n".join(other_regs)
+                return [TextContent(type="text", text=result)]
+            else:
+                return [TextContent(type="text", text="Failed to get CPU registers.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_custom_regs":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            info = await client.get_custom_regs()
+            if info:
+                result = "Custom Chip Registers:\n"
+                for key, value in info.items():
+                    result += f"  {key}: {value}\n"
+                return [TextContent(type="text", text=result)]
+            else:
+                return [TextContent(type="text", text="Failed to get custom registers.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_disassemble":
+        address = arguments["address"]
+        count = arguments.get("count", 10)
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            lines = await client.disassemble(address, count)
+            if lines:
+                result = f"Disassembly at {address}:\n"
+                for line in lines:
+                    result += f"  {line}\n"
+                return [TextContent(type="text", text=result)]
+            else:
+                return [TextContent(type="text", text="No disassembly returned.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_set_breakpoint":
+        address = arguments["address"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_breakpoint(address)
+            if success:
+                return [TextContent(type="text", text=f"Breakpoint set at {address}.")]
+            else:
+                return [TextContent(type="text", text="Failed to set breakpoint. Maximum 20 breakpoints allowed.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_clear_breakpoint":
+        address = arguments["address"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.clear_breakpoint(address)
+            if success:
+                if address.upper() == "ALL":
+                    return [TextContent(type="text", text="All breakpoints cleared.")]
+                else:
+                    return [TextContent(type="text", text=f"Breakpoint at {address} cleared.")]
+            else:
+                return [TextContent(type="text", text="Failed to clear breakpoint.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_list_breakpoints":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            breakpoints = await client.list_breakpoints()
+            if breakpoints:
+                result = "Active breakpoints:\n"
+                for bp in breakpoints:
+                    result += f"  {bp}\n"
+                return [TextContent(type="text", text=result)]
+            else:
+                return [TextContent(type="text", text="No active breakpoints.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_copper_state":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            info = await client.get_copper_state()
+            if info:
+                result = "Copper State:\n"
+                for key, value in info.items():
+                    result += f"  {key}: {value}\n"
+                return [TextContent(type="text", text=result)]
+            else:
+                return [TextContent(type="text", text="Failed to get Copper state.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_blitter_state":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            info = await client.get_blitter_state()
+            if info:
+                result = "Blitter State:\n"
+                for key, value in info.items():
+                    result += f"  {key}: {value}\n"
+                return [TextContent(type="text", text=result)]
+            else:
+                return [TextContent(type="text", text="Failed to get Blitter state.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_drive_state":
+        drive = arguments.get("drive")
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            info = await client.get_drive_state(drive)
+            if info:
+                result = f"Drive State{' (DF' + str(drive) + ')' if drive is not None else ''}:\n"
+                for key, value in info.items():
+                    result += f"  {key}: {value}\n"
+                return [TextContent(type="text", text=result)]
+            else:
+                return [TextContent(type="text", text="Failed to get drive state.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_audio_state":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            info = await client.get_audio_state()
+            if info:
+                result = "Audio State:\n"
+                for key, value in info.items():
+                    result += f"  {key}: {value}\n"
+                return [TextContent(type="text", text=result)]
+            else:
+                return [TextContent(type="text", text="Failed to get audio state.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_dma_state":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            info = await client.get_dma_state()
+            if info:
+                result = "DMA State:\n"
+                for key, value in info.items():
+                    result += f"  {key}: {value}\n"
+                return [TextContent(type="text", text=result)]
+            else:
+                return [TextContent(type="text", text="Failed to get DMA state.")]
         except IPCConnectionError as e:
             return [TextContent(type="text", text=f"Connection error: {str(e)}")]
         except Exception as e:
