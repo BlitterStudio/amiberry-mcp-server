@@ -46,10 +46,15 @@ else:
 FLOPPY_EXTENSIONS = [".adf", ".adz", ".dms"]
 HARDFILE_EXTENSIONS = [".hdf", ".hdz"]
 LHA_EXTENSIONS = [".lha"]
+CD_EXTENSIONS = [".iso", ".cue", ".chd", ".bin", ".nrg"]
 ALL_DISK_EXTENSIONS = FLOPPY_EXTENSIONS + HARDFILE_EXTENSIONS + LHA_EXTENSIONS
 
 # Supported Amiga models for quick-launch
 SUPPORTED_MODELS = ["A500", "A1200", "CD32"]
+ALL_MODELS = ["A500", "A500P", "A600", "A1200", "A4000", "CD32", "CDTV"]
+
+# Log directory for captured output
+LOG_DIR = AMIBERRY_HOME / "logs"
 
 
 def get_platform_info() -> dict:
