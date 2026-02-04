@@ -27,14 +27,27 @@ if sys.platform == "linux":
 
 
 # Socket paths
-def _get_socket_path() -> str:
-    """Determine the socket path based on environment."""
+def _get_socket_path(instance: int = 0) -> str:
+    """Generate socket path for a given instance number."""
     xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
-    if xdg_runtime:
-        path = os.path.join(xdg_runtime, "amiberry.sock")
+    base_dir = xdg_runtime if xdg_runtime else "/tmp"
+
+    if instance == 0:
+        return os.path.join(base_dir, "amiberry.sock")
+    else:
+        return os.path.join(base_dir, f"amiberry_{instance}.sock")
+
+
+def _find_socket_path() -> str:
+    """Find the first available Amiberry socket (supports multiple instances)."""
+    # Try default socket first
+    for instance in range(10):
+        path = _get_socket_path(instance)
         if os.path.exists(path):
             return path
-    return "/tmp/amiberry.sock"
+
+    # Fall back to default path even if it doesn't exist
+    return _get_socket_path(0)
 
 
 # D-Bus constants
@@ -68,17 +81,19 @@ class AmiberryIPCClient:
     Automatically selects the best available transport.
     """
 
-    def __init__(self, prefer_dbus: bool = True):
+    def __init__(self, prefer_dbus: bool = True, socket_path: Optional[str] = None):
         """
         Initialize the IPC client.
 
         Args:
             prefer_dbus: If True and on Linux with D-Bus available, prefer D-Bus
                         over Unix sockets. Set to False to always use sockets.
+            socket_path: Explicit socket path. If None, auto-discovers the first
+                        available Amiberry instance.
         """
         self._prefer_dbus = prefer_dbus and DBUS_AVAILABLE
         self._dbus_conn = None
-        self._socket_path = _get_socket_path()
+        self._socket_path = socket_path if socket_path else _find_socket_path()
 
     @property
     def transport(self) -> str:
