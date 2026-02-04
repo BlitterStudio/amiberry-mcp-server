@@ -14,7 +14,7 @@ import datetime
 import platform
 import subprocess
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,6 +24,7 @@ import uvicorn
 from .config import (
     IS_MACOS,
     IS_LINUX,
+    AMIBERRY_HOME,
     EMULATOR_BINARY,
     CONFIG_DIR,
     SYSTEM_CONFIG_DIR,
@@ -36,6 +37,30 @@ from .config import (
     get_platform_info,
     ensure_directories_exist,
 )
+from .uae_config import (
+    parse_uae_config,
+    modify_uae_config,
+    create_config_from_template,
+    get_config_summary,
+)
+from .savestate import (
+    inspect_savestate,
+    get_savestate_summary,
+)
+from .rom_manager import (
+    identify_rom,
+    scan_rom_directory,
+    get_rom_summary,
+)
+
+# CD image extensions
+CD_EXTENSIONS = [".iso", ".cue", ".chd", ".bin", ".nrg"]
+
+# Log directory for captured output
+LOG_DIR = AMIBERRY_HOME / "logs"
+
+# ROM directory
+ROM_DIR = AMIBERRY_HOME / "Kickstarts" if IS_MACOS else AMIBERRY_HOME / "kickstarts"
 
 # FastAPI app
 app = FastAPI(
@@ -79,6 +104,64 @@ class LaunchRequest(BaseModel):
     disk_image: Optional[str] = None
     lha_file: Optional[str] = None
     autostart: bool = True
+
+
+class LaunchWithLoggingRequest(BaseModel):
+    config: Optional[str] = None
+    model: Optional[str] = None
+    disk_image: Optional[str] = None
+    lha_file: Optional[str] = None
+    autostart: bool = True
+    log_name: Optional[str] = None
+
+
+class CreateConfigRequest(BaseModel):
+    template: str = "A500"
+    overrides: Optional[Dict[str, str]] = None
+
+
+class ModifyConfigRequest(BaseModel):
+    modifications: Dict[str, Optional[str]]
+
+
+class LaunchCDRequest(BaseModel):
+    cd_image: Optional[str] = None
+    search_term: Optional[str] = None
+    model: str = "CD32"
+    autostart: bool = True
+
+
+class DiskSwapperRequest(BaseModel):
+    disk_images: List[str]
+    model: Optional[str] = None
+    config: Optional[str] = None
+    autostart: bool = True
+
+
+class CDImage(BaseModel):
+    name: str
+    type: str
+    path: str
+
+
+class LogFile(BaseModel):
+    name: str
+    modified: str
+    size: int
+
+
+class RomInfo(BaseModel):
+    file: str
+    filename: str
+    size: int
+    crc32: str
+    md5: str
+    identified: bool
+    version: Optional[str] = None
+    revision: Optional[str] = None
+    model: Optional[str] = None
+    probable_type: Optional[str] = None
+    size: int
 
 
 class StatusResponse(BaseModel):
@@ -409,6 +492,587 @@ async def launch_lha(lha_path: str):
     """
     request = LaunchRequest(lha_file=lha_path, autostart=True)
     return await launch_amiberry(request)
+
+
+# New Phase 1 endpoints
+
+
+@app.post("/launch-with-logging")
+async def launch_with_logging(request: LaunchWithLoggingRequest):
+    """
+    Launch Amiberry with console logging enabled, capturing output to a log file.
+    Useful for debugging.
+    """
+    if not request.model and not request.config and not request.lha_file:
+        raise HTTPException(
+            status_code=400,
+            detail="Either 'model', 'config', or 'lha_file' must be specified",
+        )
+
+    # Create log directory if needed
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Generate log filename
+    log_name = request.log_name
+    if not log_name:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_name = f"amiberry_{timestamp}.log"
+    if not log_name.endswith(".log"):
+        log_name += ".log"
+
+    log_path = LOG_DIR / log_name
+
+    # Build command
+    cmd = [EMULATOR_BINARY, "--log"]
+
+    if request.model:
+        cmd.extend(["--model", request.model])
+    elif request.config:
+        config_path = _find_config_path(request.config)
+        if not config_path:
+            raise HTTPException(
+                status_code=404, detail=f"Configuration '{request.config}' not found"
+            )
+        cmd.extend(["-f", str(config_path)])
+
+    if request.disk_image:
+        cmd.extend(["-0", request.disk_image])
+
+    if request.lha_file:
+        lha_path = Path(request.lha_file)
+        if not lha_path.exists():
+            raise HTTPException(
+                status_code=404, detail=f"LHA file not found: {request.lha_file}"
+            )
+        cmd.append(str(lha_path))
+
+    if request.autostart:
+        cmd.append("-G")
+
+    try:
+        with open(log_path, "w") as log_file:
+            subprocess.Popen(
+                cmd,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+
+        return StatusResponse(
+            success=True,
+            message="Launched Amiberry with logging enabled",
+            data={"log_file": str(log_path), "command": " ".join(cmd)},
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Error launching Amiberry: {str(e)}"
+        )
+
+
+@app.get("/configs/{config_name}/parsed")
+async def get_config_parsed(config_name: str, include_raw: bool = False):
+    """Get a parsed configuration file with summary."""
+    config_path = _find_config_path(config_name)
+
+    if not config_path:
+        raise HTTPException(
+            status_code=404, detail=f"Configuration '{config_name}' not found"
+        )
+
+    try:
+        config = parse_uae_config(config_path)
+        summary = get_config_summary(config)
+
+        data = {"summary": summary}
+        if include_raw:
+            data["raw"] = config
+
+        return StatusResponse(
+            success=True,
+            message=f"Parsed configuration: {config_name}",
+            data=data,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error parsing config: {str(e)}")
+
+
+@app.post("/configs/create/{config_name}")
+async def create_config(config_name: str, request: CreateConfigRequest):
+    """Create a new configuration file from a template."""
+    if not config_name.endswith(".uae"):
+        config_name += ".uae"
+
+    config_path = CONFIG_DIR / config_name
+
+    if config_path.exists():
+        raise HTTPException(
+            status_code=409,
+            detail=f"Configuration '{config_name}' already exists. Use PATCH to modify.",
+        )
+
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        config = create_config_from_template(
+            config_path, request.template, request.overrides
+        )
+
+        return StatusResponse(
+            success=True,
+            message=f"Created configuration: {config_name}",
+            data={
+                "path": str(config_path),
+                "template": request.template,
+                "overrides": request.overrides,
+            },
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating config: {str(e)}")
+
+
+@app.patch("/configs/{config_name}")
+async def modify_config(config_name: str, request: ModifyConfigRequest):
+    """Modify specific options in an existing configuration file."""
+    config_path = _find_config_path(config_name)
+
+    if not config_path:
+        raise HTTPException(
+            status_code=404, detail=f"Configuration '{config_name}' not found"
+        )
+
+    try:
+        updated_config = modify_uae_config(config_path, request.modifications)
+
+        return StatusResponse(
+            success=True,
+            message=f"Modified configuration: {config_name}",
+            data={"modifications": request.modifications},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error modifying config: {str(e)}")
+
+
+@app.post("/launch-whdload")
+async def launch_whdload(
+    search_term: Optional[str] = None,
+    exact_path: Optional[str] = None,
+    model: str = "A1200",
+    autostart: bool = True,
+):
+    """Search for and launch a WHDLoad game (.lha file)."""
+    lha_path = None
+
+    if exact_path:
+        lha_path = Path(exact_path)
+        if not lha_path.exists():
+            raise HTTPException(
+                status_code=404, detail=f"LHA file not found: {exact_path}"
+            )
+    elif search_term:
+        search_lower = search_term.lower()
+        lha_files = []
+        for directory in DISK_IMAGE_DIRS:
+            if directory.exists():
+                for pattern in ["**/*.lha", "**/*.LHA"]:
+                    for lha in directory.glob(pattern):
+                        if search_lower in lha.name.lower():
+                            lha_files.append(lha)
+
+        if not lha_files:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No WHDLoad games found matching '{search_term}'",
+            )
+
+        if len(lha_files) > 1:
+            matches = [{"name": f.name, "path": str(f)} for f in lha_files[:10]]
+            return StatusResponse(
+                success=False,
+                message=f"Found {len(lha_files)} matches. Please specify exact_path.",
+                data={"matches": matches},
+            )
+
+        lha_path = lha_files[0]
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Either 'search_term' or 'exact_path' must be specified",
+        )
+
+    cmd = [EMULATOR_BINARY, "--model", model, str(lha_path)]
+    if autostart:
+        cmd.append("-G")
+
+    try:
+        subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+        return StatusResponse(
+            success=True,
+            message=f"Launched WHDLoad game: {lha_path.name}",
+            data={"game": lha_path.name, "model": model},
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Error launching WHDLoad game: {str(e)}"
+        )
+
+
+@app.post("/launch-cd")
+async def launch_cd(request: LaunchCDRequest):
+    """Launch a CD image with automatic CD32/CDTV detection."""
+    cd_path = None
+
+    if request.cd_image:
+        cd_path = Path(request.cd_image)
+        if not cd_path.exists():
+            raise HTTPException(
+                status_code=404, detail=f"CD image not found: {request.cd_image}"
+            )
+    elif request.search_term:
+        search_lower = request.search_term.lower()
+        cd_files = []
+        search_dirs = DISK_IMAGE_DIRS + [AMIBERRY_HOME / "CD"]
+        if IS_MACOS:
+            search_dirs.append(AMIBERRY_HOME / "CDs")
+
+        for directory in search_dirs:
+            if directory.exists():
+                for ext in CD_EXTENSIONS:
+                    for pattern in [f"**/*{ext}", f"**/*{ext.upper()}"]:
+                        for cd in directory.glob(pattern):
+                            if search_lower in cd.name.lower():
+                                cd_files.append(cd)
+
+        cd_files = list(set(cd_files))
+
+        if not cd_files:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No CD images found matching '{request.search_term}'",
+            )
+
+        if len(cd_files) > 1:
+            matches = [{"name": f.name, "path": str(f)} for f in cd_files[:10]]
+            return StatusResponse(
+                success=False,
+                message=f"Found {len(cd_files)} matches. Please specify cd_image path.",
+                data={"matches": matches},
+            )
+
+        cd_path = cd_files[0]
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Either 'cd_image' or 'search_term' must be specified",
+        )
+
+    cmd = [EMULATOR_BINARY, "--model", request.model, "--cdimage", str(cd_path)]
+    if request.autostart:
+        cmd.append("-G")
+
+    try:
+        subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+        return StatusResponse(
+            success=True,
+            message=f"Launched CD image: {cd_path.name}",
+            data={"cd_image": cd_path.name, "model": request.model},
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Error launching CD image: {str(e)}"
+        )
+
+
+@app.get("/cd-images", response_model=List[CDImage])
+async def list_cd_images(search: Optional[str] = None):
+    """List available CD images."""
+    search_term = search.lower() if search else ""
+    cd_files = []
+
+    search_dirs = DISK_IMAGE_DIRS + [AMIBERRY_HOME / "CD"]
+    if IS_MACOS:
+        search_dirs.append(AMIBERRY_HOME / "CDs")
+
+    for directory in search_dirs:
+        if directory.exists():
+            for ext in CD_EXTENSIONS:
+                for pattern in [f"**/*{ext}", f"**/*{ext.upper()}"]:
+                    for cd in directory.glob(pattern):
+                        if not search_term or search_term in cd.name.lower():
+                            cd_files.append(
+                                CDImage(
+                                    name=cd.name,
+                                    type=cd.suffix.lower().lstrip("."),
+                                    path=str(cd),
+                                )
+                            )
+
+    # Remove duplicates
+    seen = set()
+    unique_cds = []
+    for cd in cd_files:
+        if cd.path not in seen:
+            seen.add(cd.path)
+            unique_cds.append(cd)
+
+    return sorted(unique_cds, key=lambda x: x.name.lower())
+
+
+@app.post("/disk-swapper")
+async def launch_with_disk_swapper(request: DiskSwapperRequest):
+    """Launch Amiberry with disk swapper configured for multi-disk games."""
+    if len(request.disk_images) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="Disk swapper requires at least 2 disk images",
+        )
+
+    # Verify all disk images exist
+    verified_paths = []
+    for img in request.disk_images:
+        img_path = Path(img)
+        if not img_path.exists():
+            raise HTTPException(
+                status_code=404, detail=f"Disk image not found: {img}"
+            )
+        verified_paths.append(str(img_path))
+
+    cmd = [EMULATOR_BINARY]
+
+    if request.model:
+        cmd.extend(["--model", request.model])
+    elif request.config:
+        config_path = _find_config_path(request.config)
+        if not config_path:
+            raise HTTPException(
+                status_code=404, detail=f"Configuration '{request.config}' not found"
+            )
+        cmd.extend(["-f", str(config_path)])
+    else:
+        cmd.extend(["--model", "A500"])
+
+    # Add first disk to DF0
+    cmd.extend(["-0", verified_paths[0]])
+
+    # Add disk swapper
+    cmd.append(f"-diskswapper={','.join(verified_paths)}")
+
+    if request.autostart:
+        cmd.append("-G")
+
+    try:
+        subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+        return StatusResponse(
+            success=True,
+            message=f"Launched with disk swapper ({len(verified_paths)} disks)",
+            data={"disks": [Path(p).name for p in verified_paths]},
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Error launching with disk swapper: {str(e)}"
+        )
+
+
+@app.get("/logs", response_model=List[LogFile])
+async def list_logs():
+    """List available log files from previous launches."""
+    if not LOG_DIR.exists():
+        return []
+
+    logs = []
+    for log in LOG_DIR.glob("*.log"):
+        mtime = log.stat().st_mtime
+        timestamp = datetime.datetime.fromtimestamp(mtime).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        logs.append(
+            LogFile(name=log.name, modified=timestamp, size=log.stat().st_size)
+        )
+
+    return sorted(logs, key=lambda x: x.modified, reverse=True)
+
+
+@app.get("/logs/{log_name}")
+async def get_log_content(log_name: str, tail_lines: Optional[int] = None):
+    """Get the content of a log file."""
+    if not log_name.endswith(".log"):
+        log_name += ".log"
+
+    log_path = LOG_DIR / log_name
+
+    if not log_path.exists():
+        raise HTTPException(status_code=404, detail=f"Log file not found: {log_name}")
+
+    try:
+        content = log_path.read_text(errors="replace")
+
+        if tail_lines and tail_lines > 0:
+            lines = content.splitlines()
+            content = "\n".join(lines[-tail_lines:])
+
+        return StatusResponse(
+            success=True,
+            message=f"Log file: {log_name}",
+            data={"content": content, "lines": len(content.splitlines())},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading log: {str(e)}")
+
+
+# Phase 2 endpoints
+
+
+@app.get("/savestates/{savestate_name}/inspect")
+async def inspect_savestate_endpoint(savestate_name: str):
+    """Inspect a savestate file and extract metadata."""
+    from .config import SAVESTATE_DIR
+
+    # Handle both full path and just filename
+    if "/" in savestate_name or "\\" in savestate_name:
+        path = Path(savestate_name)
+    else:
+        if not savestate_name.endswith(".uss"):
+            savestate_name += ".uss"
+        path = SAVESTATE_DIR / savestate_name
+
+    if not path.exists():
+        raise HTTPException(
+            status_code=404, detail=f"Savestate not found: {savestate_name}"
+        )
+
+    try:
+        metadata = inspect_savestate(path)
+        summary = get_savestate_summary(metadata)
+
+        return StatusResponse(
+            success=True,
+            message=f"Inspected savestate: {path.name}",
+            data={"metadata": metadata, "summary": summary},
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Error inspecting savestate: {str(e)}"
+        )
+
+
+@app.get("/roms", response_model=List[RomInfo])
+async def list_roms(directory: Optional[str] = None):
+    """List and identify ROM files in the ROMs directory."""
+    if directory:
+        rom_dir = Path(directory)
+    else:
+        rom_dir = ROM_DIR
+
+    if not rom_dir.exists():
+        return []
+
+    try:
+        roms = scan_rom_directory(rom_dir)
+        return [RomInfo(**rom) for rom in roms if not rom.get("error")]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error scanning ROMs: {str(e)}")
+
+
+@app.get("/roms/identify")
+async def identify_rom_endpoint(rom_path: str):
+    """Identify a specific ROM file by its checksum."""
+    path = Path(rom_path)
+
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"ROM file not found: {rom_path}")
+
+    try:
+        rom_info = identify_rom(path)
+        summary = get_rom_summary(rom_info)
+
+        return StatusResponse(
+            success=True,
+            message=f"Identified ROM: {path.name}",
+            data={"rom": rom_info, "summary": summary},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error identifying ROM: {str(e)}")
+
+
+@app.get("/version")
+async def get_amiberry_version():
+    """Get Amiberry version and build information."""
+    try:
+        result = subprocess.run(
+            [EMULATOR_BINARY, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+        output = result.stdout + result.stderr
+
+        version_info = {
+            "binary": str(EMULATOR_BINARY),
+            "available": True,
+        }
+
+        # Look for version string
+        for line in output.split("\n"):
+            line_lower = line.lower()
+            if "version" in line_lower or "amiberry" in line_lower:
+                version_info["version_line"] = line.strip()
+                break
+
+        # Check for features
+        features = []
+        if "--log" in output:
+            features.append("console_logging")
+        if "--model" in output:
+            features.append("model_presets")
+        if "--cdimage" in output or "cdimage" in output:
+            features.append("cd_image_support")
+        if "lua" in output.lower():
+            features.append("lua_scripting")
+
+        version_info["features"] = features
+
+        return StatusResponse(
+            success=True,
+            message="Amiberry version information",
+            data=version_info,
+        )
+
+    except subprocess.TimeoutExpired:
+        return StatusResponse(
+            success=True,
+            message="Amiberry found but version check timed out",
+            data={"binary": str(EMULATOR_BINARY), "available": True},
+        )
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Amiberry binary not found at {EMULATOR_BINARY}",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Error getting Amiberry version: {str(e)}"
+        )
 
 
 def main():

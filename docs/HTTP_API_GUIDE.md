@@ -22,6 +22,7 @@ The Amiberry HTTP API is a REST API server that works on both macOS and Linux. I
 
 The API server provides these endpoints:
 
+### Core Endpoints
 - `GET /status` - Check if Amiberry is running
 - `POST /stop` - Stop Amiberry
 - `GET /configs` - List all configurations
@@ -31,6 +32,28 @@ The API server provides these endpoints:
 - `GET /disk-images` - List disk images
 - `GET /savestates` - List savestates
 - `GET /platform` - Get platform information
+
+### Configuration Endpoints
+- `GET /configs/{name}/parsed` - Get parsed config as JSON
+- `POST /configs/create/{name}` - Create new config from template
+- `PATCH /configs/{name}` - Modify existing config
+
+### Launch Endpoints
+- `POST /launch-with-logging` - Launch with log capture
+- `POST /launch-whdload` - Launch WHDLoad game by search
+- `POST /launch-cd` - Launch CD image (ISO/CUE/CHD)
+- `POST /disk-swapper` - Configure multi-disk games
+
+### Media Endpoints
+- `GET /cd-images` - List CD images
+- `GET /logs` - List captured log files
+- `GET /logs/{name}` - Get log content
+
+### Analysis Endpoints
+- `GET /savestates/{name}/inspect` - Get savestate metadata
+- `GET /roms` - List identified ROMs
+- `POST /roms/identify` - Identify ROM by path
+- `GET /version` - Get Amiberry version
 
 Full API documentation available at: `http://localhost:8080/docs`
 
@@ -90,6 +113,18 @@ Full API documentation available at: `http://localhost:8080/docs`
    - Method: POST
 3. Add action: "Show Notification"
 4. Add Siri phrase: "Play Kick Off"
+
+### 5. Launch WHDLoad Game by Search
+
+**Voice command:** "Hey Siri, play Turrican"
+
+**Shortcut steps:**
+1. Create new shortcut named "Play Turrican"
+2. Add action: "Get Contents of URL"
+   - URL: `http://localhost:8080/launch-whdload?search=Turrican`
+   - Method: POST
+3. Add action: "Show Notification"
+4. Add Siri phrase: "Play Turrican"
 
 ### Remote Access from iOS
 
@@ -155,13 +190,25 @@ rest_command:
   amiberry_launch_a500:
     url: http://localhost:8080/quick-launch/A500
     method: POST
-  
+
+  amiberry_launch_a1200:
+    url: http://localhost:8080/quick-launch/A1200
+    method: POST
+
+  amiberry_launch_cd32:
+    url: http://localhost:8080/quick-launch/CD32
+    method: POST
+
   amiberry_launch_workbench:
     url: http://localhost:8080/quick-launch/Workbench
     method: POST
-  
+
   amiberry_stop:
     url: http://localhost:8080/stop
+    method: POST
+
+  amiberry_launch_whdload:
+    url: "http://localhost:8080/launch-whdload?search={{ search }}"
     method: POST
 
 sensor:
@@ -170,6 +217,12 @@ sensor:
     resource: http://localhost:8080/status
     value_template: '{{ value_json.data.running }}'
     scan_interval: 10
+
+  - platform: rest
+    name: Amiberry Version
+    resource: http://localhost:8080/version
+    value_template: '{{ value_json.version }}'
+    scan_interval: 3600
 ```
 
 ### Create Automation
@@ -191,11 +244,23 @@ type: vertical-stack
 cards:
   - type: entity
     entity: sensor.amiberry_status
+  - type: entity
+    entity: sensor.amiberry_version
   - type: button
     name: Launch A500
     tap_action:
       action: call-service
       service: rest_command.amiberry_launch_a500
+  - type: button
+    name: Launch A1200
+    tap_action:
+      action: call-service
+      service: rest_command.amiberry_launch_a1200
+  - type: button
+    name: Launch CD32
+    tap_action:
+      action: call-service
+      service: rest_command.amiberry_launch_cd32
   - type: button
     name: Stop Amiberry
     tap_action:
@@ -207,17 +272,36 @@ cards:
 
 ## Command Line (curl)
 
-### Launch Amiga 500
+### Basic Operations
+
 ```bash
+# Launch Amiga 500
 curl -X POST http://localhost:8080/quick-launch/A500
+
+# Launch Amiga 1200
+curl -X POST http://localhost:8080/quick-launch/A1200
+
+# Launch CD32
+curl -X POST http://localhost:8080/quick-launch/CD32
+
+# Stop Amiberry
+curl -X POST http://localhost:8080/stop
+
+# Check status
+curl http://localhost:8080/status
+
+# List configurations
+curl http://localhost:8080/configs
 ```
 
 ### Launch with .lha file
+
 ```bash
 curl -X POST "http://localhost:8080/launch-lha?lha_path=/home/user/Amiberry/lha/game.lha"
 ```
 
 ### Launch with JSON payload
+
 ```bash
 curl -X POST http://localhost:8080/launch \
   -H "Content-Type: application/json" \
@@ -228,19 +312,116 @@ curl -X POST http://localhost:8080/launch \
   }'
 ```
 
-### Stop Amiberry
+### Launch with Logging
+
 ```bash
-curl -X POST http://localhost:8080/stop
+# Launch with model and logging
+curl -X POST http://localhost:8080/launch-with-logging \
+  -H "Content-Type: application/json" \
+  -d '{"model": "A500"}'
+
+# Launch config with logging
+curl -X POST http://localhost:8080/launch-with-logging \
+  -H "Content-Type: application/json" \
+  -d '{"config_name": "MyConfig"}'
 ```
 
-### Check status
+### WHDLoad Games
+
 ```bash
-curl http://localhost:8080/status
+# Search and launch WHDLoad game
+curl -X POST "http://localhost:8080/launch-whdload?search=Turrican"
+
+# Launch specific .lha file
+curl -X POST "http://localhost:8080/launch-whdload?search=Turrican2.lha"
 ```
 
-### List configurations
+### CD Images
+
 ```bash
-curl http://localhost:8080/configs
+# List CD images
+curl http://localhost:8080/cd-images
+
+# Launch CD image
+curl -X POST http://localhost:8080/launch-cd \
+  -H "Content-Type: application/json" \
+  -d '{"cd_path": "/path/to/game.iso"}'
+
+# Launch with specific model
+curl -X POST http://localhost:8080/launch-cd \
+  -H "Content-Type: application/json" \
+  -d '{"cd_path": "/path/to/game.cue", "model": "CDTV"}'
+```
+
+### Multi-Disk Games
+
+```bash
+# Configure disk swapper
+curl -X POST http://localhost:8080/disk-swapper \
+  -H "Content-Type: application/json" \
+  -d '{
+    "disk_paths": [
+      "/path/to/disk1.adf",
+      "/path/to/disk2.adf",
+      "/path/to/disk3.adf"
+    ]
+  }'
+```
+
+### Configuration Management
+
+```bash
+# Get parsed config as JSON
+curl http://localhost:8080/configs/MyConfig.uae/parsed
+
+# Create new config from template
+curl -X POST "http://localhost:8080/configs/create/my-new-config?model=A1200"
+
+# Create config with options
+curl -X POST "http://localhost:8080/configs/create/gaming-config?model=A1200" \
+  -H "Content-Type: application/json" \
+  -d '{"fastmem_size": "8", "cpu_speed": "max"}'
+
+# Modify existing config
+curl -X PATCH http://localhost:8080/configs/MyConfig.uae \
+  -H "Content-Type: application/json" \
+  -d '{"floppy_speed": "800", "gfx_width": "720"}'
+```
+
+### Logs
+
+```bash
+# List captured logs
+curl http://localhost:8080/logs
+
+# Get specific log content
+curl http://localhost:8080/logs/amiberry_20240115_143022.log
+```
+
+### Savestate Analysis
+
+```bash
+# Inspect savestate metadata
+curl http://localhost:8080/savestates/mysave.uss/inspect
+```
+
+### ROM Management
+
+```bash
+# List all identified ROMs
+curl http://localhost:8080/roms
+
+# Identify specific ROM
+curl -X POST http://localhost:8080/roms/identify \
+  -H "Content-Type: application/json" \
+  -d '{"path": "/path/to/kick.rom"}'
+```
+
+### Version Info
+
+```bash
+# Get Amiberry version
+curl http://localhost:8080/version
 ```
 
 ---
@@ -274,8 +455,10 @@ curl http://localhost:8080/configs
 ```python
 import requests
 
+BASE_URL = 'http://localhost:8080'
+
 # Launch Amiga 500
-response = requests.post('http://localhost:8080/quick-launch/A500')
+response = requests.post(f'{BASE_URL}/quick-launch/A500')
 print(response.json())
 
 # Launch with options
@@ -284,15 +467,54 @@ payload = {
     "lha_file": "/path/to/game.lha",
     "autostart": True
 }
-response = requests.post('http://localhost:8080/launch', json=payload)
+response = requests.post(f'{BASE_URL}/launch', json=payload)
 print(response.json())
 
+# Launch with logging
+payload = {"model": "A500"}
+response = requests.post(f'{BASE_URL}/launch-with-logging', json=payload)
+print(response.json())
+
+# Launch WHDLoad game
+response = requests.post(f'{BASE_URL}/launch-whdload?search=Turrican')
+print(response.json())
+
+# Launch CD image
+payload = {"cd_path": "/path/to/game.iso"}
+response = requests.post(f'{BASE_URL}/launch-cd', json=payload)
+print(response.json())
+
+# Create a new config
+response = requests.post(f'{BASE_URL}/configs/create/my-config?model=A1200')
+print(response.json())
+
+# Get parsed config
+response = requests.get(f'{BASE_URL}/configs/MyConfig.uae/parsed')
+config = response.json()
+print(f"Chip RAM: {config.get('chipmem_size', 'unknown')}")
+
+# Modify config
+changes = {"floppy_speed": "800"}
+response = requests.patch(f'{BASE_URL}/configs/MyConfig.uae', json=changes)
+print(response.json())
+
+# Inspect savestate
+response = requests.get(f'{BASE_URL}/savestates/mysave.uss/inspect')
+metadata = response.json()
+print(f"CPU: {metadata.get('cpu', {}).get('model', 'unknown')}")
+
+# List ROMs
+response = requests.get(f'{BASE_URL}/roms')
+for rom in response.json().get('roms', []):
+    if rom.get('identified'):
+        print(f"{rom['filename']}: Kickstart {rom['version']} ({rom['model']})")
+
 # Stop Amiberry
-response = requests.post('http://localhost:8080/stop')
+response = requests.post(f'{BASE_URL}/stop')
 print(response.json())
 
 # Check status
-response = requests.get('http://localhost:8080/status')
+response = requests.get(f'{BASE_URL}/status')
 print(response.json())
 ```
 
@@ -306,21 +528,54 @@ print(response.json())
 #!/bin/bash
 # launch_amiga.sh
 
+BASE_URL="http://localhost:8080"
+
 case "$1" in
   "a500")
-    curl -X POST http://localhost:8080/quick-launch/A500
+    curl -s -X POST $BASE_URL/quick-launch/A500
     ;;
   "a1200")
-    curl -X POST http://localhost:8080/quick-launch/A1200
+    curl -s -X POST $BASE_URL/quick-launch/A1200
+    ;;
+  "cd32")
+    curl -s -X POST $BASE_URL/quick-launch/CD32
     ;;
   "workbench")
-    curl -X POST http://localhost:8080/quick-launch/Workbench
+    curl -s -X POST $BASE_URL/quick-launch/Workbench
     ;;
   "stop")
-    curl -X POST http://localhost:8080/stop
+    curl -s -X POST $BASE_URL/stop
+    ;;
+  "status")
+    curl -s $BASE_URL/status | jq .
+    ;;
+  "configs")
+    curl -s $BASE_URL/configs | jq .
+    ;;
+  "roms")
+    curl -s $BASE_URL/roms | jq .
+    ;;
+  "version")
+    curl -s $BASE_URL/version | jq .
+    ;;
+  "whdload")
+    if [ -z "$2" ]; then
+      echo "Usage: $0 whdload <search-term>"
+      exit 1
+    fi
+    curl -s -X POST "$BASE_URL/launch-whdload?search=$2"
+    ;;
+  "cd")
+    if [ -z "$2" ]; then
+      echo "Usage: $0 cd <path-to-iso>"
+      exit 1
+    fi
+    curl -s -X POST $BASE_URL/launch-cd \
+      -H "Content-Type: application/json" \
+      -d "{\"cd_path\": \"$2\"}"
     ;;
   *)
-    echo "Usage: $0 {a500|a1200|workbench|stop}"
+    echo "Usage: $0 {a500|a1200|cd32|workbench|stop|status|configs|roms|version|whdload <term>|cd <path>}"
     exit 1
     ;;
 esac
@@ -329,7 +584,9 @@ esac
 Usage:
 ```bash
 ./launch_amiga.sh a500
-./launch_amiga.sh workbench
+./launch_amiga.sh whdload Turrican
+./launch_amiga.sh cd /path/to/game.iso
+./launch_amiga.sh status
 ./launch_amiga.sh stop
 ```
 
@@ -458,6 +715,8 @@ systemctl --user start amiberry-morning.timer
 
 ### Development Workflow
 - Launch specific config for testing
+- Capture logs for debugging
+- Inspect savestates
 - Automated via shell script
 - Integrated with VS Code tasks
 
