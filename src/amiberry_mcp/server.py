@@ -48,6 +48,12 @@ from .rom_manager import (
     scan_rom_directory,
     get_rom_summary,
 )
+from .ipc_client import (
+    AmiberryIPCClient,
+    IPCError,
+    ConnectionError as IPCConnectionError,
+    CommandError,
+)
 
 # ROM directory
 ROM_DIR = AMIBERRY_HOME / "Kickstarts" if IS_MACOS else AMIBERRY_HOME / "kickstarts"
@@ -429,6 +435,164 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="get_amiberry_version",
             description="Get Amiberry version and build information",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        # Runtime control tools (IPC)
+        Tool(
+            name="pause_emulation",
+            description="Pause a running Amiberry emulation. Requires Amiberry to be running with IPC enabled (USE_IPC_SOCKET).",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="resume_emulation",
+            description="Resume a paused Amiberry emulation. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="reset_emulation",
+            description="Reset the running Amiberry emulation. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "hard": {
+                        "type": "boolean",
+                        "description": "If true, perform a hard reset. Otherwise soft/keyboard reset (default: false).",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="runtime_screenshot",
+            description="Take a screenshot of the running emulation. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "Filename for the screenshot (saved in Amiberry screenshots folder if not absolute path).",
+                    },
+                },
+                "required": ["filename"],
+            },
+        ),
+        Tool(
+            name="runtime_save_state",
+            description="Save the current emulation state while running. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "state_file": {
+                        "type": "string",
+                        "description": "Path for the savestate file (.uss)",
+                    },
+                    "config_file": {
+                        "type": "string",
+                        "description": "Path for the associated config file (.uae)",
+                    },
+                },
+                "required": ["state_file", "config_file"],
+            },
+        ),
+        Tool(
+            name="runtime_load_state",
+            description="Load a savestate into the running emulation. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "state_file": {
+                        "type": "string",
+                        "description": "Path to the savestate file (.uss)",
+                    },
+                },
+                "required": ["state_file"],
+            },
+        ),
+        Tool(
+            name="runtime_insert_floppy",
+            description="Insert a floppy disk image into a running emulation. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "drive": {
+                        "type": "integer",
+                        "description": "Drive number (0-3 for DF0-DF3)",
+                        "minimum": 0,
+                        "maximum": 3,
+                    },
+                    "image_path": {
+                        "type": "string",
+                        "description": "Path to the disk image file",
+                    },
+                },
+                "required": ["drive", "image_path"],
+            },
+        ),
+        Tool(
+            name="runtime_insert_cd",
+            description="Insert a CD image into a running emulation. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "image_path": {
+                        "type": "string",
+                        "description": "Path to the CD image file",
+                    },
+                },
+                "required": ["image_path"],
+            },
+        ),
+        Tool(
+            name="get_runtime_status",
+            description="Get the current status of a running Amiberry emulation (paused state, loaded config, mounted disks). Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_get_config",
+            description="Get a configuration option from the running emulation. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "option": {
+                        "type": "string",
+                        "description": "Configuration option name (e.g., 'chipmem_size', 'cpu_model', 'floppy_speed')",
+                    },
+                },
+                "required": ["option"],
+            },
+        ),
+        Tool(
+            name="runtime_set_config",
+            description="Set a configuration option on the running emulation. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "option": {
+                        "type": "string",
+                        "description": "Configuration option name",
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "New value for the option",
+                    },
+                },
+                "required": ["option", "value"],
+            },
+        ),
+        Tool(
+            name="check_ipc_connection",
+            description="Check if Amiberry IPC is available and get connection status",
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -1367,6 +1531,198 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                     type="text", text=f"Error getting Amiberry version: {str(e)}"
                 )
             ]
+
+    # Runtime control tools (IPC)
+    elif name == "pause_emulation":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.pause()
+            if success:
+                return [TextContent(type="text", text="Emulation paused.")]
+            else:
+                return [TextContent(type="text", text="Failed to pause emulation.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "resume_emulation":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.resume()
+            if success:
+                return [TextContent(type="text", text="Emulation resumed.")]
+            else:
+                return [TextContent(type="text", text="Failed to resume emulation.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "reset_emulation":
+        hard = arguments.get("hard", False)
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.reset(hard=hard)
+            reset_type = "hard" if hard else "soft"
+            if success:
+                return [TextContent(type="text", text=f"Emulation {reset_type} reset performed.")]
+            else:
+                return [TextContent(type="text", text=f"Failed to perform {reset_type} reset.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_screenshot":
+        filename = arguments["filename"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.screenshot(filename)
+            if success:
+                return [TextContent(type="text", text=f"Screenshot saved to: {filename}")]
+            else:
+                return [TextContent(type="text", text="Failed to take screenshot.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_save_state":
+        state_file = arguments["state_file"]
+        config_file = arguments["config_file"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.save_state(state_file, config_file)
+            if success:
+                return [TextContent(type="text", text=f"State saved:\n  State: {state_file}\n  Config: {config_file}")]
+            else:
+                return [TextContent(type="text", text="Failed to save state.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_load_state":
+        state_file = arguments["state_file"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.load_state(state_file)
+            if success:
+                return [TextContent(type="text", text=f"Loading state: {state_file}")]
+            else:
+                return [TextContent(type="text", text="Failed to load state.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_insert_floppy":
+        drive = arguments["drive"]
+        image_path = arguments["image_path"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.insert_floppy(drive, image_path)
+            if success:
+                return [TextContent(type="text", text=f"Inserted {Path(image_path).name} into DF{drive}:")]
+            else:
+                return [TextContent(type="text", text=f"Failed to insert disk into DF{drive}:.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_insert_cd":
+        image_path = arguments["image_path"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.insert_cd(image_path)
+            if success:
+                return [TextContent(type="text", text=f"Inserted CD: {Path(image_path).name}")]
+            else:
+                return [TextContent(type="text", text="Failed to insert CD.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "get_runtime_status":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            status = await client.get_status()
+
+            result = "Amiberry Runtime Status:\n\n"
+            result += f"  Paused: {status.get('Paused', 'Unknown')}\n"
+            result += f"  Config: {status.get('Config', 'Unknown')}\n"
+
+            # Show mounted floppies
+            for i in range(4):
+                key = f"Floppy{i}"
+                if key in status:
+                    result += f"  DF{i}: {status[key]}\n"
+
+            return [TextContent(type="text", text=result)]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except CommandError as e:
+            return [TextContent(type="text", text=f"Command error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_config":
+        option = arguments["option"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            value = await client.get_config(option)
+            if value is not None:
+                return [TextContent(type="text", text=f"{option} = {value}")]
+            else:
+                return [TextContent(type="text", text=f"Unknown or unavailable option: {option}")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_set_config":
+        option = arguments["option"]
+        value = arguments["value"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_config(option, value)
+            if success:
+                return [TextContent(type="text", text=f"Set {option} = {value}")]
+            else:
+                return [TextContent(type="text", text=f"Failed to set {option}. Unknown option or invalid value.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "check_ipc_connection":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+
+            result = "Amiberry IPC Connection Check:\n\n"
+            result += f"  Transport: {client.transport}\n"
+            result += f"  Socket available: {client.is_available()}\n"
+
+            if client.is_available():
+                # Try to get status to verify connection works
+                try:
+                    status = await client.get_status()
+                    result += f"  Connection: OK\n"
+                    result += f"  Emulation paused: {status.get('Paused', 'Unknown')}\n"
+                except Exception as e:
+                    result += f"  Connection: Failed ({str(e)})\n"
+            else:
+                result += f"  Connection: Not available\n"
+                result += f"\nAmiberry may not be running, or was not built with USE_IPC_SOCKET=ON."
+
+            return [TextContent(type="text", text=result)]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error checking IPC: {str(e)}")]
 
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 

@@ -52,6 +52,12 @@ from .rom_manager import (
     scan_rom_directory,
     get_rom_summary,
 )
+from .ipc_client import (
+    AmiberryIPCClient,
+    IPCError,
+    ConnectionError as IPCConnectionError,
+    CommandError,
+)
 
 # CD image extensions
 CD_EXTENSIONS = [".iso", ".cue", ".chd", ".bin", ".nrg"]
@@ -168,6 +174,38 @@ class StatusResponse(BaseModel):
     success: bool
     message: str
     data: Optional[dict] = None
+
+
+# Runtime control request models
+class RuntimeResetRequest(BaseModel):
+    hard: bool = False
+
+
+class RuntimeScreenshotRequest(BaseModel):
+    filename: str
+
+
+class RuntimeSaveStateRequest(BaseModel):
+    state_file: str
+    config_file: str
+
+
+class RuntimeLoadStateRequest(BaseModel):
+    state_file: str
+
+
+class RuntimeInsertFloppyRequest(BaseModel):
+    drive: int
+    image_path: str
+
+
+class RuntimeInsertCDRequest(BaseModel):
+    image_path: str
+
+
+class RuntimeSetConfigRequest(BaseModel):
+    option: str
+    value: str
 
 
 def _is_amiberry_running() -> bool:
@@ -1073,6 +1111,328 @@ async def get_amiberry_version():
         raise HTTPException(
             status_code=500, detail=f"Error getting Amiberry version: {str(e)}"
         )
+
+
+# Runtime control endpoints (IPC)
+
+
+@app.get("/runtime/status")
+async def get_runtime_status():
+    """
+    Get the current status of a running Amiberry emulation.
+    Requires Amiberry to be running with IPC enabled (USE_IPC_SOCKET).
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        status = await client.get_status()
+
+        return StatusResponse(
+            success=True,
+            message="Runtime status retrieved",
+            data={
+                "paused": status.get("Paused", False),
+                "config": status.get("Config", ""),
+                "floppies": {
+                    f"DF{i}": status.get(f"Floppy{i}") for i in range(4) if f"Floppy{i}" in status
+                },
+            },
+        )
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/pause")
+async def pause_emulation():
+    """
+    Pause a running Amiberry emulation.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.pause()
+
+        if success:
+            return StatusResponse(success=True, message="Emulation paused")
+        else:
+            raise HTTPException(status_code=500, detail="Failed to pause emulation")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/resume")
+async def resume_emulation():
+    """
+    Resume a paused Amiberry emulation.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.resume()
+
+        if success:
+            return StatusResponse(success=True, message="Emulation resumed")
+        else:
+            raise HTTPException(status_code=500, detail="Failed to resume emulation")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/reset")
+async def reset_emulation(request: RuntimeResetRequest):
+    """
+    Reset the running Amiberry emulation.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.reset(hard=request.hard)
+
+        reset_type = "hard" if request.hard else "soft"
+        if success:
+            return StatusResponse(success=True, message=f"Emulation {reset_type} reset")
+        else:
+            raise HTTPException(status_code=500, detail=f"Failed to {reset_type} reset")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/quit")
+async def quit_emulation():
+    """
+    Quit the running Amiberry emulation.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.quit()
+
+        if success:
+            return StatusResponse(success=True, message="Amiberry quit command sent")
+        else:
+            raise HTTPException(status_code=500, detail="Failed to quit Amiberry")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/screenshot")
+async def runtime_screenshot(request: RuntimeScreenshotRequest):
+    """
+    Take a screenshot of the running emulation.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.screenshot(request.filename)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message="Screenshot taken",
+                data={"filename": request.filename},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to take screenshot")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/save-state")
+async def runtime_save_state(request: RuntimeSaveStateRequest):
+    """
+    Save the current emulation state while running.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.save_state(request.state_file, request.config_file)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message="State saved",
+                data={
+                    "state_file": request.state_file,
+                    "config_file": request.config_file,
+                },
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to save state")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/load-state")
+async def runtime_load_state(request: RuntimeLoadStateRequest):
+    """
+    Load a savestate into the running emulation.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.load_state(request.state_file)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message="Loading state",
+                data={"state_file": request.state_file},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to load state")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/insert-floppy")
+async def runtime_insert_floppy(request: RuntimeInsertFloppyRequest):
+    """
+    Insert a floppy disk image into a running emulation.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if not 0 <= request.drive <= 3:
+        raise HTTPException(status_code=400, detail="Drive must be 0-3")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.insert_floppy(request.drive, request.image_path)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Inserted disk into DF{request.drive}:",
+                data={
+                    "drive": request.drive,
+                    "image": Path(request.image_path).name,
+                },
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to insert floppy")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/insert-cd")
+async def runtime_insert_cd(request: RuntimeInsertCDRequest):
+    """
+    Insert a CD image into a running emulation.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.insert_cd(request.image_path)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message="CD inserted",
+                data={"image": Path(request.image_path).name},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to insert CD")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/config/{option}")
+async def runtime_get_config(option: str):
+    """
+    Get a configuration option from the running emulation.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        value = await client.get_config(option)
+
+        if value is not None:
+            return StatusResponse(
+                success=True,
+                message=f"Config option: {option}",
+                data={"option": option, "value": value},
+            )
+        else:
+            raise HTTPException(status_code=404, detail=f"Unknown option: {option}")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/config")
+async def runtime_set_config(request: RuntimeSetConfigRequest):
+    """
+    Set a configuration option on the running emulation.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_config(request.option, request.value)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Set {request.option} = {request.value}",
+                data={"option": request.option, "value": request.value},
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to set {request.option}. Unknown option or invalid value.",
+            )
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/ipc-check")
+async def check_ipc_connection():
+    """
+    Check if Amiberry IPC is available and get connection status.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+
+        result = {
+            "transport": client.transport,
+            "socket_available": client.is_available(),
+            "connected": False,
+        }
+
+        if client.is_available():
+            try:
+                status = await client.get_status()
+                result["connected"] = True
+                result["paused"] = status.get("Paused", False)
+            except Exception:
+                result["connected"] = False
+
+        return StatusResponse(
+            success=True,
+            message="IPC connection check",
+            data=result,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error checking IPC: {str(e)}")
 
 
 def main():

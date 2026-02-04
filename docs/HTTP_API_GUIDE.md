@@ -55,6 +55,23 @@ The API server provides these endpoints:
 - `POST /roms/identify` - Identify ROM by path
 - `GET /version` - Get Amiberry version
 
+### Runtime Control Endpoints
+> **Note:** These endpoints require Amiberry built with `USE_IPC_SOCKET=ON`
+
+- `GET /runtime/status` - Get emulation status (paused state, loaded config, floppies)
+- `POST /runtime/pause` - Pause running emulation
+- `POST /runtime/resume` - Resume paused emulation
+- `POST /runtime/reset` - Reset emulation (soft or hard)
+- `POST /runtime/quit` - Quit Amiberry
+- `POST /runtime/screenshot` - Take a screenshot
+- `POST /runtime/save-state` - Save state while running
+- `POST /runtime/load-state` - Load a savestate
+- `POST /runtime/insert-floppy` - Insert floppy disk into drive
+- `POST /runtime/insert-cd` - Insert CD image
+- `GET /runtime/config/{option}` - Get config option value
+- `POST /runtime/config` - Set config option value
+- `GET /runtime/ipc-check` - Check if IPC is available
+
 Full API documentation available at: `http://localhost:8080/docs`
 
 ---
@@ -125,6 +142,36 @@ Full API documentation available at: `http://localhost:8080/docs`
    - Method: POST
 3. Add action: "Show Notification"
 4. Add Siri phrase: "Play Turrican"
+
+### 6. Pause/Resume Emulation (Runtime Control)
+
+**Voice command:** "Hey Siri, pause Amiberry" / "Hey Siri, resume Amiberry"
+
+**Shortcut steps:**
+1. Create new shortcut named "Pause Amiberry"
+2. Add action: "Get Contents of URL"
+   - URL: `http://localhost:8080/runtime/pause`
+   - Method: POST
+3. Add Siri phrase: "Pause Amiberry"
+
+4. Create another shortcut named "Resume Amiberry"
+5. Add action: "Get Contents of URL"
+   - URL: `http://localhost:8080/runtime/resume`
+   - Method: POST
+6. Add Siri phrase: "Resume Amiberry"
+
+### 7. Take Screenshot (Runtime Control)
+
+**Voice command:** "Hey Siri, screenshot Amiberry"
+
+**Shortcut steps:**
+1. Create new shortcut named "Screenshot Amiberry"
+2. Add action: "Get Contents of URL"
+   - URL: `http://localhost:8080/runtime/screenshot`
+   - Method: POST
+   - Request Body: JSON
+   - Body: `{"filename": "/Users/yourname/Pictures/amiberry_screenshot.png"}`
+3. Add Siri phrase: "Screenshot Amiberry"
 
 ### Remote Access from iOS
 
@@ -211,6 +258,31 @@ rest_command:
     url: "http://localhost:8080/launch-whdload?search={{ search }}"
     method: POST
 
+  # Runtime control (requires Amiberry with USE_IPC_SOCKET=ON)
+  amiberry_pause:
+    url: http://localhost:8080/runtime/pause
+    method: POST
+
+  amiberry_resume:
+    url: http://localhost:8080/runtime/resume
+    method: POST
+
+  amiberry_reset:
+    url: http://localhost:8080/runtime/reset
+    method: POST
+
+  amiberry_screenshot:
+    url: http://localhost:8080/runtime/screenshot
+    method: POST
+    content_type: application/json
+    payload: '{"filename": "{{ filename }}"}'
+
+  amiberry_insert_floppy:
+    url: http://localhost:8080/runtime/insert-floppy
+    method: POST
+    content_type: application/json
+    payload: '{"drive": {{ drive }}, "image_path": "{{ path }}"}'
+
 sensor:
   - platform: rest
     name: Amiberry Status
@@ -266,6 +338,23 @@ cards:
     tap_action:
       action: call-service
       service: rest_command.amiberry_stop
+  - type: button
+    name: Pause
+    tap_action:
+      action: call-service
+      service: rest_command.amiberry_pause
+  - type: button
+    name: Resume
+    tap_action:
+      action: call-service
+      service: rest_command.amiberry_resume
+  - type: button
+    name: Screenshot
+    tap_action:
+      action: call-service
+      service: rest_command.amiberry_screenshot
+      service_data:
+        filename: "/tmp/amiberry_screenshot.png"
 ```
 
 ---
@@ -424,6 +513,68 @@ curl -X POST http://localhost:8080/roms/identify \
 curl http://localhost:8080/version
 ```
 
+### Runtime Control
+
+> **Note:** Runtime control requires Amiberry built with `USE_IPC_SOCKET=ON`
+
+```bash
+# Check if IPC is available
+curl http://localhost:8080/runtime/ipc-check
+
+# Get emulation status
+curl http://localhost:8080/runtime/status
+
+# Pause emulation
+curl -X POST http://localhost:8080/runtime/pause
+
+# Resume emulation
+curl -X POST http://localhost:8080/runtime/resume
+
+# Soft reset
+curl -X POST http://localhost:8080/runtime/reset
+
+# Hard reset
+curl -X POST http://localhost:8080/runtime/reset \
+  -H "Content-Type: application/json" \
+  -d '{"hard": true}'
+
+# Take screenshot
+curl -X POST http://localhost:8080/runtime/screenshot \
+  -H "Content-Type: application/json" \
+  -d '{"filename": "/tmp/screenshot.png"}'
+
+# Save state while running
+curl -X POST http://localhost:8080/runtime/save-state \
+  -H "Content-Type: application/json" \
+  -d '{"state_file": "/path/to/save.uss", "config_file": "/path/to/save.uae"}'
+
+# Load state while running
+curl -X POST http://localhost:8080/runtime/load-state \
+  -H "Content-Type: application/json" \
+  -d '{"state_file": "/path/to/save.uss"}'
+
+# Insert floppy disk into DF0
+curl -X POST http://localhost:8080/runtime/insert-floppy \
+  -H "Content-Type: application/json" \
+  -d '{"drive": 0, "image_path": "/path/to/disk.adf"}'
+
+# Insert CD image
+curl -X POST http://localhost:8080/runtime/insert-cd \
+  -H "Content-Type: application/json" \
+  -d '{"image_path": "/path/to/game.iso"}'
+
+# Get config option
+curl http://localhost:8080/runtime/config/floppy_speed
+
+# Set config option
+curl -X POST http://localhost:8080/runtime/config \
+  -H "Content-Type: application/json" \
+  -d '{"option": "floppy_speed", "value": "800"}'
+
+# Quit Amiberry gracefully
+curl -X POST http://localhost:8080/runtime/quit
+```
+
 ---
 
 ## Node-RED
@@ -516,6 +667,40 @@ print(response.json())
 # Check status
 response = requests.get(f'{BASE_URL}/status')
 print(response.json())
+
+# --- Runtime Control (requires USE_IPC_SOCKET) ---
+
+# Check IPC availability
+response = requests.get(f'{BASE_URL}/runtime/ipc-check')
+if response.json().get('available'):
+    print("IPC is available!")
+
+# Get runtime status
+response = requests.get(f'{BASE_URL}/runtime/status')
+status = response.json()
+print(f"Paused: {status.get('paused')}")
+print(f"Config: {status.get('config')}")
+
+# Pause/Resume
+requests.post(f'{BASE_URL}/runtime/pause')
+requests.post(f'{BASE_URL}/runtime/resume')
+
+# Take screenshot
+payload = {"filename": "/tmp/screenshot.png"}
+response = requests.post(f'{BASE_URL}/runtime/screenshot', json=payload)
+print(response.json())
+
+# Insert floppy disk
+payload = {"drive": 0, "image_path": "/path/to/disk2.adf"}
+response = requests.post(f'{BASE_URL}/runtime/insert-floppy', json=payload)
+print(response.json())
+
+# Get/Set config options
+response = requests.get(f'{BASE_URL}/runtime/config/floppy_speed')
+print(f"Floppy speed: {response.json().get('value')}")
+
+payload = {"option": "floppy_speed", "value": "800"}
+requests.post(f'{BASE_URL}/runtime/config', json=payload)
 ```
 
 ---
@@ -574,8 +759,32 @@ case "$1" in
       -H "Content-Type: application/json" \
       -d "{\"cd_path\": \"$2\"}"
     ;;
+  "pause")
+    curl -s -X POST $BASE_URL/runtime/pause
+    ;;
+  "resume")
+    curl -s -X POST $BASE_URL/runtime/resume
+    ;;
+  "reset")
+    curl -s -X POST $BASE_URL/runtime/reset
+    ;;
+  "screenshot")
+    FILENAME="${2:-/tmp/amiberry_$(date +%Y%m%d_%H%M%S).png}"
+    curl -s -X POST $BASE_URL/runtime/screenshot \
+      -H "Content-Type: application/json" \
+      -d "{\"filename\": \"$FILENAME\"}"
+    ;;
+  "insert")
+    if [ -z "$2" ] || [ -z "$3" ]; then
+      echo "Usage: $0 insert <drive 0-3> <path-to-adf>"
+      exit 1
+    fi
+    curl -s -X POST $BASE_URL/runtime/insert-floppy \
+      -H "Content-Type: application/json" \
+      -d "{\"drive\": $2, \"image_path\": \"$3\"}"
+    ;;
   *)
-    echo "Usage: $0 {a500|a1200|cd32|workbench|stop|status|configs|roms|version|whdload <term>|cd <path>}"
+    echo "Usage: $0 {a500|a1200|cd32|workbench|stop|status|configs|roms|version|whdload <term>|cd <path>|pause|resume|reset|screenshot [path]|insert <drive> <path>}"
     exit 1
     ;;
 esac
@@ -588,6 +797,12 @@ Usage:
 ./launch_amiga.sh cd /path/to/game.iso
 ./launch_amiga.sh status
 ./launch_amiga.sh stop
+
+# Runtime control
+./launch_amiga.sh pause
+./launch_amiga.sh resume
+./launch_amiga.sh screenshot /tmp/shot.png
+./launch_amiga.sh insert 0 /path/to/disk2.adf
 ```
 
 ---
