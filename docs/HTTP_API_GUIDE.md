@@ -77,6 +77,8 @@ The API server provides these endpoints:
 - `POST /runtime/screenshot` - Take a screenshot
 - `POST /runtime/save-state` - Save state while running
 - `POST /runtime/load-state` - Load a savestate
+- `POST /runtime/quicksave` - Quick save to slot (0-9)
+- `POST /runtime/quickload` - Quick load from slot (0-9)
 
 **Audio Control**
 - `GET /runtime/volume` - Get current volume
@@ -88,6 +90,24 @@ The API server provides these endpoints:
 - `POST /runtime/fullscreen` - Toggle fullscreen/windowed mode
 - `GET /runtime/warp` - Get warp mode status
 - `POST /runtime/warp` - Enable/disable warp mode
+- `GET /runtime/display-mode` - Get current display mode
+- `POST /runtime/display-mode` - Set mode (0=window, 1=fullscreen, 2=fullwindow)
+- `GET /runtime/ntsc` - Get video mode (PAL/NTSC)
+- `POST /runtime/ntsc` - Set video mode (0=PAL, 1=NTSC)
+
+**Sound Control**
+- `GET /runtime/sound-mode` - Get current sound mode
+- `POST /runtime/sound-mode` - Set mode (0=off, 1=normal, 2=stereo, 3=best)
+
+**Joystick/Input Control**
+- `GET /runtime/joyport/{port}` - Get port mode (port: 0-3)
+- `POST /runtime/joyport` - Set port mode (modes: 0=default, 2=mouse, 3=joy, 7=cd32)
+- `GET /runtime/autofire/{port}` - Get autofire mode for port
+- `POST /runtime/autofire` - Set autofire (0=off, 1=normal, 2=toggle, 3=always, 4=toggle_noaf)
+
+**Status**
+- `GET /runtime/led-status` - Get all LED states (power, floppy, HD, CD, caps)
+- `GET /runtime/harddrives` - List mounted hard drives/directories
 
 **Configuration**
 - `GET /runtime/config/{option}` - Get config option value
@@ -98,6 +118,26 @@ The API server provides these endpoints:
 - `POST /runtime/key` - Send keyboard input
 - `POST /runtime/mouse` - Send mouse input
 - `POST /runtime/mouse-speed` - Set mouse sensitivity
+- `GET /runtime/mouse-speed` - Get current mouse sensitivity
+- `POST /runtime/toggle-mouse-grab` - Toggle mouse capture/grab
+
+**Floppy Control**
+- `GET /runtime/floppy-speed` - Get current floppy speed
+- `POST /runtime/floppy-speed` - Set speed (0=turbo, 100=1x, 200=2x, 400=4x, 800=8x)
+- `GET /runtime/disk-write-protect/{drive}` - Get disk write protection status
+- `POST /runtime/disk-write-protect` - Set disk write protection for drive
+
+**Display Control (additional)**
+- `POST /runtime/toggle-rtg` - Toggle between RTG and chipset display
+- `POST /runtime/toggle-status-line` - Cycle status line (off/chipset/rtg/both)
+- `GET /runtime/fps` - Get current frame rate and idle percentage
+
+**Hardware/Chipset Control**
+- `GET /runtime/chipset` - Get current chipset
+- `POST /runtime/chipset` - Set chipset (OCS, ECS_AGNUS, ECS_DENISE, ECS, AGA)
+- `GET /runtime/cpu-speed` - Get current CPU speed setting
+- `POST /runtime/cpu-speed` - Set CPU speed (-1=max, 0=cycle-exact, >0=%)
+- `GET /runtime/memory-config` - Get all memory sizes (chip, fast, bogo, z3, rtg)
 
 **Utility**
 - `GET /runtime/version` - Get Amiberry version info
@@ -204,6 +244,40 @@ Full API documentation available at: `http://localhost:8080/docs`
    - Request Body: JSON
    - Body: `{"filename": "/Users/yourname/Pictures/amiberry_screenshot.png"}`
 3. Add Siri phrase: "Screenshot Amiberry"
+
+### 8. Quick Save/Load (Runtime Control)
+
+**Voice command:** "Hey Siri, quick save Amiberry" / "Hey Siri, quick load Amiberry"
+
+**Shortcut steps:**
+1. Create new shortcut named "Quick Save Amiberry"
+2. Add action: "Get Contents of URL"
+   - URL: `http://localhost:8080/runtime/quicksave`
+   - Method: POST
+   - Request Body: JSON
+   - Body: `{"slot": 0}`
+3. Add Siri phrase: "Quick save Amiberry"
+
+4. Create another shortcut named "Quick Load Amiberry"
+5. Add action: "Get Contents of URL"
+   - URL: `http://localhost:8080/runtime/quickload`
+   - Method: POST
+   - Request Body: JSON
+   - Body: `{"slot": 0}`
+6. Add Siri phrase: "Quick load Amiberry"
+
+### 9. Toggle NTSC Mode (Runtime Control)
+
+**Voice command:** "Hey Siri, switch Amiberry to NTSC"
+
+**Shortcut steps:**
+1. Create new shortcut named "Amiberry NTSC Mode"
+2. Add action: "Get Contents of URL"
+   - URL: `http://localhost:8080/runtime/ntsc`
+   - Method: POST
+   - Request Body: JSON
+   - Body: `{"enabled": true}`
+3. Add Siri phrase: "Switch Amiberry to NTSC"
 
 ### Remote Access from iOS
 
@@ -345,6 +419,85 @@ rest_command:
     content_type: application/json
     payload: '{"enabled": {{ enabled }}}'
 
+  amiberry_quicksave:
+    url: http://localhost:8080/runtime/quicksave
+    method: POST
+    content_type: application/json
+    payload: '{"slot": {{ slot | default(0) }}}'
+
+  amiberry_quickload:
+    url: http://localhost:8080/runtime/quickload
+    method: POST
+    content_type: application/json
+    payload: '{"slot": {{ slot | default(0) }}}'
+
+  amiberry_display_mode:
+    url: http://localhost:8080/runtime/display-mode
+    method: POST
+    content_type: application/json
+    payload: '{"mode": {{ mode }}}'
+
+  amiberry_ntsc:
+    url: http://localhost:8080/runtime/ntsc
+    method: POST
+    content_type: application/json
+    payload: '{"enabled": {{ enabled }}}'
+
+  amiberry_sound_mode:
+    url: http://localhost:8080/runtime/sound-mode
+    method: POST
+    content_type: application/json
+    payload: '{"mode": {{ mode }}}'
+
+  amiberry_joyport:
+    url: http://localhost:8080/runtime/joyport
+    method: POST
+    content_type: application/json
+    payload: '{"port": {{ port }}, "mode": {{ mode }}}'
+
+  amiberry_autofire:
+    url: http://localhost:8080/runtime/autofire
+    method: POST
+    content_type: application/json
+    payload: '{"port": {{ port }}, "mode": {{ mode }}}'
+
+  # Round 3 - Floppy, Display, Hardware controls
+  amiberry_floppy_speed:
+    url: http://localhost:8080/runtime/floppy-speed
+    method: POST
+    content_type: application/json
+    payload: '{"speed": {{ speed }}}'
+
+  amiberry_disk_write_protect:
+    url: http://localhost:8080/runtime/disk-write-protect
+    method: POST
+    content_type: application/json
+    payload: '{"drive": {{ drive }}, "protected": {{ protected }}}'
+
+  amiberry_toggle_rtg:
+    url: http://localhost:8080/runtime/toggle-rtg
+    method: POST
+
+  amiberry_toggle_status_line:
+    url: http://localhost:8080/runtime/toggle-status-line
+    method: POST
+
+  amiberry_toggle_mouse_grab:
+    url: http://localhost:8080/runtime/toggle-mouse-grab
+    method: POST
+
+  amiberry_chipset:
+    url: http://localhost:8080/runtime/chipset
+    method: POST
+    content_type: application/json
+    payload: '{"chipset": "{{ chipset }}"}'
+
+  amiberry_cpu_speed:
+    url: http://localhost:8080/runtime/cpu-speed
+    method: POST
+    content_type: application/json
+    payload: '{"speed": {{ speed }}}'
+
 sensor:
   - platform: rest
     name: Amiberry Status
@@ -417,6 +570,20 @@ cards:
       service: rest_command.amiberry_screenshot
       service_data:
         filename: "/tmp/amiberry_screenshot.png"
+  - type: button
+    name: Quick Save
+    tap_action:
+      action: call-service
+      service: rest_command.amiberry_quicksave
+      service_data:
+        slot: 0
+  - type: button
+    name: Quick Load
+    tap_action:
+      action: call-service
+      service: rest_command.amiberry_quickload
+      service_data:
+        slot: 0
 ```
 
 ---
@@ -703,6 +870,107 @@ curl -X POST http://localhost:8080/runtime/mouse-speed \
 curl -X POST http://localhost:8080/runtime/key \
   -H "Content-Type: application/json" \
   -d '{"keycode": 69, "state": 1}'
+
+# Quick save/load (slots 0-9)
+curl -X POST http://localhost:8080/runtime/quicksave \
+  -H "Content-Type: application/json" \
+  -d '{"slot": 0}'
+
+curl -X POST http://localhost:8080/runtime/quickload \
+  -H "Content-Type: application/json" \
+  -d '{"slot": 0}'
+
+# Display mode (0=window, 1=fullscreen, 2=fullwindow)
+curl http://localhost:8080/runtime/display-mode
+
+curl -X POST http://localhost:8080/runtime/display-mode \
+  -H "Content-Type: application/json" \
+  -d '{"mode": 1}'
+
+# Video mode (PAL/NTSC)
+curl http://localhost:8080/runtime/ntsc
+
+curl -X POST http://localhost:8080/runtime/ntsc \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": true}'
+
+# Sound mode (0=off, 1=normal, 2=stereo, 3=best)
+curl http://localhost:8080/runtime/sound-mode
+
+curl -X POST http://localhost:8080/runtime/sound-mode \
+  -H "Content-Type: application/json" \
+  -d '{"mode": 2}'
+
+# Joystick port control (port 0-3, mode: 0=default, 2=mouse, 3=joy, 7=cd32)
+curl http://localhost:8080/runtime/joyport/0
+
+curl -X POST http://localhost:8080/runtime/joyport \
+  -H "Content-Type: application/json" \
+  -d '{"port": 0, "mode": 3}'
+
+# Autofire control (0=off, 1=normal, 2=toggle, 3=always)
+curl http://localhost:8080/runtime/autofire/0
+
+curl -X POST http://localhost:8080/runtime/autofire \
+  -H "Content-Type: application/json" \
+  -d '{"port": 0, "mode": 1}'
+
+# Get LED status (power, floppy drives, HD, CD)
+curl http://localhost:8080/runtime/led-status
+
+# List mounted hard drives
+curl http://localhost:8080/runtime/harddrives
+
+# Floppy speed control (0=turbo, 100=1x, 200=2x, 400=4x, 800=8x)
+curl http://localhost:8080/runtime/floppy-speed
+
+curl -X POST http://localhost:8080/runtime/floppy-speed \
+  -H "Content-Type: application/json" \
+  -d '{"speed": 800}'
+
+# Disk write protection
+curl http://localhost:8080/runtime/disk-write-protect/0
+
+curl -X POST http://localhost:8080/runtime/disk-write-protect \
+  -H "Content-Type: application/json" \
+  -d '{"drive": 0, "protected": true}'
+
+# Toggle RTG display (switch between RTG and chipset)
+curl -X POST http://localhost:8080/runtime/toggle-rtg
+
+# Toggle RTG on specific monitor
+curl -X POST http://localhost:8080/runtime/toggle-rtg \
+  -H "Content-Type: application/json" \
+  -d '{"monitor_id": 0}'
+
+# Toggle status line (cycles: off -> chipset -> rtg -> both -> off)
+curl -X POST http://localhost:8080/runtime/toggle-status-line
+
+# Get current FPS and idle percentage
+curl http://localhost:8080/runtime/fps
+
+# Toggle mouse grab/capture
+curl -X POST http://localhost:8080/runtime/toggle-mouse-grab
+
+# Get current mouse speed
+curl http://localhost:8080/runtime/mouse-speed
+
+# Chipset control (OCS, ECS_AGNUS, ECS_DENISE, ECS, AGA)
+curl http://localhost:8080/runtime/chipset
+
+curl -X POST http://localhost:8080/runtime/chipset \
+  -H "Content-Type: application/json" \
+  -d '{"chipset": "AGA"}'
+
+# CPU speed control (-1=max, 0=cycle-exact, >0=percentage)
+curl http://localhost:8080/runtime/cpu-speed
+
+curl -X POST http://localhost:8080/runtime/cpu-speed \
+  -H "Content-Type: application/json" \
+  -d '{"speed": -1}'
+
+# Get memory configuration (chip, fast, bogo, z3, rtg sizes)
+curl http://localhost:8080/runtime/memory-config
 ```
 
 ---
@@ -831,6 +1099,86 @@ print(f"Floppy speed: {response.json().get('value')}")
 
 payload = {"option": "floppy_speed", "value": "800"}
 requests.post(f'{BASE_URL}/runtime/config', json=payload)
+
+# Quick save/load
+requests.post(f'{BASE_URL}/runtime/quicksave', json={"slot": 0})
+requests.post(f'{BASE_URL}/runtime/quickload', json={"slot": 0})
+
+# Display mode
+response = requests.get(f'{BASE_URL}/runtime/display-mode')
+print(f"Display mode: {response.json().get('mode')}")
+requests.post(f'{BASE_URL}/runtime/display-mode', json={"mode": 1})
+
+# Video mode
+response = requests.get(f'{BASE_URL}/runtime/ntsc')
+print(f"NTSC: {response.json().get('enabled')}")
+requests.post(f'{BASE_URL}/runtime/ntsc', json={"enabled": True})
+
+# Sound mode
+response = requests.get(f'{BASE_URL}/runtime/sound-mode')
+print(f"Sound mode: {response.json().get('mode')}")
+requests.post(f'{BASE_URL}/runtime/sound-mode', json={"mode": 2})
+
+# Joystick port control
+response = requests.get(f'{BASE_URL}/runtime/joyport/0')
+print(f"Port 0 mode: {response.json().get('mode')}")
+requests.post(f'{BASE_URL}/runtime/joyport', json={"port": 0, "mode": 3})
+
+# Autofire
+response = requests.get(f'{BASE_URL}/runtime/autofire/0')
+print(f"Autofire mode: {response.json().get('mode')}")
+requests.post(f'{BASE_URL}/runtime/autofire', json={"port": 0, "mode": 1})
+
+# LED status
+response = requests.get(f'{BASE_URL}/runtime/led-status')
+leds = response.json()
+print(f"Power: {leds.get('power')}, HD: {leds.get('hd')}")
+
+# Hard drives
+response = requests.get(f'{BASE_URL}/runtime/harddrives')
+for hd in response.json().get('harddrives', []):
+    print(f"  {hd}")
+
+# --- Round 3: Floppy, Display, Hardware controls ---
+
+# Floppy speed control
+response = requests.get(f'{BASE_URL}/runtime/floppy-speed')
+print(f"Floppy speed: {response.json().get('speed')}")
+requests.post(f'{BASE_URL}/runtime/floppy-speed', json={"speed": 800})
+
+# Disk write protection
+response = requests.get(f'{BASE_URL}/runtime/disk-write-protect/0')
+print(f"Drive 0 protected: {response.json().get('protected')}")
+requests.post(f'{BASE_URL}/runtime/disk-write-protect', json={"drive": 0, "protected": True})
+
+# RTG and status line
+requests.post(f'{BASE_URL}/runtime/toggle-rtg')
+requests.post(f'{BASE_URL}/runtime/toggle-status-line')
+
+# FPS monitoring
+response = requests.get(f'{BASE_URL}/runtime/fps')
+fps = response.json()
+print(f"FPS: {fps.get('fps')}, Idle: {fps.get('idle')}%")
+
+# Mouse grab
+requests.post(f'{BASE_URL}/runtime/toggle-mouse-grab')
+response = requests.get(f'{BASE_URL}/runtime/mouse-speed')
+print(f"Mouse speed: {response.json().get('speed')}")
+
+# Chipset control
+response = requests.get(f'{BASE_URL}/runtime/chipset')
+print(f"Chipset: {response.json().get('chipset')}")
+requests.post(f'{BASE_URL}/runtime/chipset', json={"chipset": "AGA"})
+
+# CPU speed
+response = requests.get(f'{BASE_URL}/runtime/cpu-speed')
+print(f"CPU speed: {response.json().get('speed')}")
+requests.post(f'{BASE_URL}/runtime/cpu-speed', json={"speed": -1})  # max speed
+
+# Memory configuration
+response = requests.get(f'{BASE_URL}/runtime/memory-config')
+mem = response.json()
+print(f"Chip: {mem.get('chip')}KB, Fast: {mem.get('fast')}KB")
 ```
 
 ---
@@ -958,8 +1306,122 @@ case "$1" in
   "amiversion")
     curl -s $BASE_URL/runtime/version | jq .
     ;;
+  "quicksave")
+    SLOT="${2:-0}"
+    curl -s -X POST $BASE_URL/runtime/quicksave \
+      -H "Content-Type: application/json" \
+      -d "{\"slot\": $SLOT}"
+    ;;
+  "quickload")
+    SLOT="${2:-0}"
+    curl -s -X POST $BASE_URL/runtime/quickload \
+      -H "Content-Type: application/json" \
+      -d "{\"slot\": $SLOT}"
+    ;;
+  "displaymode")
+    if [ -z "$2" ]; then
+      curl -s $BASE_URL/runtime/display-mode | jq .
+    else
+      curl -s -X POST $BASE_URL/runtime/display-mode \
+        -H "Content-Type: application/json" \
+        -d "{\"mode\": $2}"
+    fi
+    ;;
+  "ntsc")
+    if [ -z "$2" ]; then
+      curl -s $BASE_URL/runtime/ntsc | jq .
+    else
+      curl -s -X POST $BASE_URL/runtime/ntsc \
+        -H "Content-Type: application/json" \
+        -d "{\"enabled\": $2}"
+    fi
+    ;;
+  "soundmode")
+    if [ -z "$2" ]; then
+      curl -s $BASE_URL/runtime/sound-mode | jq .
+    else
+      curl -s -X POST $BASE_URL/runtime/sound-mode \
+        -H "Content-Type: application/json" \
+        -d "{\"mode\": $2}"
+    fi
+    ;;
+  "joyport")
+    if [ -z "$3" ]; then
+      curl -s $BASE_URL/runtime/joyport/${2:-0} | jq .
+    else
+      curl -s -X POST $BASE_URL/runtime/joyport \
+        -H "Content-Type: application/json" \
+        -d "{\"port\": $2, \"mode\": $3}"
+    fi
+    ;;
+  "autofire")
+    if [ -z "$3" ]; then
+      curl -s $BASE_URL/runtime/autofire/${2:-0} | jq .
+    else
+      curl -s -X POST $BASE_URL/runtime/autofire \
+        -H "Content-Type: application/json" \
+        -d "{\"port\": $2, \"mode\": $3}"
+    fi
+    ;;
+  "leds")
+    curl -s $BASE_URL/runtime/led-status | jq .
+    ;;
+  "harddrives")
+    curl -s $BASE_URL/runtime/harddrives | jq .
+    ;;
+  "floppyspeed")
+    if [ -z "$2" ]; then
+      curl -s $BASE_URL/runtime/floppy-speed | jq .
+    else
+      curl -s -X POST $BASE_URL/runtime/floppy-speed \
+        -H "Content-Type: application/json" \
+        -d "{\"speed\": $2}"
+    fi
+    ;;
+  "diskprotect")
+    if [ -z "$3" ]; then
+      curl -s $BASE_URL/runtime/disk-write-protect/${2:-0} | jq .
+    else
+      curl -s -X POST $BASE_URL/runtime/disk-write-protect \
+        -H "Content-Type: application/json" \
+        -d "{\"drive\": $2, \"protected\": $3}"
+    fi
+    ;;
+  "togglertg")
+    curl -s -X POST $BASE_URL/runtime/toggle-rtg
+    ;;
+  "togglestatusline")
+    curl -s -X POST $BASE_URL/runtime/toggle-status-line
+    ;;
+  "fps")
+    curl -s $BASE_URL/runtime/fps | jq .
+    ;;
+  "mousegrab")
+    curl -s -X POST $BASE_URL/runtime/toggle-mouse-grab
+    ;;
+  "chipset")
+    if [ -z "$2" ]; then
+      curl -s $BASE_URL/runtime/chipset | jq .
+    else
+      curl -s -X POST $BASE_URL/runtime/chipset \
+        -H "Content-Type: application/json" \
+        -d "{\"chipset\": \"$2\"}"
+    fi
+    ;;
+  "cpuspeed")
+    if [ -z "$2" ]; then
+      curl -s $BASE_URL/runtime/cpu-speed | jq .
+    else
+      curl -s -X POST $BASE_URL/runtime/cpu-speed \
+        -H "Content-Type: application/json" \
+        -d "{\"speed\": $2}"
+    fi
+    ;;
+  "memoryconfig")
+    curl -s $BASE_URL/runtime/memory-config | jq .
+    ;;
   *)
-    echo "Usage: $0 {a500|a1200|cd32|workbench|stop|status|configs|roms|version|whdload <term>|cd <path>|pause|resume|reset|screenshot [path]|insert <drive> <path>|eject <drive>|floppies|volume [0-100]|mute|unmute|fullscreen|warp [true|false]|ping|amiversion}"
+    echo "Usage: $0 {a500|a1200|cd32|workbench|stop|status|configs|roms|version|whdload <term>|cd <path>|pause|resume|reset|screenshot [path]|insert <drive> <path>|eject <drive>|floppies|volume [0-100]|mute|unmute|fullscreen|warp [true|false]|ping|amiversion|quicksave [slot]|quickload [slot]|displaymode [0-2]|ntsc [true|false]|soundmode [0-3]|joyport <port> [mode]|autofire <port> [mode]|leds|harddrives|floppyspeed [speed]|diskprotect <drive> [true|false]|togglertg|togglestatusline|fps|mousegrab|chipset [name]|cpuspeed [speed]|memoryconfig}"
     exit 1
     ;;
 esac
@@ -978,6 +1440,24 @@ Usage:
 ./launch_amiga.sh resume
 ./launch_amiga.sh screenshot /tmp/shot.png
 ./launch_amiga.sh insert 0 /path/to/disk2.adf
+./launch_amiga.sh quicksave 0
+./launch_amiga.sh quickload 0
+./launch_amiga.sh displaymode 1     # fullscreen
+./launch_amiga.sh ntsc true
+./launch_amiga.sh soundmode 2       # stereo
+./launch_amiga.sh joyport 0 3       # set port 0 to joystick
+./launch_amiga.sh autofire 0 1      # enable autofire on port 0
+./launch_amiga.sh leds
+./launch_amiga.sh harddrives
+./launch_amiga.sh floppyspeed 800   # set floppy speed to 8x
+./launch_amiga.sh diskprotect 0 true  # write protect drive 0
+./launch_amiga.sh togglertg         # toggle RTG display
+./launch_amiga.sh togglestatusline  # cycle status line
+./launch_amiga.sh fps               # get current FPS
+./launch_amiga.sh mousegrab         # toggle mouse grab
+./launch_amiga.sh chipset AGA       # set chipset to AGA
+./launch_amiga.sh cpuspeed -1       # set CPU to max speed
+./launch_amiga.sh memoryconfig      # show memory configuration
 ```
 
 ---
