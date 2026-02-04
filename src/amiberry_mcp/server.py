@@ -598,6 +598,188 @@ async def list_tools() -> list[Tool]:
                 "properties": {},
             },
         ),
+        # New runtime control tools
+        Tool(
+            name="runtime_eject_floppy",
+            description="Eject a floppy disk from a running emulation. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "drive": {
+                        "type": "integer",
+                        "description": "Drive number (0-3 for DF0-DF3)",
+                        "minimum": 0,
+                        "maximum": 3,
+                    },
+                },
+                "required": ["drive"],
+            },
+        ),
+        Tool(
+            name="runtime_eject_cd",
+            description="Eject the CD from a running emulation. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_list_floppies",
+            description="List all floppy drives and their contents in the running emulation. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_list_configs",
+            description="List available configuration files from the running Amiberry. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_set_volume",
+            description="Set the master volume of the running emulation. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "volume": {
+                        "type": "integer",
+                        "description": "Volume level (0-100)",
+                        "minimum": 0,
+                        "maximum": 100,
+                    },
+                },
+                "required": ["volume"],
+            },
+        ),
+        Tool(
+            name="runtime_get_volume",
+            description="Get the current volume of the running emulation. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_mute",
+            description="Mute audio in the running emulation. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_unmute",
+            description="Unmute audio in the running emulation. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_toggle_fullscreen",
+            description="Toggle fullscreen mode in the running emulation. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_set_warp",
+            description="Enable or disable warp mode (maximum speed) in the running emulation. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "enabled": {
+                        "type": "boolean",
+                        "description": "True to enable warp mode, False to disable",
+                    },
+                },
+                "required": ["enabled"],
+            },
+        ),
+        Tool(
+            name="runtime_get_warp",
+            description="Get the current warp mode status of the running emulation. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_get_version",
+            description="Get version information from the running Amiberry instance. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="runtime_frame_advance",
+            description="Advance emulation by a number of frames (when paused). Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "frames": {
+                        "type": "integer",
+                        "description": "Number of frames to advance (1-100, default: 1)",
+                        "minimum": 1,
+                        "maximum": 100,
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="runtime_send_mouse",
+            description="Send mouse input to the running emulation. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "dx": {
+                        "type": "integer",
+                        "description": "X movement delta",
+                    },
+                    "dy": {
+                        "type": "integer",
+                        "description": "Y movement delta",
+                    },
+                    "buttons": {
+                        "type": "integer",
+                        "description": "Button mask (bit 0=left, bit 1=right, bit 2=middle)",
+                        "minimum": 0,
+                        "maximum": 7,
+                    },
+                },
+                "required": ["dx", "dy"],
+            },
+        ),
+        Tool(
+            name="runtime_set_mouse_speed",
+            description="Set mouse sensitivity in the running emulation. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "speed": {
+                        "type": "integer",
+                        "description": "Mouse speed (10-200, default: 100)",
+                        "minimum": 10,
+                        "maximum": 200,
+                    },
+                },
+                "required": ["speed"],
+            },
+        ),
+        Tool(
+            name="runtime_ping",
+            description="Test the IPC connection to a running Amiberry instance.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
     ]
 
 
@@ -1723,6 +1905,246 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             return [TextContent(type="text", text=result)]
         except Exception as e:
             return [TextContent(type="text", text=f"Error checking IPC: {str(e)}")]
+
+    # New runtime control tools
+    elif name == "runtime_eject_floppy":
+        drive = arguments["drive"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.eject_floppy(drive)
+            if success:
+                return [TextContent(type="text", text=f"Ejected disk from DF{drive}:")]
+            else:
+                return [TextContent(type="text", text=f"Failed to eject disk from DF{drive}:.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_eject_cd":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.eject_cd()
+            if success:
+                return [TextContent(type="text", text="CD ejected.")]
+            else:
+                return [TextContent(type="text", text="Failed to eject CD.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_list_floppies":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            drives = await client.list_floppies()
+
+            result = "Floppy Drives:\n\n"
+            for drive, path in sorted(drives.items()):
+                result += f"  {drive}: {path}\n"
+
+            return [TextContent(type="text", text=result)]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except CommandError as e:
+            return [TextContent(type="text", text=f"Command error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_list_configs":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            configs = await client.list_configs()
+
+            if not configs:
+                return [TextContent(type="text", text="No configuration files found.")]
+
+            result = f"Found {len(configs)} configuration file(s):\n\n"
+            for cfg in sorted(configs):
+                result += f"  - {cfg}\n"
+
+            return [TextContent(type="text", text=result)]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_set_volume":
+        volume = arguments["volume"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_volume(volume)
+            if success:
+                return [TextContent(type="text", text=f"Volume set to {volume}%")]
+            else:
+                return [TextContent(type="text", text="Failed to set volume.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_volume":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            volume = await client.get_volume()
+            if volume is not None:
+                return [TextContent(type="text", text=f"Current volume: {volume}%")]
+            else:
+                return [TextContent(type="text", text="Failed to get volume.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_mute":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.mute()
+            if success:
+                return [TextContent(type="text", text="Audio muted.")]
+            else:
+                return [TextContent(type="text", text="Failed to mute audio.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_unmute":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.unmute()
+            if success:
+                return [TextContent(type="text", text="Audio unmuted.")]
+            else:
+                return [TextContent(type="text", text="Failed to unmute audio.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_toggle_fullscreen":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.toggle_fullscreen()
+            if success:
+                return [TextContent(type="text", text="Fullscreen mode toggled.")]
+            else:
+                return [TextContent(type="text", text="Failed to toggle fullscreen.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_set_warp":
+        enabled = arguments["enabled"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_warp(enabled)
+            status = "enabled" if enabled else "disabled"
+            if success:
+                return [TextContent(type="text", text=f"Warp mode {status}.")]
+            else:
+                return [TextContent(type="text", text=f"Failed to {status[:-1]} warp mode.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_warp":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            enabled = await client.get_warp()
+            if enabled is not None:
+                status = "enabled" if enabled else "disabled"
+                return [TextContent(type="text", text=f"Warp mode is {status}.")]
+            else:
+                return [TextContent(type="text", text="Failed to get warp mode status.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_get_version":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            info = await client.get_version()
+
+            result = "Amiberry Version Info:\n\n"
+            for key, value in info.items():
+                result += f"  {key}: {value}\n"
+
+            return [TextContent(type="text", text=result)]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except CommandError as e:
+            return [TextContent(type="text", text=f"Command error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_frame_advance":
+        frames = arguments.get("frames", 1)
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.frame_advance(frames)
+            if success:
+                return [TextContent(type="text", text=f"Advanced {frames} frame(s).")]
+            else:
+                return [TextContent(type="text", text="Failed to advance frames. Is emulation paused?")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_send_mouse":
+        dx = arguments["dx"]
+        dy = arguments["dy"]
+        buttons = arguments.get("buttons", 0)
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.send_mouse(dx, dy, buttons)
+            if success:
+                return [TextContent(type="text", text=f"Mouse input sent: dx={dx}, dy={dy}, buttons={buttons}")]
+            else:
+                return [TextContent(type="text", text="Failed to send mouse input.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_set_mouse_speed":
+        speed = arguments["speed"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.set_mouse_speed(speed)
+            if success:
+                return [TextContent(type="text", text=f"Mouse speed set to {speed}.")]
+            else:
+                return [TextContent(type="text", text="Failed to set mouse speed.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_ping":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.ping()
+            if success:
+                return [TextContent(type="text", text="PONG - Amiberry IPC connection is working.")]
+            else:
+                return [TextContent(type="text", text="Ping failed - no response from Amiberry.")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 

@@ -433,6 +433,231 @@ class AmiberryIPCClient:
         )
         return success
 
+    # === NEW COMMANDS ===
+
+    async def eject_floppy(self, drive: int) -> bool:
+        """
+        Eject a floppy disk from a drive.
+
+        Args:
+            drive: Drive number (0-3 for DF0-DF3)
+
+        Returns:
+            True if successful
+        """
+        if not 0 <= drive <= 3:
+            raise ValueError("Drive must be 0-3")
+        success, _ = await self._send_socket_command("EJECT_FLOPPY", str(drive))
+        return success
+
+    async def eject_cd(self) -> bool:
+        """
+        Eject the CD.
+
+        Returns:
+            True if successful
+        """
+        success, _ = await self._send_socket_command("EJECT_CD")
+        return success
+
+    async def set_volume(self, volume: int) -> bool:
+        """
+        Set the master volume.
+
+        Args:
+            volume: Volume level (0-100)
+
+        Returns:
+            True if successful
+        """
+        if not 0 <= volume <= 100:
+            raise ValueError("Volume must be 0-100")
+        success, _ = await self._send_socket_command("SET_VOLUME", str(volume))
+        return success
+
+    async def get_volume(self) -> Optional[int]:
+        """
+        Get the current volume.
+
+        Returns:
+            Current volume (0-100), or None on error
+        """
+        success, data = await self._send_socket_command("GET_VOLUME")
+        if success and data:
+            return int(data[0])
+        return None
+
+    async def mute(self) -> bool:
+        """
+        Mute audio.
+
+        Returns:
+            True if successful
+        """
+        success, _ = await self._send_socket_command("MUTE")
+        return success
+
+    async def unmute(self) -> bool:
+        """
+        Unmute audio.
+
+        Returns:
+            True if successful
+        """
+        success, _ = await self._send_socket_command("UNMUTE")
+        return success
+
+    async def toggle_fullscreen(self) -> bool:
+        """
+        Toggle fullscreen mode.
+
+        Returns:
+            True if successful
+        """
+        success, _ = await self._send_socket_command("TOGGLE_FULLSCREEN")
+        return success
+
+    async def set_warp(self, enabled: bool) -> bool:
+        """
+        Enable or disable warp mode.
+
+        Args:
+            enabled: True to enable warp mode
+
+        Returns:
+            True if successful
+        """
+        success, _ = await self._send_socket_command("SET_WARP", "1" if enabled else "0")
+        return success
+
+    async def get_warp(self) -> Optional[bool]:
+        """
+        Get warp mode status.
+
+        Returns:
+            True if warp mode is enabled, None on error
+        """
+        success, data = await self._send_socket_command("GET_WARP")
+        if success and data:
+            return data[0] == "1"
+        return None
+
+    async def get_version(self) -> dict[str, str]:
+        """
+        Get Amiberry version info.
+
+        Returns:
+            Dictionary with version info (version, sdl)
+        """
+        success, data = await self._send_socket_command("GET_VERSION")
+        if not success:
+            raise CommandError("Failed to get version")
+
+        info = {}
+        for item in data:
+            if "=" in item:
+                key, value = item.split("=", 1)
+                info[key] = value
+        return info
+
+    async def list_floppies(self) -> dict[str, str]:
+        """
+        List all floppy drives and their contents.
+
+        Returns:
+            Dictionary with drive names and paths (DF0-DF3)
+        """
+        success, data = await self._send_socket_command("LIST_FLOPPIES")
+        if not success:
+            raise CommandError("Failed to list floppies")
+
+        drives = {}
+        for item in data:
+            if "=" in item:
+                key, value = item.split("=", 1)
+                drives[key] = value
+        return drives
+
+    async def list_configs(self) -> list[str]:
+        """
+        List available configuration files.
+
+        Returns:
+            List of config file names
+        """
+        success, data = await self._send_socket_command("LIST_CONFIGS")
+        if not success:
+            return []
+        # Filter out the "no configs found" placeholder
+        return [c for c in data if c != "<no configs found>"]
+
+    async def frame_advance(self, frames: int = 1) -> bool:
+        """
+        Advance emulation by a number of frames (when paused).
+
+        Args:
+            frames: Number of frames to advance (1-100)
+
+        Returns:
+            True if successful
+        """
+        if not 1 <= frames <= 100:
+            raise ValueError("Frames must be 1-100")
+        success, _ = await self._send_socket_command("FRAME_ADVANCE", str(frames))
+        return success
+
+    async def set_mouse_speed(self, speed: int) -> bool:
+        """
+        Set mouse sensitivity.
+
+        Args:
+            speed: Mouse speed (10-200)
+
+        Returns:
+            True if successful
+        """
+        if not 10 <= speed <= 200:
+            raise ValueError("Speed must be 10-200")
+        success, _ = await self._send_socket_command("SET_MOUSE_SPEED", str(speed))
+        return success
+
+    async def send_mouse(self, dx: int, dy: int, buttons: int = 0) -> bool:
+        """
+        Send mouse input.
+
+        Args:
+            dx: X movement delta
+            dy: Y movement delta
+            buttons: Button mask (bit 0=left, bit 1=right, bit 2=middle)
+
+        Returns:
+            True if successful
+        """
+        success, _ = await self._send_socket_command(
+            "SEND_MOUSE", str(dx), str(dy), str(buttons)
+        )
+        return success
+
+    async def ping(self) -> bool:
+        """
+        Test the IPC connection.
+
+        Returns:
+            True if connection is working
+        """
+        success, data = await self._send_socket_command("PING")
+        return success and data and data[0] == "PONG"
+
+    async def help(self) -> list[str]:
+        """
+        Get list of available commands from the server.
+
+        Returns:
+            List of help strings
+        """
+        success, data = await self._send_socket_command("HELP")
+        return data if success else []
+
 
 # Convenience function for quick commands
 async def send_ipc_command(command: str, *args: str) -> tuple[bool, list[str]]:
