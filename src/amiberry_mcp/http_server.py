@@ -208,6 +208,37 @@ class RuntimeSetConfigRequest(BaseModel):
     value: str
 
 
+class RuntimeEjectFloppyRequest(BaseModel):
+    drive: int
+
+
+class RuntimeSetVolumeRequest(BaseModel):
+    volume: int
+
+
+class RuntimeSetWarpRequest(BaseModel):
+    enabled: bool
+
+
+class RuntimeFrameAdvanceRequest(BaseModel):
+    count: int = 1
+
+
+class RuntimeSendMouseRequest(BaseModel):
+    dx: int
+    dy: int
+    buttons: int = 0
+
+
+class RuntimeSetMouseSpeedRequest(BaseModel):
+    speed: int
+
+
+class RuntimeSendKeyRequest(BaseModel):
+    keycode: int
+    state: int
+
+
 def _is_amiberry_running() -> bool:
     """Check if Amiberry process is currently running."""
     try:
@@ -1433,6 +1464,401 @@ async def check_ipc_connection():
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error checking IPC: {str(e)}")
+
+
+# New runtime control endpoints
+
+
+@app.post("/runtime/eject-floppy")
+async def runtime_eject_floppy(request: RuntimeEjectFloppyRequest):
+    """
+    Eject a floppy disk from a drive in the running emulation.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if not 0 <= request.drive <= 3:
+        raise HTTPException(status_code=400, detail="Drive must be 0-3")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.eject_floppy(request.drive)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Ejected disk from DF{request.drive}:",
+                data={"drive": request.drive},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to eject floppy")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/eject-cd")
+async def runtime_eject_cd():
+    """
+    Eject the CD from the running emulation.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.eject_cd()
+
+        if success:
+            return StatusResponse(success=True, message="CD ejected")
+        else:
+            raise HTTPException(status_code=500, detail="Failed to eject CD")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/list-floppies")
+async def runtime_list_floppies():
+    """
+    List all floppy drives and their contents.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        floppies = await client.list_floppies()
+
+        return StatusResponse(
+            success=True,
+            message="Floppy drives",
+            data={"floppies": floppies},
+        )
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/configs")
+async def runtime_list_configs():
+    """
+    List available configuration files from the running emulation.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        configs = await client.list_configs()
+
+        return StatusResponse(
+            success=True,
+            message="Available configurations",
+            data={"configs": configs},
+        )
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/volume")
+async def runtime_get_volume():
+    """
+    Get the current master volume.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        volume = await client.get_volume()
+
+        return StatusResponse(
+            success=True,
+            message=f"Volume: {volume}%",
+            data={"volume": volume},
+        )
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/volume")
+async def runtime_set_volume(request: RuntimeSetVolumeRequest):
+    """
+    Set the master volume (0-100).
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if not 0 <= request.volume <= 100:
+        raise HTTPException(status_code=400, detail="Volume must be 0-100")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_volume(request.volume)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Volume set to {request.volume}%",
+                data={"volume": request.volume},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set volume")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/mute")
+async def runtime_mute():
+    """
+    Mute the audio.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.mute()
+
+        if success:
+            return StatusResponse(success=True, message="Audio muted")
+        else:
+            raise HTTPException(status_code=500, detail="Failed to mute")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/unmute")
+async def runtime_unmute():
+    """
+    Unmute the audio.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.unmute()
+
+        if success:
+            return StatusResponse(success=True, message="Audio unmuted")
+        else:
+            raise HTTPException(status_code=500, detail="Failed to unmute")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/fullscreen")
+async def runtime_toggle_fullscreen():
+    """
+    Toggle fullscreen/windowed mode.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.toggle_fullscreen()
+
+        if success:
+            return StatusResponse(success=True, message="Fullscreen toggled")
+        else:
+            raise HTTPException(status_code=500, detail="Failed to toggle fullscreen")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/warp")
+async def runtime_get_warp():
+    """
+    Get the current warp mode status.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        enabled = await client.get_warp()
+
+        return StatusResponse(
+            success=True,
+            message=f"Warp mode: {'enabled' if enabled else 'disabled'}",
+            data={"enabled": enabled},
+        )
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/warp")
+async def runtime_set_warp(request: RuntimeSetWarpRequest):
+    """
+    Enable or disable warp mode.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_warp(request.enabled)
+
+        if success:
+            status = "enabled" if request.enabled else "disabled"
+            return StatusResponse(
+                success=True,
+                message=f"Warp mode {status}",
+                data={"enabled": request.enabled},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set warp mode")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/version")
+async def runtime_get_version():
+    """
+    Get Amiberry version info from the running emulation.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        version_info = await client.get_version()
+
+        return StatusResponse(
+            success=True,
+            message="Amiberry version info",
+            data=version_info,
+        )
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/runtime/ping")
+async def runtime_ping():
+    """
+    Ping the running Amiberry instance to test connectivity.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.ping()
+
+        if success:
+            return StatusResponse(success=True, message="PONG")
+        else:
+            raise HTTPException(status_code=500, detail="Ping failed")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/frame-advance")
+async def runtime_frame_advance(request: RuntimeFrameAdvanceRequest):
+    """
+    Advance N frames when emulation is paused.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if request.count < 1:
+        raise HTTPException(status_code=400, detail="Count must be at least 1")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.frame_advance(request.count)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Advanced {request.count} frame(s)",
+                data={"count": request.count},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to advance frames")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/key")
+async def runtime_send_key(request: RuntimeSendKeyRequest):
+    """
+    Send keyboard input to the emulation.
+    State: 0=release, 1=press.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if request.state not in (0, 1):
+        raise HTTPException(status_code=400, detail="State must be 0 or 1")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.send_key(request.keycode, request.state)
+
+        if success:
+            action = "pressed" if request.state == 1 else "released"
+            return StatusResponse(
+                success=True,
+                message=f"Key {request.keycode} {action}",
+                data={"keycode": request.keycode, "state": request.state},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to send key")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/mouse")
+async def runtime_send_mouse(request: RuntimeSendMouseRequest):
+    """
+    Send mouse input to the emulation.
+    Buttons: bit0=Left, bit1=Right, bit2=Middle.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.send_mouse(request.dx, request.dy, request.buttons)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Mouse moved ({request.dx}, {request.dy})",
+                data={"dx": request.dx, "dy": request.dy, "buttons": request.buttons},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to send mouse input")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/mouse-speed")
+async def runtime_set_mouse_speed(request: RuntimeSetMouseSpeedRequest):
+    """
+    Set mouse sensitivity (10-200).
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if not 10 <= request.speed <= 200:
+        raise HTTPException(status_code=400, detail="Speed must be 10-200")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.set_mouse_speed(request.speed)
+
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Mouse speed set to {request.speed}",
+                data={"speed": request.speed},
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set mouse speed")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 
 def main():

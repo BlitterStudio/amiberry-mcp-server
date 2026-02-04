@@ -58,18 +58,50 @@ The API server provides these endpoints:
 ### Runtime Control Endpoints
 > **Note:** These endpoints require Amiberry built with `USE_IPC_SOCKET=ON`
 
+**Emulation Control**
 - `GET /runtime/status` - Get emulation status (paused state, loaded config, floppies)
 - `POST /runtime/pause` - Pause running emulation
 - `POST /runtime/resume` - Resume paused emulation
 - `POST /runtime/reset` - Reset emulation (soft or hard)
 - `POST /runtime/quit` - Quit Amiberry
+- `POST /runtime/frame-advance` - Advance N frames when paused
+
+**Media Control**
+- `POST /runtime/insert-floppy` - Insert floppy disk into drive
+- `POST /runtime/eject-floppy` - Eject floppy from drive
+- `GET /runtime/list-floppies` - List all floppy drives and contents
+- `POST /runtime/insert-cd` - Insert CD image
+- `POST /runtime/eject-cd` - Eject CD
+
+**State Management**
 - `POST /runtime/screenshot` - Take a screenshot
 - `POST /runtime/save-state` - Save state while running
 - `POST /runtime/load-state` - Load a savestate
-- `POST /runtime/insert-floppy` - Insert floppy disk into drive
-- `POST /runtime/insert-cd` - Insert CD image
+
+**Audio Control**
+- `GET /runtime/volume` - Get current volume
+- `POST /runtime/volume` - Set volume (0-100)
+- `POST /runtime/mute` - Mute audio
+- `POST /runtime/unmute` - Unmute audio
+
+**Display Control**
+- `POST /runtime/fullscreen` - Toggle fullscreen/windowed mode
+- `GET /runtime/warp` - Get warp mode status
+- `POST /runtime/warp` - Enable/disable warp mode
+
+**Configuration**
 - `GET /runtime/config/{option}` - Get config option value
 - `POST /runtime/config` - Set config option value
+- `GET /runtime/configs` - List available config files
+
+**Input Control**
+- `POST /runtime/key` - Send keyboard input
+- `POST /runtime/mouse` - Send mouse input
+- `POST /runtime/mouse-speed` - Set mouse sensitivity
+
+**Utility**
+- `GET /runtime/version` - Get Amiberry version info
+- `GET /runtime/ping` - Test IPC connection
 - `GET /runtime/ipc-check` - Check if IPC is available
 
 Full API documentation available at: `http://localhost:8080/docs`
@@ -282,6 +314,36 @@ rest_command:
     method: POST
     content_type: application/json
     payload: '{"drive": {{ drive }}, "image_path": "{{ path }}"}'
+
+  amiberry_eject_floppy:
+    url: http://localhost:8080/runtime/eject-floppy
+    method: POST
+    content_type: application/json
+    payload: '{"drive": {{ drive }}}'
+
+  amiberry_set_volume:
+    url: http://localhost:8080/runtime/volume
+    method: POST
+    content_type: application/json
+    payload: '{"volume": {{ volume }}}'
+
+  amiberry_mute:
+    url: http://localhost:8080/runtime/mute
+    method: POST
+
+  amiberry_unmute:
+    url: http://localhost:8080/runtime/unmute
+    method: POST
+
+  amiberry_fullscreen:
+    url: http://localhost:8080/runtime/fullscreen
+    method: POST
+
+  amiberry_warp:
+    url: http://localhost:8080/runtime/warp
+    method: POST
+    content_type: application/json
+    payload: '{"enabled": {{ enabled }}}'
 
 sensor:
   - platform: rest
@@ -573,6 +635,74 @@ curl -X POST http://localhost:8080/runtime/config \
 
 # Quit Amiberry gracefully
 curl -X POST http://localhost:8080/runtime/quit
+
+# Eject floppy from DF0
+curl -X POST http://localhost:8080/runtime/eject-floppy \
+  -H "Content-Type: application/json" \
+  -d '{"drive": 0}'
+
+# Eject CD
+curl -X POST http://localhost:8080/runtime/eject-cd
+
+# List floppy drives
+curl http://localhost:8080/runtime/list-floppies
+
+# List available configs
+curl http://localhost:8080/runtime/configs
+
+# Get current volume
+curl http://localhost:8080/runtime/volume
+
+# Set volume to 50%
+curl -X POST http://localhost:8080/runtime/volume \
+  -H "Content-Type: application/json" \
+  -d '{"volume": 50}'
+
+# Mute/Unmute audio
+curl -X POST http://localhost:8080/runtime/mute
+curl -X POST http://localhost:8080/runtime/unmute
+
+# Toggle fullscreen
+curl -X POST http://localhost:8080/runtime/fullscreen
+
+# Get warp mode status
+curl http://localhost:8080/runtime/warp
+
+# Enable warp mode
+curl -X POST http://localhost:8080/runtime/warp \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": true}'
+
+# Disable warp mode
+curl -X POST http://localhost:8080/runtime/warp \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": false}'
+
+# Get Amiberry version
+curl http://localhost:8080/runtime/version
+
+# Ping (test connection)
+curl http://localhost:8080/runtime/ping
+
+# Advance 1 frame (when paused)
+curl -X POST http://localhost:8080/runtime/frame-advance \
+  -H "Content-Type: application/json" \
+  -d '{"count": 1}'
+
+# Send mouse movement
+curl -X POST http://localhost:8080/runtime/mouse \
+  -H "Content-Type: application/json" \
+  -d '{"dx": 10, "dy": 5, "buttons": 0}'
+
+# Set mouse speed
+curl -X POST http://localhost:8080/runtime/mouse-speed \
+  -H "Content-Type: application/json" \
+  -d '{"speed": 100}'
+
+# Send key press (keycode 0x45 = ESC, state 1 = press)
+curl -X POST http://localhost:8080/runtime/key \
+  -H "Content-Type: application/json" \
+  -d '{"keycode": 69, "state": 1}'
 ```
 
 ---
@@ -783,8 +913,53 @@ case "$1" in
       -H "Content-Type: application/json" \
       -d "{\"drive\": $2, \"image_path\": \"$3\"}"
     ;;
+  "eject")
+    if [ -z "$2" ]; then
+      echo "Usage: $0 eject <drive 0-3>"
+      exit 1
+    fi
+    curl -s -X POST $BASE_URL/runtime/eject-floppy \
+      -H "Content-Type: application/json" \
+      -d "{\"drive\": $2}"
+    ;;
+  "floppies")
+    curl -s $BASE_URL/runtime/list-floppies | jq .
+    ;;
+  "volume")
+    if [ -z "$2" ]; then
+      curl -s $BASE_URL/runtime/volume | jq .
+    else
+      curl -s -X POST $BASE_URL/runtime/volume \
+        -H "Content-Type: application/json" \
+        -d "{\"volume\": $2}"
+    fi
+    ;;
+  "mute")
+    curl -s -X POST $BASE_URL/runtime/mute
+    ;;
+  "unmute")
+    curl -s -X POST $BASE_URL/runtime/unmute
+    ;;
+  "fullscreen")
+    curl -s -X POST $BASE_URL/runtime/fullscreen
+    ;;
+  "warp")
+    if [ -z "$2" ]; then
+      curl -s $BASE_URL/runtime/warp | jq .
+    else
+      curl -s -X POST $BASE_URL/runtime/warp \
+        -H "Content-Type: application/json" \
+        -d "{\"enabled\": $2}"
+    fi
+    ;;
+  "ping")
+    curl -s $BASE_URL/runtime/ping | jq .
+    ;;
+  "amiversion")
+    curl -s $BASE_URL/runtime/version | jq .
+    ;;
   *)
-    echo "Usage: $0 {a500|a1200|cd32|workbench|stop|status|configs|roms|version|whdload <term>|cd <path>|pause|resume|reset|screenshot [path]|insert <drive> <path>}"
+    echo "Usage: $0 {a500|a1200|cd32|workbench|stop|status|configs|roms|version|whdload <term>|cd <path>|pause|resume|reset|screenshot [path]|insert <drive> <path>|eject <drive>|floppies|volume [0-100]|mute|unmute|fullscreen|warp [true|false]|ping|amiversion}"
     exit 1
     ;;
 esac

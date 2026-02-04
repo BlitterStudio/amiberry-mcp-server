@@ -48,7 +48,7 @@ amiberry-mcp-server/
 │   └── amiberry_mcp/
 │       ├── __init__.py
 │       ├── config.py          # Shared configuration
-│       ├── server.py          # MCP server (32 tools)
+│       ├── server.py          # MCP server (48 tools)
 │       ├── http_server.py     # HTTP API server
 │       ├── ipc_client.py      # IPC client for runtime control
 │       ├── uae_config.py      # Config file parser/generator
@@ -213,19 +213,66 @@ Try asking Claude:
 | `get_amiberry_version` | Get Amiberry version info |
 
 ### Runtime Control Tools
+
+#### Emulation Control
 | Tool | Description |
 |------|-------------|
 | `pause_emulation` | Pause a running emulation |
 | `resume_emulation` | Resume a paused emulation |
 | `reset_emulation` | Soft or hard reset |
+| `frame_advance` | Advance N frames when paused |
+
+#### Media Control
+| Tool | Description |
+|------|-------------|
+| `runtime_insert_floppy` | Insert floppy disk into drive |
+| `runtime_eject_floppy` | Eject floppy from drive |
+| `list_floppies` | List all floppy drives and contents |
+| `runtime_insert_cd` | Insert CD image |
+| `runtime_eject_cd` | Eject CD |
+
+#### State Management
+| Tool | Description |
+|------|-------------|
 | `runtime_screenshot` | Take a screenshot |
 | `runtime_save_state` | Save state while running |
 | `runtime_load_state` | Load a savestate |
-| `runtime_insert_floppy` | Insert floppy disk |
-| `runtime_insert_cd` | Insert CD image |
+
+#### Audio Control
+| Tool | Description |
+|------|-------------|
+| `set_volume` | Set master volume (0-100) |
+| `get_volume` | Get current volume |
+| `mute` | Mute audio |
+| `unmute` | Unmute audio |
+
+#### Display Control
+| Tool | Description |
+|------|-------------|
+| `toggle_fullscreen` | Toggle fullscreen/windowed mode |
+| `set_warp` | Enable/disable warp mode |
+| `get_warp` | Get warp mode status |
+
+#### Configuration
+| Tool | Description |
+|------|-------------|
 | `get_runtime_status` | Get emulation status |
 | `runtime_get_config` | Get config option value |
 | `runtime_set_config` | Set config option |
+| `list_configs` | List available config files |
+
+#### Input Control
+| Tool | Description |
+|------|-------------|
+| `send_key` | Send keyboard input |
+| `send_mouse` | Send mouse movement and buttons |
+| `set_mouse_speed` | Set mouse sensitivity (10-200) |
+
+#### Utility
+| Tool | Description |
+|------|-------------|
+| `get_version` | Get Amiberry and SDL version info |
+| `ping` | Test IPC connection (returns PONG) |
 | `check_ipc_connection` | Check IPC availability |
 
 > **Note:** Runtime control requires Amiberry built with `USE_IPC_SOCKET=ON`
@@ -268,8 +315,17 @@ Ask Claude:
 - "Take a screenshot of the current state"
 - "Save the game state to checkpoint.uss"
 - "Insert disk 2 into drive DF0"
+- "Eject the floppy from drive 0"
+- "List what's in all the floppy drives"
 - "What's the current emulation status?"
 - "Set the floppy speed to 800"
+- "Set the volume to 50%"
+- "Mute the audio"
+- "Toggle fullscreen mode"
+- "Enable warp mode"
+- "Advance one frame"
+- "What version of Amiberry is running?"
+- "Ping Amiberry to check the connection"
 
 ## HTTP API
 
@@ -332,6 +388,29 @@ curl -X POST http://localhost:8080/runtime/screenshot \
 curl -X POST http://localhost:8080/runtime/insert-floppy \
   -H "Content-Type: application/json" \
   -d '{"drive": 0, "image_path": "/path/to/disk2.adf"}'
+curl -X POST http://localhost:8080/runtime/eject-floppy \
+  -H "Content-Type: application/json" \
+  -d '{"drive": 0}'
+curl http://localhost:8080/runtime/list-floppies
+
+# Audio control
+curl http://localhost:8080/runtime/volume
+curl -X POST http://localhost:8080/runtime/volume \
+  -H "Content-Type: application/json" \
+  -d '{"volume": 50}'
+curl -X POST http://localhost:8080/runtime/mute
+curl -X POST http://localhost:8080/runtime/unmute
+
+# Display control
+curl -X POST http://localhost:8080/runtime/fullscreen
+curl http://localhost:8080/runtime/warp
+curl -X POST http://localhost:8080/runtime/warp \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": true}'
+
+# Utility
+curl http://localhost:8080/runtime/version
+curl http://localhost:8080/runtime/ping
 ```
 
 ### API Endpoints
@@ -379,6 +458,8 @@ curl -X POST http://localhost:8080/runtime/insert-floppy \
 | `/version` | GET | Get Amiberry version |
 
 #### Runtime Control Endpoints
+
+**Emulation Control**
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/runtime/status` | GET | Get emulation status |
@@ -386,13 +467,58 @@ curl -X POST http://localhost:8080/runtime/insert-floppy \
 | `/runtime/resume` | POST | Resume emulation |
 | `/runtime/reset` | POST | Soft or hard reset |
 | `/runtime/quit` | POST | Quit Amiberry |
+| `/runtime/frame-advance` | POST | Advance N frames when paused |
+
+**Media Control**
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/runtime/insert-floppy` | POST | Insert floppy disk |
+| `/runtime/eject-floppy` | POST | Eject floppy from drive |
+| `/runtime/list-floppies` | GET | List all floppy drives |
+| `/runtime/insert-cd` | POST | Insert CD image |
+| `/runtime/eject-cd` | POST | Eject CD |
+
+**State Management**
+| Endpoint | Method | Description |
+|----------|--------|-------------|
 | `/runtime/screenshot` | POST | Take a screenshot |
 | `/runtime/save-state` | POST | Save state while running |
 | `/runtime/load-state` | POST | Load a savestate |
-| `/runtime/insert-floppy` | POST | Insert floppy disk |
-| `/runtime/insert-cd` | POST | Insert CD image |
+
+**Audio Control**
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/runtime/volume` | GET | Get current volume |
+| `/runtime/volume` | POST | Set volume (0-100) |
+| `/runtime/mute` | POST | Mute audio |
+| `/runtime/unmute` | POST | Unmute audio |
+
+**Display Control**
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/runtime/fullscreen` | POST | Toggle fullscreen |
+| `/runtime/warp` | GET | Get warp mode status |
+| `/runtime/warp` | POST | Set warp mode |
+
+**Configuration**
+| Endpoint | Method | Description |
+|----------|--------|-------------|
 | `/runtime/config/{option}` | GET | Get config option value |
 | `/runtime/config` | POST | Set config option |
+| `/runtime/configs` | GET | List available configs |
+
+**Input Control**
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/runtime/key` | POST | Send keyboard input |
+| `/runtime/mouse` | POST | Send mouse input |
+| `/runtime/mouse-speed` | POST | Set mouse sensitivity |
+
+**Utility**
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/runtime/version` | GET | Get Amiberry version |
+| `/runtime/ping` | GET | Test IPC connection |
 | `/runtime/ipc-check` | GET | Check IPC availability |
 
 > **Note:** Runtime endpoints require Amiberry built with `USE_IPC_SOCKET=ON`
