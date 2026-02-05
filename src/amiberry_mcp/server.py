@@ -16,6 +16,13 @@ from mcp.server import Server
 from mcp.types import Tool, TextContent
 import mcp.server.stdio
 
+try:
+    from mcp.types import ImageContent
+
+    _HAS_IMAGE_CONTENT = True
+except ImportError:
+    _HAS_IMAGE_CONTENT = False
+
 from .config import (
     IS_LINUX,
     IS_MACOS,
@@ -63,6 +70,14 @@ CD_EXTENSIONS = [".iso", ".cue", ".chd", ".bin", ".nrg"]
 
 # Log directory for captured output
 LOG_DIR = AMIBERRY_HOME / "logs"
+
+# Process lifecycle tracking
+_amiberry_process: subprocess.Popen | None = None
+_amiberry_launch_cmd: list[str] | None = None
+_amiberry_log_path: Path | None = None
+
+# Log tailing state (byte offset per log file)
+_last_log_read_position: dict[str, int] = {}
 
 app = Server("amiberry-emulator")
 
@@ -1534,6 +1549,224 @@ async def list_tools() -> list[Tool]:
                 "properties": {},
             },
         ),
+        # === Process Lifecycle Management ===
+        Tool(
+            name="check_process_alive",
+            description="Check if the Amiberry process is still running. Returns PID, running status, and exit code/signal if terminated.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="get_process_info",
+            description="Get detailed process information: PID, running status, exit code, crash detection (signal-based termination).",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="kill_amiberry",
+            description="Force kill a running Amiberry process. Sends SIGTERM first, then SIGKILL after 5 seconds if needed.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="wait_for_exit",
+            description="Wait for the Amiberry process to exit. Returns the exit code when done or times out.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Maximum seconds to wait (default: 30)",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="restart_amiberry",
+            description="Kill the existing Amiberry process and re-launch with the same command that was used previously.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        # === Missing IPC Tool Wrappers ===
+        Tool(
+            name="runtime_read_memory",
+            description="Read memory from the emulated Amiga at a given address. Returns the value in hex and decimal.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "address": {
+                        "type": "string",
+                        "description": "Memory address (hex e.g. '0xBFE001' or decimal)",
+                    },
+                    "width": {
+                        "type": "integer",
+                        "description": "Bytes to read: 1, 2, or 4",
+                        "enum": [1, 2, 4],
+                    },
+                },
+                "required": ["address", "width"],
+            },
+        ),
+        Tool(
+            name="runtime_write_memory",
+            description="Write a value to the emulated Amiga memory at a given address.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "address": {
+                        "type": "string",
+                        "description": "Memory address (hex e.g. '0xBFE001' or decimal)",
+                    },
+                    "width": {
+                        "type": "integer",
+                        "description": "Bytes to write: 1, 2, or 4",
+                        "enum": [1, 2, 4],
+                    },
+                    "value": {
+                        "type": "integer",
+                        "description": "Value to write",
+                    },
+                },
+                "required": ["address", "width", "value"],
+            },
+        ),
+        Tool(
+            name="runtime_load_config",
+            description="Load a .uae configuration file into the running emulation. The config path can be absolute or just the filename if in the default config directory.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "config_path": {
+                        "type": "string",
+                        "description": "Path to the .uae config file",
+                    },
+                },
+                "required": ["config_path"],
+            },
+        ),
+        Tool(
+            name="runtime_debug_step_over",
+            description="Step over subroutine calls (execute JSR/BSR as a single step). Requires the debugger to be active.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        # === Screenshot with Image Data ===
+        Tool(
+            name="runtime_screenshot_view",
+            description="Take a screenshot and return the image data so Claude can see what is displayed on the emulation screen. Essential for debugging visual issues.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "Optional filename for the screenshot (default: auto-generated)",
+                    },
+                },
+            },
+        ),
+        # === Log Tailing and Crash Detection ===
+        Tool(
+            name="tail_log",
+            description="Get new log lines since the last read of this log file. Efficient for monitoring ongoing output without re-reading the entire file.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "log_name": {
+                        "type": "string",
+                        "description": "Name of the log file",
+                    },
+                },
+                "required": ["log_name"],
+            },
+        ),
+        Tool(
+            name="wait_for_log_pattern",
+            description="Wait for a specific pattern to appear in the log file. Useful for waiting until Amiberry has finished starting, or detecting specific events.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "log_name": {
+                        "type": "string",
+                        "description": "Name of the log file",
+                    },
+                    "pattern": {
+                        "type": "string",
+                        "description": "Regex pattern to search for",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Maximum seconds to wait (default: 30)",
+                    },
+                },
+                "required": ["log_name", "pattern"],
+            },
+        ),
+        Tool(
+            name="get_crash_info",
+            description="Detect if Amiberry crashed by checking process state and scanning logs for crash indicators (segfault, abort, assertion failures). Returns crash details if found.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "log_name": {
+                        "type": "string",
+                        "description": "Optional log file name to scan (default: most recent log)",
+                    },
+                },
+            },
+        ),
+        # === Workflow Tools ===
+        Tool(
+            name="health_check",
+            description="Comprehensive health check: verifies Amiberry process is running, IPC socket is responsive, and returns basic emulation status. Use this before any debugging session.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="launch_and_wait_for_ipc",
+            description="Launch Amiberry with logging enabled and wait until the IPC socket becomes available. Returns when ready for IPC commands or on timeout.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "config": {
+                        "type": "string",
+                        "description": "Config file name to use",
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Amiga model (A500, A500P, A600, A1200, A4000, CD32, CDTV)",
+                        "enum": ["A500", "A500P", "A600", "A1200", "A4000", "CD32", "CDTV"],
+                    },
+                    "disk_image": {
+                        "type": "string",
+                        "description": "Optional disk image to insert in DF0",
+                    },
+                    "lha_file": {
+                        "type": "string",
+                        "description": "Optional .lha file to launch",
+                    },
+                    "autostart": {
+                        "type": "boolean",
+                        "description": "Auto-start emulation (default: true)",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Max seconds to wait for IPC (default: 30)",
+                    },
+                },
+            },
+        ),
     ]
 
 
@@ -1575,8 +1808,9 @@ def _find_config_path(config_name: str) -> Path | None:
 
 
 @app.call_tool()
-async def call_tool(name: str, arguments: Any) -> list[TextContent]:
+async def call_tool(name: str, arguments: Any) -> list:
     """Handle tool execution."""
+    global _amiberry_process, _amiberry_launch_cmd, _amiberry_log_path
 
     if name == "get_platform_info":
         info = get_platform_info()
@@ -1724,12 +1958,14 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
 
         try:
             # Launch in background
-            subprocess.Popen(
+            _amiberry_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
+            _amiberry_launch_cmd = cmd
+            _amiberry_log_path = None
 
             if model:
                 result = f"Launched Amiberry with model: {model}"
@@ -1739,6 +1975,8 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                 result = f"Launched Amiberry with LHA: {Path(lha_file).name}"
             else:
                 result = "Launched Amiberry"
+
+            result += f"\n  PID: {_amiberry_process.pid}"
 
             if "disk_image" in arguments and arguments["disk_image"]:
                 result += f"\n  Disk in DF0: {Path(arguments['disk_image']).name}"
@@ -1842,15 +2080,18 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             cmd.append("-G")
 
         try:
-            with open(log_path, "w") as log_file:
-                subprocess.Popen(
-                    cmd,
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,
-                )
+            log_file = open(log_path, "w")
+            _amiberry_process = subprocess.Popen(
+                cmd,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            _amiberry_launch_cmd = cmd
+            _amiberry_log_path = log_path
 
             result = f"Launched Amiberry with logging enabled\n"
+            result += f"PID: {_amiberry_process.pid}\n"
             result += f"Log file: {log_path}\n"
             result += f"Command: {' '.join(cmd)}"
 
@@ -2027,17 +2268,19 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             cmd.append("-G")
 
         try:
-            subprocess.Popen(
+            _amiberry_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
+            _amiberry_launch_cmd = cmd
+            _amiberry_log_path = None
 
             return [
                 TextContent(
                     type="text",
-                    text=f"Launched WHDLoad game: {lha_path.name}\nModel: {model}",
+                    text=f"Launched WHDLoad game: {lha_path.name}\nModel: {model}\nPID: {_amiberry_process.pid}",
                 )
             ]
         except Exception as e:
@@ -2111,17 +2354,19 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             cmd.append("-G")
 
         try:
-            subprocess.Popen(
+            _amiberry_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
+            _amiberry_launch_cmd = cmd
+            _amiberry_log_path = None
 
             return [
                 TextContent(
                     type="text",
-                    text=f"Launched CD image: {cd_path.name}\nModel: {model}",
+                    text=f"Launched CD image: {cd_path.name}\nModel: {model}\nPID: {_amiberry_process.pid}",
                 )
             ]
         except Exception as e:
@@ -2189,14 +2434,17 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             cmd.append("-G")
 
         try:
-            subprocess.Popen(
+            _amiberry_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
+            _amiberry_launch_cmd = cmd
+            _amiberry_log_path = None
 
             result = f"Launched with disk swapper ({len(verified_paths)} disks):\n"
+            result += f"  PID: {_amiberry_process.pid}\n"
             for i, path in enumerate(verified_paths):
                 result += f"  Disk {i + 1}: {Path(path).name}\n"
 
@@ -3879,6 +4127,723 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             return [TextContent(type="text", text=f"Connection error: {str(e)}")]
         except Exception as e:
             return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    # === Process Lifecycle Management ===
+
+    elif name == "check_process_alive":
+        if _amiberry_process is None:
+            return [
+                TextContent(
+                    type="text",
+                    text="No Amiberry process tracked. Launch Amiberry first.",
+                )
+            ]
+        returncode = _amiberry_process.poll()
+        if returncode is None:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"Amiberry is RUNNING (PID: {_amiberry_process.pid})",
+                )
+            ]
+        else:
+            signal_info = ""
+            if returncode < 0:
+                import signal
+
+                try:
+                    sig = signal.Signals(-returncode)
+                    signal_info = f" (killed by signal {sig.name})"
+                except ValueError:
+                    signal_info = f" (killed by signal {-returncode})"
+            return [
+                TextContent(
+                    type="text",
+                    text=f"Amiberry has EXITED with code {returncode}{signal_info}",
+                )
+            ]
+
+    elif name == "get_process_info":
+        if _amiberry_process is None:
+            return [
+                TextContent(
+                    type="text",
+                    text="No Amiberry process tracked. Launch Amiberry first.",
+                )
+            ]
+        returncode = _amiberry_process.poll()
+        info_parts = [f"PID: {_amiberry_process.pid}"]
+
+        if returncode is None:
+            info_parts.append("Status: RUNNING")
+        else:
+            info_parts.append(f"Status: EXITED")
+            info_parts.append(f"Exit code: {returncode}")
+            if returncode < 0:
+                import signal
+
+                try:
+                    sig = signal.Signals(-returncode)
+                    info_parts.append(f"Signal: {sig.name}")
+                    info_parts.append("CRASH DETECTED: Process was killed by a signal")
+                except ValueError:
+                    info_parts.append(f"Signal: {-returncode}")
+                    info_parts.append("CRASH DETECTED: Process was killed by a signal")
+            elif returncode != 0:
+                info_parts.append("ABNORMAL EXIT: Non-zero exit code")
+
+        if _amiberry_launch_cmd:
+            info_parts.append(f"Command: {' '.join(_amiberry_launch_cmd)}")
+        if _amiberry_log_path:
+            info_parts.append(f"Log file: {_amiberry_log_path}")
+
+        return [TextContent(type="text", text="\n".join(info_parts))]
+
+    elif name == "kill_amiberry":
+        if _amiberry_process is None or _amiberry_process.poll() is not None:
+            return [
+                TextContent(
+                    type="text",
+                    text="No running Amiberry process to kill.",
+                )
+            ]
+        pid = _amiberry_process.pid
+        _amiberry_process.terminate()
+        try:
+            _amiberry_process.wait(timeout=5)
+            return [
+                TextContent(
+                    type="text",
+                    text=f"Amiberry process (PID {pid}) terminated gracefully.",
+                )
+            ]
+        except subprocess.TimeoutExpired:
+            _amiberry_process.kill()
+            try:
+                _amiberry_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            return [
+                TextContent(
+                    type="text",
+                    text=f"Amiberry process (PID {pid}) force killed (SIGKILL).",
+                )
+            ]
+
+    elif name == "wait_for_exit":
+        if _amiberry_process is None:
+            return [
+                TextContent(
+                    type="text",
+                    text="No Amiberry process tracked. Launch Amiberry first.",
+                )
+            ]
+        returncode = _amiberry_process.poll()
+        if returncode is not None:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"Amiberry already exited with code {returncode}.",
+                )
+            ]
+        timeout = arguments.get("timeout", 30)
+        try:
+            returncode = _amiberry_process.wait(timeout=timeout)
+            return [
+                TextContent(
+                    type="text",
+                    text=f"Amiberry exited with code {returncode}.",
+                )
+            ]
+        except subprocess.TimeoutExpired:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"Timeout after {timeout}s. Amiberry still running (PID {_amiberry_process.pid}).",
+                )
+            ]
+
+    elif name == "restart_amiberry":
+        if _amiberry_launch_cmd is None:
+            return [
+                TextContent(
+                    type="text",
+                    text="No previous launch command stored. Use a launch tool first.",
+                )
+            ]
+        # Kill existing process if running
+        if _amiberry_process is not None and _amiberry_process.poll() is None:
+            _amiberry_process.terminate()
+            try:
+                _amiberry_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _amiberry_process.kill()
+                try:
+                    _amiberry_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+
+        # Re-launch with stored command
+        cmd = _amiberry_launch_cmd
+        try:
+            if _amiberry_log_path:
+                log_file = open(_amiberry_log_path, "w")
+                _amiberry_process = subprocess.Popen(
+                    cmd,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            else:
+                _amiberry_process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            return [
+                TextContent(
+                    type="text",
+                    text=f"Amiberry restarted (PID: {_amiberry_process.pid})\nCommand: {' '.join(cmd)}",
+                )
+            ]
+        except Exception as e:
+            return [
+                TextContent(type="text", text=f"Error restarting Amiberry: {str(e)}")
+            ]
+
+    # === Missing IPC Tool Wrappers ===
+
+    elif name == "runtime_read_memory":
+        address_str = arguments["address"]
+        width = arguments["width"]
+        try:
+            address = int(address_str, 0)  # Handles both hex (0x...) and decimal
+            client = AmiberryIPCClient(prefer_dbus=False)
+            value = await client.read_memory(address, width)
+            if value is not None:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Memory at 0x{address:08X} ({width} byte{'s' if width > 1 else ''}): 0x{value:0{width*2}X} ({value})",
+                    )
+                ]
+            else:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Failed to read memory at {address_str}.",
+                    )
+                ]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid address: {str(e)}")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_write_memory":
+        address_str = arguments["address"]
+        width = arguments["width"]
+        value = arguments["value"]
+        try:
+            address = int(address_str, 0)
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.write_memory(address, width, value)
+            if success:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Wrote 0x{value:0{width*2}X} ({value}) to 0x{address:08X} ({width} byte{'s' if width > 1 else ''}).",
+                    )
+                ]
+            else:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Failed to write memory at {address_str}.",
+                    )
+                ]
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_load_config":
+        config_path = arguments["config_path"]
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.load_config(config_path)
+            if success:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Configuration loaded: {config_path}",
+                    )
+                ]
+            else:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Failed to load configuration: {config_path}",
+                    )
+                ]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "runtime_debug_step_over":
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.debug_step_over()
+            if success:
+                return [TextContent(type="text", text="Stepped over subroutine.")]
+            else:
+                return [
+                    TextContent(
+                        type="text",
+                        text="Failed to step over. Is the debugger active?",
+                    )
+                ]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    # === Screenshot with Image Data ===
+
+    elif name == "runtime_screenshot_view":
+        import base64
+
+        filename = arguments.get("filename")
+        if not filename:
+            from .config import SCREENSHOT_DIR
+
+            SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = str(SCREENSHOT_DIR / f"debug_{timestamp}.png")
+
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            success = await client.screenshot(filename)
+            if success:
+                screenshot_path = Path(filename)
+                if screenshot_path.exists():
+                    image_data = screenshot_path.read_bytes()
+                    b64_data = base64.b64encode(image_data).decode("utf-8")
+                    mime_type = (
+                        "image/png" if filename.lower().endswith(".png") else "image/bmp"
+                    )
+
+                    if _HAS_IMAGE_CONTENT:
+                        return [
+                            TextContent(
+                                type="text",
+                                text=f"Screenshot saved to: {filename}",
+                            ),
+                            ImageContent(
+                                type="image",
+                                data=b64_data,
+                                mimeType=mime_type,
+                            ),
+                        ]
+                    else:
+                        return [
+                            TextContent(
+                                type="text",
+                                text=f"Screenshot saved to: {filename}\nUse the Read tool to view this image file.",
+                            )
+                        ]
+                else:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=f"Screenshot command succeeded but file not found at: {filename}",
+                        )
+                    ]
+            else:
+                return [
+                    TextContent(type="text", text="Failed to take screenshot.")
+                ]
+        except IPCConnectionError as e:
+            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    # === Log Tailing and Crash Detection ===
+
+    elif name == "tail_log":
+        log_name = arguments["log_name"]
+        if not log_name.endswith(".log"):
+            log_name += ".log"
+        log_path = LOG_DIR / log_name
+
+        if not log_path.exists():
+            return [
+                TextContent(
+                    type="text",
+                    text=f"Error: Log file not found: {log_name}\nAvailable logs in: {LOG_DIR}",
+                )
+            ]
+
+        last_pos = _last_log_read_position.get(log_name, 0)
+        try:
+            with open(log_path, "r", errors="replace") as f:
+                f.seek(last_pos)
+                new_content = f.read()
+                new_pos = f.tell()
+
+            _last_log_read_position[log_name] = new_pos
+
+            if new_content:
+                line_count = new_content.count("\n")
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"New log output ({line_count} lines):\n\n{new_content}",
+                    )
+                ]
+            else:
+                return [
+                    TextContent(
+                        type="text",
+                        text="No new log output since last read.",
+                    )
+                ]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error reading log: {str(e)}")]
+
+    elif name == "wait_for_log_pattern":
+        import re
+
+        log_name = arguments["log_name"]
+        pattern = arguments["pattern"]
+        timeout = arguments.get("timeout", 30)
+
+        if not log_name.endswith(".log"):
+            log_name += ".log"
+        log_path = LOG_DIR / log_name
+
+        try:
+            compiled_pattern = re.compile(pattern)
+        except re.error as e:
+            return [
+                TextContent(type="text", text=f"Invalid regex pattern: {str(e)}")
+            ]
+
+        start_time = asyncio.get_event_loop().time()
+        last_pos = _last_log_read_position.get(log_name, 0)
+
+        while True:
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed >= timeout:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Timeout after {timeout}s. Pattern '{pattern}' not found in {log_name}.",
+                    )
+                ]
+
+            if log_path.exists():
+                try:
+                    with open(log_path, "r", errors="replace") as f:
+                        f.seek(last_pos)
+                        new_content = f.read()
+                        new_pos = f.tell()
+
+                    if new_content:
+                        for line in new_content.splitlines():
+                            if compiled_pattern.search(line):
+                                _last_log_read_position[log_name] = new_pos
+                                return [
+                                    TextContent(
+                                        type="text",
+                                        text=f"Pattern '{pattern}' found after {elapsed:.1f}s:\n{line}",
+                                    )
+                                ]
+                        last_pos = new_pos
+                except Exception:
+                    pass
+
+            await asyncio.sleep(0.5)
+
+    elif name == "get_crash_info":
+        result_parts = []
+
+        # Check process state
+        if _amiberry_process is not None:
+            returncode = _amiberry_process.poll()
+            if returncode is None:
+                result_parts.append(
+                    f"Process: RUNNING (PID {_amiberry_process.pid})"
+                )
+            else:
+                if returncode < 0:
+                    import signal
+
+                    try:
+                        sig = signal.Signals(-returncode)
+                        result_parts.append(
+                            f"CRASH DETECTED: Process killed by signal {sig.name} (code {returncode})"
+                        )
+                    except ValueError:
+                        result_parts.append(
+                            f"CRASH DETECTED: Process killed by signal {-returncode}"
+                        )
+                elif returncode != 0:
+                    result_parts.append(
+                        f"ABNORMAL EXIT: Process exited with code {returncode}"
+                    )
+                else:
+                    result_parts.append("Process: Exited normally (code 0)")
+        else:
+            result_parts.append(
+                "Process: Not tracked (launched externally or not yet launched)"
+            )
+
+        # Scan logs for crash patterns
+        log_name = arguments.get("log_name")
+        crash_patterns = [
+            "Segmentation fault",
+            "SIGSEGV",
+            "SIGABRT",
+            "Aborted",
+            "core dumped",
+            "assertion failed",
+            "FATAL",
+            "Bus error",
+            "SIGBUS",
+            "double free",
+            "heap-buffer-overflow",
+            "stack-buffer-overflow",
+            "AddressSanitizer",
+            "undefined behavior",
+        ]
+
+        log_files_to_scan: list[Path] = []
+        if log_name:
+            if not log_name.endswith(".log"):
+                log_name += ".log"
+            log_files_to_scan = [LOG_DIR / log_name]
+        elif _amiberry_log_path:
+            log_files_to_scan = [_amiberry_log_path]
+        elif LOG_DIR.exists():
+            log_files_to_scan = sorted(
+                LOG_DIR.glob("*.log"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )[:1]
+
+        for lp in log_files_to_scan:
+            if lp.exists():
+                try:
+                    content = lp.read_text(errors="replace")
+                    found_crashes = []
+                    for i, line in enumerate(content.splitlines()):
+                        for cp in crash_patterns:
+                            if cp.lower() in line.lower():
+                                found_crashes.append(f"  Line {i + 1}: {line.strip()}")
+                                break
+
+                    if found_crashes:
+                        result_parts.append(
+                            f"\nCrash indicators in {lp.name}:"
+                        )
+                        result_parts.extend(found_crashes[:20])
+                        if len(found_crashes) > 20:
+                            result_parts.append(
+                                f"  ... and {len(found_crashes) - 20} more"
+                            )
+                    else:
+                        result_parts.append(
+                            f"\nNo crash indicators found in {lp.name}"
+                        )
+                except Exception as e:
+                    result_parts.append(f"\nError reading {lp.name}: {str(e)}")
+
+        if not log_files_to_scan:
+            result_parts.append("\nNo log files found to scan.")
+
+        return [TextContent(type="text", text="\n".join(result_parts))]
+
+    # === Workflow Tools ===
+
+    elif name == "health_check":
+        results = []
+
+        # 1. Process check
+        if _amiberry_process is not None:
+            rc = _amiberry_process.poll()
+            if rc is None:
+                results.append(f"Process: RUNNING (PID {_amiberry_process.pid})")
+            else:
+                results.append(f"Process: EXITED (code {rc})")
+        else:
+            results.append("Process: NOT TRACKED")
+
+        # 2. IPC check
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            pong = await client.ping()
+            if pong:
+                results.append("IPC Ping: OK")
+
+                # 3. Get status
+                status = await client.get_status()
+                if status:
+                    results.append(f"Paused: {status.get('Paused', '?')}")
+                    results.append(f"Config: {status.get('Config', '?')}")
+                    for key in ["Floppy0", "Floppy1", "Floppy2", "Floppy3"]:
+                        val = status.get(key)
+                        if val:
+                            results.append(f"{key}: {val}")
+                else:
+                    results.append("Status: Failed to query")
+
+                # 4. FPS
+                fps_info = await client.get_fps()
+                if fps_info:
+                    results.append(
+                        f"FPS: {fps_info.get('fps', '?')} (idle: {fps_info.get('idle', '?')}%)"
+                    )
+            else:
+                results.append("IPC Ping: FAILED (socket exists but not responding)")
+        except IPCConnectionError:
+            results.append("IPC: NOT CONNECTED (socket not found or connection refused)")
+        except Exception as e:
+            results.append(f"IPC: ERROR ({str(e)})")
+
+        return [
+            TextContent(
+                type="text",
+                text="Health Check:\n" + "\n".join(f"  {r}" for r in results),
+            )
+        ]
+
+    elif name == "launch_and_wait_for_ipc":
+        # Kill existing process if running
+        if _amiberry_process is not None and _amiberry_process.poll() is None:
+            _amiberry_process.terminate()
+            try:
+                _amiberry_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _amiberry_process.kill()
+                try:
+                    _amiberry_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+
+        # Build command
+        config = arguments.get("config")
+        model = arguments.get("model")
+        disk_image = arguments.get("disk_image")
+        lha_file = arguments.get("lha_file")
+        autostart = arguments.get("autostart", True)
+        timeout = arguments.get("timeout", 30)
+
+        cmd = [EMULATOR_BINARY, "--log"]
+
+        if model:
+            cmd.extend(["--model", model])
+        elif config:
+            config_path = _find_config_path(config)
+            if not config_path:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Error: Configuration '{config}' not found",
+                    )
+                ]
+            cmd.extend(["-f", str(config_path)])
+
+        if disk_image:
+            cmd.extend(["-0", disk_image])
+
+        if lha_file:
+            lha_path = Path(lha_file)
+            if not lha_path.exists():
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Error: LHA file not found: {lha_file}",
+                    )
+                ]
+            cmd.append(str(lha_path))
+
+        if autostart:
+            cmd.append("-G")
+
+        # Launch with logging
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_name = f"amiberry_{timestamp}.log"
+        log_path = LOG_DIR / log_name
+
+        try:
+            log_file = open(log_path, "w")
+            _amiberry_process = subprocess.Popen(
+                cmd,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            _amiberry_launch_cmd = cmd
+            _amiberry_log_path = log_path
+        except Exception as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"Error launching Amiberry: {str(e)}",
+                )
+            ]
+
+        # Wait for IPC socket to become available
+        start_time = asyncio.get_event_loop().time()
+        ipc_ready = False
+
+        while True:
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed >= timeout:
+                break
+
+            # Check if process died
+            if _amiberry_process.poll() is not None:
+                rc = _amiberry_process.returncode
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Amiberry exited before IPC became available (exit code: {rc}).\nLog file: {log_path}\nCommand: {' '.join(cmd)}",
+                    )
+                ]
+
+            try:
+                client = AmiberryIPCClient(prefer_dbus=False)
+                pong = await client.ping()
+                if pong:
+                    ipc_ready = True
+                    break
+            except Exception:
+                pass
+
+            await asyncio.sleep(0.5)
+
+        if ipc_ready:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"Amiberry launched and IPC ready!\n  PID: {_amiberry_process.pid}\n  Log: {log_path}\n  Command: {' '.join(cmd)}\n  IPC connected after {elapsed:.1f}s",
+                )
+            ]
+        else:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"Amiberry launched but IPC not responding after {timeout}s.\n  PID: {_amiberry_process.pid}\n  Log: {log_path}\n  Process still running: {_amiberry_process.poll() is None}",
+                )
+            ]
 
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
