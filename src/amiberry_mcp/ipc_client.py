@@ -1436,6 +1436,16 @@ class AmiberryIPCClient:
         success, _ = await self._send_socket_command("DEBUG_STEP", str(count))
         return success
 
+    async def debug_step_over(self) -> bool:
+        """
+        Step over subroutine calls (execute JSR/BSR as a single step).
+
+        Returns:
+            True if successful
+        """
+        success, _ = await self._send_socket_command("DEBUG_STEP_OVER")
+        return success
+
     async def debug_continue(self) -> bool:
         """
         Continue execution until next breakpoint.

@@ -144,6 +144,35 @@ The API server provides these endpoints:
 - `GET /runtime/ping` - Test IPC connection
 - `GET /runtime/ipc-check` - Check if IPC is available
 
+### Process Lifecycle & Troubleshooting Endpoints
+
+**Process Management**
+- `GET /process/alive` - Check if Amiberry process is running
+- `GET /process/info` - Get detailed process info (PID, exit code, signal, crash detection)
+- `POST /process/kill` - Force kill the running Amiberry process
+- `POST /process/wait-for-exit` - Wait for process to exit with timeout
+- `POST /process/restart` - Kill and re-launch with same command
+- `POST /process/crash-info` - Detect crashes via process state and log scanning
+
+**Memory Access**
+- `POST /runtime/memory/read` - Read emulated Amiga memory (1/2/4 bytes)
+- `POST /runtime/memory/write` - Write emulated Amiga memory
+
+**Runtime Config & Debug**
+- `POST /runtime/load-config` - Load .uae config into running emulation
+- `POST /runtime/debug/step-over` - Step over subroutine calls (JSR/BSR)
+
+**Screenshot Analysis**
+- `POST /runtime/screenshot-view` - Take screenshot and return base64-encoded image data
+
+**Log Tailing**
+- `POST /logs/tail` - Get new log lines since last read (incremental)
+- `POST /logs/wait-for-pattern` - Wait for regex pattern in log output
+
+**Workflow Automation**
+- `GET /health` - Comprehensive health check (process + IPC + emulation status)
+- `POST /launch-and-wait` - Launch Amiberry and wait until IPC socket is ready
+
 Full API documentation available at: `http://localhost:8080/docs`
 
 ---

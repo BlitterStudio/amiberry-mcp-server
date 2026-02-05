@@ -68,6 +68,12 @@ LOG_DIR = AMIBERRY_HOME / "logs"
 # ROM directory
 ROM_DIR = AMIBERRY_HOME / "Kickstarts" if IS_MACOS else AMIBERRY_HOME / "kickstarts"
 
+# Process lifecycle tracking
+_http_amiberry_process: subprocess.Popen | None = None
+_http_amiberry_launch_cmd: list[str] | None = None
+_http_amiberry_log_path: Path | None = None
+_http_last_log_read_position: dict[str, int] = {}
+
 # FastAPI app
 app = FastAPI(
     title="Amiberry HTTP API",
@@ -361,6 +367,53 @@ class RuntimeGetDriveStateRequest(BaseModel):
     drive: Optional[int] = None
 
 
+# Autonomous troubleshooting request models
+class WaitForExitRequest(BaseModel):
+    timeout: int = 30
+
+
+class RuntimeReadMemoryRequest(BaseModel):
+    address: str
+    width: int
+
+
+class RuntimeWriteMemoryRequest(BaseModel):
+    address: str
+    width: int
+    value: int
+
+
+class RuntimeLoadConfigRequest(BaseModel):
+    config_path: str
+
+
+class RuntimeScreenshotViewRequest(BaseModel):
+    filename: Optional[str] = None
+
+
+class TailLogRequest(BaseModel):
+    log_name: str
+
+
+class WaitForLogPatternRequest(BaseModel):
+    log_name: str
+    pattern: str
+    timeout: int = 30
+
+
+class GetCrashInfoRequest(BaseModel):
+    log_name: Optional[str] = None
+
+
+class LaunchAndWaitRequest(BaseModel):
+    config: Optional[str] = None
+    model: Optional[str] = None
+    disk_image: Optional[str] = None
+    lha_file: Optional[str] = None
+    autostart: bool = True
+    timeout: int = 30
+
+
 def _is_amiberry_running() -> bool:
     """Check if Amiberry process is currently running."""
     try:
@@ -616,12 +669,15 @@ async def launch_amiberry(request: LaunchRequest):
 
     try:
         # Launch in background
-        subprocess.Popen(
+        global _http_amiberry_process, _http_amiberry_launch_cmd, _http_amiberry_log_path
+        _http_amiberry_process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+        _http_amiberry_launch_cmd = cmd
+        _http_amiberry_log_path = None
 
         if request.model:
             message = f"Launched Amiberry with model: {request.model}"
@@ -741,13 +797,16 @@ async def launch_with_logging(request: LaunchWithLoggingRequest):
         cmd.append("-G")
 
     try:
+        global _http_amiberry_process, _http_amiberry_launch_cmd, _http_amiberry_log_path
         with open(log_path, "w") as log_file:
-            subprocess.Popen(
+            _http_amiberry_process = subprocess.Popen(
                 cmd,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
+        _http_amiberry_launch_cmd = cmd
+        _http_amiberry_log_path = log_path
 
         return StatusResponse(
             success=True,
@@ -896,12 +955,15 @@ async def launch_whdload(
         cmd.append("-G")
 
     try:
-        subprocess.Popen(
+        global _http_amiberry_process, _http_amiberry_launch_cmd, _http_amiberry_log_path
+        _http_amiberry_process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+        _http_amiberry_launch_cmd = cmd
+        _http_amiberry_log_path = None
 
         return StatusResponse(
             success=True,
@@ -968,12 +1030,15 @@ async def launch_cd(request: LaunchCDRequest):
         cmd.append("-G")
 
     try:
-        subprocess.Popen(
+        global _http_amiberry_process, _http_amiberry_launch_cmd, _http_amiberry_log_path
+        _http_amiberry_process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+        _http_amiberry_launch_cmd = cmd
+        _http_amiberry_log_path = None
 
         return StatusResponse(
             success=True,
@@ -1064,12 +1129,15 @@ async def launch_with_disk_swapper(request: DiskSwapperRequest):
         cmd.append("-G")
 
     try:
-        subprocess.Popen(
+        global _http_amiberry_process, _http_amiberry_launch_cmd, _http_amiberry_log_path
+        _http_amiberry_process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+        _http_amiberry_launch_cmd = cmd
+        _http_amiberry_log_path = None
 
         return StatusResponse(
             success=True,
@@ -3591,6 +3659,601 @@ async def runtime_get_dma_state():
         raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+# === Process Lifecycle Management ===
+
+
+@app.get("/process/alive")
+async def check_process_alive():
+    """Check if the Amiberry process is still running."""
+    if _http_amiberry_process is None:
+        return StatusResponse(
+            success=False,
+            message="No Amiberry process tracked. Launch Amiberry first.",
+        )
+    returncode = _http_amiberry_process.poll()
+    if returncode is None:
+        return StatusResponse(
+            success=True,
+            message=f"Amiberry is RUNNING (PID: {_http_amiberry_process.pid})",
+            data={"pid": _http_amiberry_process.pid, "running": True},
+        )
+    else:
+        signal_info = ""
+        if returncode < 0:
+            import signal
+            try:
+                sig = signal.Signals(-returncode)
+                signal_info = f" (killed by signal {sig.name})"
+            except ValueError:
+                signal_info = f" (killed by signal {-returncode})"
+        return StatusResponse(
+            success=True,
+            message=f"Amiberry has EXITED with code {returncode}{signal_info}",
+            data={"pid": _http_amiberry_process.pid, "running": False, "exit_code": returncode},
+        )
+
+
+@app.get("/process/info")
+async def get_process_info():
+    """Get detailed process information."""
+    if _http_amiberry_process is None:
+        return StatusResponse(
+            success=False,
+            message="No Amiberry process tracked. Launch Amiberry first.",
+        )
+    returncode = _http_amiberry_process.poll()
+    data = {"pid": _http_amiberry_process.pid}
+
+    if returncode is None:
+        data["status"] = "RUNNING"
+    else:
+        data["status"] = "EXITED"
+        data["exit_code"] = returncode
+        if returncode < 0:
+            import signal
+            try:
+                sig = signal.Signals(-returncode)
+                data["signal"] = sig.name
+                data["crash"] = True
+            except ValueError:
+                data["signal"] = str(-returncode)
+                data["crash"] = True
+        elif returncode != 0:
+            data["crash"] = False
+            data["abnormal_exit"] = True
+
+    if _http_amiberry_launch_cmd:
+        data["command"] = " ".join(_http_amiberry_launch_cmd)
+    if _http_amiberry_log_path:
+        data["log_file"] = str(_http_amiberry_log_path)
+
+    return StatusResponse(success=True, message="Process info", data=data)
+
+
+@app.post("/process/kill")
+async def kill_amiberry_process():
+    """Force kill the running Amiberry process."""
+    if _http_amiberry_process is None or _http_amiberry_process.poll() is not None:
+        return StatusResponse(success=False, message="No running Amiberry process to kill.")
+
+    pid = _http_amiberry_process.pid
+    _http_amiberry_process.terminate()
+    try:
+        _http_amiberry_process.wait(timeout=5)
+        return StatusResponse(success=True, message=f"Amiberry process (PID {pid}) terminated gracefully.")
+    except subprocess.TimeoutExpired:
+        _http_amiberry_process.kill()
+        try:
+            _http_amiberry_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        return StatusResponse(success=True, message=f"Amiberry process (PID {pid}) force killed.")
+
+
+@app.post("/process/wait-for-exit")
+async def wait_for_exit(request: WaitForExitRequest):
+    """Wait for the Amiberry process to exit."""
+    if _http_amiberry_process is None:
+        return StatusResponse(success=False, message="No Amiberry process tracked.")
+
+    returncode = _http_amiberry_process.poll()
+    if returncode is not None:
+        return StatusResponse(
+            success=True,
+            message=f"Amiberry already exited with code {returncode}.",
+            data={"exit_code": returncode},
+        )
+    try:
+        returncode = _http_amiberry_process.wait(timeout=request.timeout)
+        return StatusResponse(
+            success=True,
+            message=f"Amiberry exited with code {returncode}.",
+            data={"exit_code": returncode},
+        )
+    except subprocess.TimeoutExpired:
+        return StatusResponse(
+            success=False,
+            message=f"Timeout after {request.timeout}s. Amiberry still running (PID {_http_amiberry_process.pid}).",
+        )
+
+
+@app.post("/process/restart")
+async def restart_amiberry_process():
+    """Kill and re-launch Amiberry with the same command."""
+    global _http_amiberry_process, _http_amiberry_launch_cmd, _http_amiberry_log_path
+    if _http_amiberry_launch_cmd is None:
+        return StatusResponse(success=False, message="No previous launch command stored.")
+
+    if _http_amiberry_process is not None and _http_amiberry_process.poll() is None:
+        _http_amiberry_process.terminate()
+        try:
+            _http_amiberry_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _http_amiberry_process.kill()
+            try:
+                _http_amiberry_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+
+    cmd = _http_amiberry_launch_cmd
+    try:
+        if _http_amiberry_log_path:
+            log_file = open(_http_amiberry_log_path, "w")
+            _http_amiberry_process = subprocess.Popen(
+                cmd, stdout=log_file, stderr=subprocess.STDOUT, start_new_session=True,
+            )
+        else:
+            _http_amiberry_process = subprocess.Popen(
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+            )
+        return StatusResponse(
+            success=True,
+            message=f"Amiberry restarted (PID: {_http_amiberry_process.pid})",
+            data={"pid": _http_amiberry_process.pid, "command": " ".join(cmd)},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error restarting: {str(e)}")
+
+
+# === Missing IPC Wrappers ===
+
+
+@app.post("/runtime/memory/read")
+async def runtime_read_memory(request: RuntimeReadMemoryRequest):
+    """Read memory from the emulated Amiga."""
+    try:
+        address = int(request.address, 0)
+        if request.width not in (1, 2, 4):
+            raise HTTPException(status_code=400, detail="Width must be 1, 2, or 4")
+        client = AmiberryIPCClient(prefer_dbus=False)
+        value = await client.read_memory(address, request.width)
+        if value is not None:
+            return StatusResponse(
+                success=True,
+                message=f"Memory at 0x{address:08X}: 0x{value:0{request.width*2}X} ({value})",
+                data={"address": f"0x{address:08X}", "value": value, "hex": f"0x{value:0{request.width*2}X}", "width": request.width},
+            )
+        else:
+            raise HTTPException(status_code=500, detail=f"Failed to read memory at {request.address}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid address: {str(e)}")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/memory/write")
+async def runtime_write_memory(request: RuntimeWriteMemoryRequest):
+    """Write memory to the emulated Amiga."""
+    try:
+        address = int(request.address, 0)
+        if request.width not in (1, 2, 4):
+            raise HTTPException(status_code=400, detail="Width must be 1, 2, or 4")
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.write_memory(address, request.width, request.value)
+        if success:
+            return StatusResponse(
+                success=True,
+                message=f"Wrote 0x{request.value:0{request.width*2}X} to 0x{address:08X}",
+            )
+        else:
+            raise HTTPException(status_code=500, detail=f"Failed to write memory at {request.address}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid argument: {str(e)}")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/load-config")
+async def runtime_load_config(request: RuntimeLoadConfigRequest):
+    """Load a .uae configuration file into the running emulation."""
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.load_config(request.config_path)
+        if success:
+            return StatusResponse(success=True, message=f"Configuration loaded: {request.config_path}")
+        else:
+            raise HTTPException(status_code=500, detail=f"Failed to load config: {request.config_path}")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/runtime/debug/step-over")
+async def runtime_debug_step_over():
+    """Step over subroutine calls (JSR/BSR)."""
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.debug_step_over()
+        if success:
+            return StatusResponse(success=True, message="Stepped over subroutine.")
+        else:
+            raise HTTPException(status_code=500, detail="Failed to step over. Is debugger active?")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+# === Screenshot with Image Data ===
+
+
+@app.post("/runtime/screenshot-view")
+async def runtime_screenshot_view(request: RuntimeScreenshotViewRequest):
+    """Take a screenshot and return the image data as base64."""
+    import base64
+    from .config import SCREENSHOT_DIR
+
+    filename = request.filename
+    if not filename:
+        SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = str(SCREENSHOT_DIR / f"debug_{timestamp}.png")
+
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        success = await client.screenshot(filename)
+        if success:
+            screenshot_path = Path(filename)
+            if screenshot_path.exists():
+                image_data = screenshot_path.read_bytes()
+                b64_data = base64.b64encode(image_data).decode("utf-8")
+                mime_type = "image/png" if filename.lower().endswith(".png") else "image/bmp"
+                return StatusResponse(
+                    success=True,
+                    message=f"Screenshot saved to: {filename}",
+                    data={"path": filename, "base64": b64_data, "mime_type": mime_type, "size": len(image_data)},
+                )
+            else:
+                raise HTTPException(status_code=500, detail=f"Screenshot file not found: {filename}")
+        else:
+            raise HTTPException(status_code=500, detail="Failed to take screenshot")
+    except IPCConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"IPC connection error: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+# === Log Tailing and Crash Detection ===
+
+
+@app.post("/logs/tail")
+async def tail_log(request: TailLogRequest):
+    """Get new log lines since last read."""
+    log_name = request.log_name
+    if not log_name.endswith(".log"):
+        log_name += ".log"
+    log_path = LOG_DIR / log_name
+
+    if not log_path.exists():
+        raise HTTPException(status_code=404, detail=f"Log file not found: {log_name}")
+
+    last_pos = _http_last_log_read_position.get(log_name, 0)
+    try:
+        with open(log_path, "r", errors="replace") as f:
+            f.seek(last_pos)
+            new_content = f.read()
+            new_pos = f.tell()
+
+        _http_last_log_read_position[log_name] = new_pos
+
+        if new_content:
+            line_count = new_content.count("\n")
+            return StatusResponse(
+                success=True,
+                message=f"New log output ({line_count} lines)",
+                data={"content": new_content, "lines": line_count},
+            )
+        else:
+            return StatusResponse(success=True, message="No new log output since last read.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading log: {str(e)}")
+
+
+@app.post("/logs/wait-for-pattern")
+async def wait_for_log_pattern(request: WaitForLogPatternRequest):
+    """Wait for a pattern to appear in a log file."""
+    import re
+
+    log_name = request.log_name
+    if not log_name.endswith(".log"):
+        log_name += ".log"
+    log_path = LOG_DIR / log_name
+
+    try:
+        compiled_pattern = re.compile(request.pattern)
+    except re.error as e:
+        raise HTTPException(status_code=400, detail=f"Invalid regex: {str(e)}")
+
+    start_time = asyncio.get_event_loop().time()
+    last_pos = _http_last_log_read_position.get(log_name, 0)
+
+    while True:
+        elapsed = asyncio.get_event_loop().time() - start_time
+        if elapsed >= request.timeout:
+            return StatusResponse(
+                success=False,
+                message=f"Timeout after {request.timeout}s. Pattern '{request.pattern}' not found.",
+            )
+
+        if log_path.exists():
+            try:
+                with open(log_path, "r", errors="replace") as f:
+                    f.seek(last_pos)
+                    new_content = f.read()
+                    new_pos = f.tell()
+
+                if new_content:
+                    for line in new_content.splitlines():
+                        if compiled_pattern.search(line):
+                            _http_last_log_read_position[log_name] = new_pos
+                            return StatusResponse(
+                                success=True,
+                                message=f"Pattern found after {elapsed:.1f}s",
+                                data={"line": line, "elapsed": round(elapsed, 1)},
+                            )
+                    last_pos = new_pos
+            except Exception:
+                pass
+
+        await asyncio.sleep(0.5)
+
+
+@app.post("/process/crash-info")
+async def get_crash_info(request: GetCrashInfoRequest):
+    """Detect if Amiberry crashed by checking process state and scanning logs."""
+    data = {}
+
+    # Check process state
+    if _http_amiberry_process is not None:
+        returncode = _http_amiberry_process.poll()
+        if returncode is None:
+            data["process"] = {"status": "RUNNING", "pid": _http_amiberry_process.pid}
+        else:
+            proc_info = {"status": "EXITED", "exit_code": returncode, "pid": _http_amiberry_process.pid}
+            if returncode < 0:
+                import signal
+                try:
+                    sig = signal.Signals(-returncode)
+                    proc_info["signal"] = sig.name
+                except ValueError:
+                    proc_info["signal"] = str(-returncode)
+                proc_info["crash"] = True
+            elif returncode != 0:
+                proc_info["abnormal_exit"] = True
+            data["process"] = proc_info
+    else:
+        data["process"] = {"status": "NOT_TRACKED"}
+
+    # Scan logs
+    crash_patterns = [
+        "Segmentation fault", "SIGSEGV", "SIGABRT", "Aborted",
+        "core dumped", "assertion failed", "FATAL", "Bus error",
+        "SIGBUS", "double free", "heap-buffer-overflow",
+        "stack-buffer-overflow", "AddressSanitizer", "undefined behavior",
+    ]
+
+    log_files_to_scan: list[Path] = []
+    if request.log_name:
+        ln = request.log_name if request.log_name.endswith(".log") else request.log_name + ".log"
+        log_files_to_scan = [LOG_DIR / ln]
+    elif _http_amiberry_log_path:
+        log_files_to_scan = [_http_amiberry_log_path]
+    elif LOG_DIR.exists():
+        log_files_to_scan = sorted(LOG_DIR.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)[:1]
+
+    crash_indicators = []
+    for lp in log_files_to_scan:
+        if lp.exists():
+            try:
+                content = lp.read_text(errors="replace")
+                for i, line in enumerate(content.splitlines()):
+                    for cp in crash_patterns:
+                        if cp.lower() in line.lower():
+                            crash_indicators.append({"line_number": i + 1, "text": line.strip(), "file": lp.name})
+                            break
+            except Exception:
+                pass
+
+    data["crash_indicators"] = crash_indicators[:20]
+    data["log_files_scanned"] = [str(lp) for lp in log_files_to_scan]
+
+    has_crash = bool(crash_indicators) or data.get("process", {}).get("crash", False)
+    return StatusResponse(
+        success=True,
+        message="Crash detected" if has_crash else "No crash detected",
+        data=data,
+    )
+
+
+# === Workflow Tools ===
+
+
+@app.get("/health")
+async def health_check():
+    """Comprehensive health check: process + IPC + emulation status."""
+    data = {}
+
+    # Process check
+    if _http_amiberry_process is not None:
+        rc = _http_amiberry_process.poll()
+        if rc is None:
+            data["process"] = {"status": "RUNNING", "pid": _http_amiberry_process.pid}
+        else:
+            data["process"] = {"status": "EXITED", "exit_code": rc}
+    else:
+        data["process"] = {"status": "NOT_TRACKED"}
+
+    # IPC check
+    try:
+        client = AmiberryIPCClient(prefer_dbus=False)
+        pong = await client.ping()
+        if pong:
+            data["ipc"] = {"status": "CONNECTED"}
+            status = await client.get_status()
+            if status:
+                data["emulation"] = {
+                    "paused": status.get("Paused", "?"),
+                    "config": status.get("Config", "?"),
+                }
+                for key in ["Floppy0", "Floppy1", "Floppy2", "Floppy3"]:
+                    val = status.get(key)
+                    if val:
+                        data["emulation"][key.lower()] = val
+            fps_info = await client.get_fps()
+            if fps_info:
+                data["fps"] = fps_info
+        else:
+            data["ipc"] = {"status": "NOT_RESPONDING"}
+    except IPCConnectionError:
+        data["ipc"] = {"status": "NOT_CONNECTED"}
+    except Exception as e:
+        data["ipc"] = {"status": "ERROR", "error": str(e)}
+
+    healthy = data.get("ipc", {}).get("status") == "CONNECTED"
+    return StatusResponse(
+        success=healthy,
+        message="Healthy" if healthy else "Unhealthy",
+        data=data,
+    )
+
+
+@app.post("/launch-and-wait")
+async def launch_and_wait_for_ipc(request: LaunchAndWaitRequest):
+    """Launch Amiberry and wait until IPC is available."""
+    global _http_amiberry_process, _http_amiberry_launch_cmd, _http_amiberry_log_path
+
+    # Kill existing process
+    if _http_amiberry_process is not None and _http_amiberry_process.poll() is None:
+        _http_amiberry_process.terminate()
+        try:
+            _http_amiberry_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _http_amiberry_process.kill()
+            try:
+                _http_amiberry_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+
+    # Build command
+    cmd = [EMULATOR_BINARY, "--log"]
+
+    if request.model:
+        cmd.extend(["--model", request.model])
+    elif request.config:
+        config_path = _find_config_path(request.config)
+        if not config_path:
+            raise HTTPException(status_code=404, detail=f"Config '{request.config}' not found")
+        cmd.extend(["-f", str(config_path)])
+
+    if request.disk_image:
+        cmd.extend(["-0", request.disk_image])
+
+    if request.lha_file:
+        lha_path = Path(request.lha_file)
+        if not lha_path.exists():
+            raise HTTPException(status_code=404, detail=f"LHA not found: {request.lha_file}")
+        cmd.append(str(lha_path))
+
+    if request.autostart:
+        cmd.append("-G")
+
+    # Launch with logging
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_name = f"amiberry_{timestamp}.log"
+    log_path = LOG_DIR / log_name
+
+    try:
+        log_file = open(log_path, "w")
+        _http_amiberry_process = subprocess.Popen(
+            cmd, stdout=log_file, stderr=subprocess.STDOUT, start_new_session=True,
+        )
+        _http_amiberry_launch_cmd = cmd
+        _http_amiberry_log_path = log_path
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error launching: {str(e)}")
+
+    # Wait for IPC
+    start_time = asyncio.get_event_loop().time()
+    ipc_ready = False
+
+    while True:
+        elapsed = asyncio.get_event_loop().time() - start_time
+        if elapsed >= request.timeout:
+            break
+
+        if _http_amiberry_process.poll() is not None:
+            rc = _http_amiberry_process.returncode
+            raise HTTPException(
+                status_code=500,
+                detail=f"Amiberry exited before IPC available (code {rc})",
+            )
+
+        try:
+            client = AmiberryIPCClient(prefer_dbus=False)
+            pong = await client.ping()
+            if pong:
+                ipc_ready = True
+                break
+        except Exception:
+            pass
+
+        await asyncio.sleep(0.5)
+
+    if ipc_ready:
+        return StatusResponse(
+            success=True,
+            message=f"Amiberry launched and IPC ready after {elapsed:.1f}s",
+            data={
+                "pid": _http_amiberry_process.pid,
+                "log_file": str(log_path),
+                "command": " ".join(cmd),
+                "elapsed": round(elapsed, 1),
+            },
+        )
+    else:
+        return StatusResponse(
+            success=False,
+            message=f"IPC not responding after {request.timeout}s",
+            data={
+                "pid": _http_amiberry_process.pid,
+                "log_file": str(log_path),
+                "still_running": _http_amiberry_process.poll() is None,
+            },
+        )
 
 
 def main():

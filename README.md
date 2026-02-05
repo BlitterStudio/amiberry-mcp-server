@@ -22,9 +22,19 @@ An MCP (Model Context Protocol) server for controlling Amiberry, the Amiga emula
 
 ### Developer/Debug Features
 - **Log Capture**: Launch with logging enabled and capture output to files
+- **Log Tailing**: Incremental log reading and pattern-based waiting
+- **Crash Detection**: Automatic crash detection via process signals and log scanning
 - **Config Editor**: Parse, modify, and create .uae configuration files
 - **Savestate Inspector**: Read metadata from .uss savestate files
 - **ROM Manager**: Identify and catalog Kickstart ROMs by checksum
+- **Memory Access**: Read/write emulated Amiga memory for debugging
+
+### Autonomous Troubleshooting
+- **Process Lifecycle**: Track, monitor, kill, and restart Amiberry processes
+- **Health Check**: Combined process + IPC + emulation status check
+- **Launch and Wait**: Launch Amiberry and wait until IPC is ready for commands
+- **Screenshot Analysis**: Capture screenshots with image data returned for AI analysis
+- **Crash Recovery**: Detect crashes, analyze logs, restart automatically
 
 ### Game Launcher Features
 - **WHDLoad Launcher**: Search and launch WHDLoad games from LHA archives
@@ -381,6 +391,45 @@ Try asking Claude:
 | `get_version` | Get Amiberry and SDL version info |
 | `ping` | Test IPC connection (returns PONG) |
 | `check_ipc_connection` | Check IPC availability |
+
+### Process Lifecycle Management
+| Tool | Description |
+|------|-------------|
+| `check_process_alive` | Check if Amiberry process is running (PID, exit code, signal) |
+| `get_process_info` | Detailed process info with crash detection |
+| `kill_amiberry` | Force kill a running/hung Amiberry process |
+| `wait_for_exit` | Wait for process to exit with configurable timeout |
+| `restart_amiberry` | Kill and re-launch with same command |
+
+### Memory Access
+| Tool | Description |
+|------|-------------|
+| `runtime_read_memory` | Read emulated Amiga memory (1/2/4 bytes) |
+| `runtime_write_memory` | Write emulated Amiga memory (1/2/4 bytes) |
+
+### Runtime Configuration
+| Tool | Description |
+|------|-------------|
+| `runtime_load_config` | Load a .uae config file into running emulation |
+| `runtime_debug_step_over` | Step over subroutine calls (JSR/BSR) |
+
+### Screenshot Analysis
+| Tool | Description |
+|------|-------------|
+| `runtime_screenshot_view` | Take screenshot and return image data for AI analysis |
+
+### Log Tailing & Crash Detection
+| Tool | Description |
+|------|-------------|
+| `tail_log` | Get new log lines since last read (incremental) |
+| `wait_for_log_pattern` | Wait for a regex pattern in log output |
+| `get_crash_info` | Detect crashes via process state and log scanning |
+
+### Workflow Automation
+| Tool | Description |
+|------|-------------|
+| `health_check` | Combined check: process + IPC + emulation status + FPS |
+| `launch_and_wait_for_ipc` | Launch Amiberry and wait until IPC socket is ready |
 
 > **Note:** Runtime control requires Amiberry built with `USE_IPC_SOCKET=ON`
 
