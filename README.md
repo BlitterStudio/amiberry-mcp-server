@@ -348,6 +348,12 @@ Try asking Claude:
 | Tool | Description |
 |------|-------------|
 | `runtime_debug_activate` | Activate the built-in debugger |
+
+#### Instance Control
+| Tool | Description |
+|------|-------------|
+| `get_active_instance` | Get the currently active Amiberry instance being controlled |
+| `set_active_instance` | Set the active Amiberry instance to control (e.g. 0, 1, 2) |
 | `runtime_debug_deactivate` | Deactivate debugger and resume emulation |
 | `runtime_debug_status` | Get debugger status (active/inactive) |
 | `runtime_debug_step` | Single-step CPU instructions |

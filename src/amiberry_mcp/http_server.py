@@ -74,6 +74,9 @@ _http_amiberry_launch_cmd: list[str] | None = None
 _http_amiberry_log_path: Path | None = None
 _http_last_log_read_position: dict[str, int] = {}
 
+# Global configuration for multi-instance control
+_active_instance: int | None = None
+
 # FastAPI app
 app = FastAPI(
     title="Amiberry HTTP API",
@@ -180,6 +183,10 @@ class StatusResponse(BaseModel):
     success: bool
     message: str
     data: Optional[dict] = None
+
+
+class ActiveInstanceRequest(BaseModel):
+    instance: Optional[int] = None
 
 
 # Runtime control request models
@@ -1337,6 +1344,35 @@ async def get_amiberry_version():
 # Runtime control endpoints (IPC)
 
 
+@app.get("/runtime/active-instance")
+async def get_active_instance():
+    """Get the currently active Amiberry instance being controlled."""
+    if _active_instance is None:
+        return StatusResponse(
+            success=True,
+            message="Auto-discovering (no specific instance set)",
+            data={"instance": None}
+        )
+    return StatusResponse(
+        success=True,
+        message=f"Active instance: {_active_instance}",
+        data={"instance": _active_instance}
+    )
+
+
+@app.post("/runtime/active-instance")
+async def set_active_instance(request: ActiveInstanceRequest):
+    """Set the active Amiberry instance to control (e.g. 0, 1). Set to null to auto-discover."""
+    global _active_instance
+    _active_instance = request.instance
+    status = f"Active instance set to {request.instance}" if request.instance is not None else "Active instance set to auto-discover"
+    return StatusResponse(
+        success=True,
+        message=status,
+        data={"instance": _active_instance}
+    )
+
+
 @app.get("/runtime/status")
 async def get_runtime_status():
     """
@@ -1344,7 +1380,7 @@ async def get_runtime_status():
     Requires Amiberry to be running with IPC enabled (USE_IPC_SOCKET).
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         status = await client.get_status()
 
         return StatusResponse(
@@ -1371,7 +1407,7 @@ async def pause_emulation():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.pause()
 
         if success:
@@ -1391,7 +1427,7 @@ async def resume_emulation():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.resume()
 
         if success:
@@ -1411,7 +1447,7 @@ async def reset_emulation(request: RuntimeResetRequest):
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.reset(hard=request.hard)
 
         reset_type = "hard" if request.hard else "soft"
@@ -1432,7 +1468,7 @@ async def quit_emulation():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.quit()
 
         if success:
@@ -1452,7 +1488,7 @@ async def runtime_screenshot(request: RuntimeScreenshotRequest):
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.screenshot(request.filename)
 
         if success:
@@ -1476,7 +1512,7 @@ async def runtime_save_state(request: RuntimeSaveStateRequest):
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.save_state(request.state_file, request.config_file)
 
         if success:
@@ -1503,7 +1539,7 @@ async def runtime_load_state(request: RuntimeLoadStateRequest):
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.load_state(request.state_file)
 
         if success:
@@ -1530,7 +1566,7 @@ async def runtime_insert_floppy(request: RuntimeInsertFloppyRequest):
         raise HTTPException(status_code=400, detail="Drive must be 0-3")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.insert_floppy(request.drive, request.image_path)
 
         if success:
@@ -1557,7 +1593,7 @@ async def runtime_insert_cd(request: RuntimeInsertCDRequest):
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.insert_cd(request.image_path)
 
         if success:
@@ -1581,7 +1617,7 @@ async def runtime_get_config(option: str):
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         value = await client.get_config(option)
 
         if value is not None:
@@ -1605,7 +1641,7 @@ async def runtime_set_config(request: RuntimeSetConfigRequest):
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_config(request.option, request.value)
 
         if success:
@@ -1631,7 +1667,7 @@ async def check_ipc_connection():
     Check if Amiberry IPC is available and get connection status.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
 
         result = {
             "transport": client.transport,
@@ -1669,7 +1705,7 @@ async def runtime_eject_floppy(request: RuntimeEjectFloppyRequest):
         raise HTTPException(status_code=400, detail="Drive must be 0-3")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.eject_floppy(request.drive)
 
         if success:
@@ -1693,7 +1729,7 @@ async def runtime_eject_cd():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.eject_cd()
 
         if success:
@@ -1713,7 +1749,7 @@ async def runtime_list_floppies():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         floppies = await client.list_floppies()
 
         return StatusResponse(
@@ -1734,7 +1770,7 @@ async def runtime_list_configs():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         configs = await client.list_configs()
 
         return StatusResponse(
@@ -1755,7 +1791,7 @@ async def runtime_get_volume():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         volume = await client.get_volume()
 
         return StatusResponse(
@@ -1779,7 +1815,7 @@ async def runtime_set_volume(request: RuntimeSetVolumeRequest):
         raise HTTPException(status_code=400, detail="Volume must be 0-100")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_volume(request.volume)
 
         if success:
@@ -1803,7 +1839,7 @@ async def runtime_mute():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.mute()
 
         if success:
@@ -1823,7 +1859,7 @@ async def runtime_unmute():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.unmute()
 
         if success:
@@ -1843,7 +1879,7 @@ async def runtime_toggle_fullscreen():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.toggle_fullscreen()
 
         if success:
@@ -1863,7 +1899,7 @@ async def runtime_get_warp():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         enabled = await client.get_warp()
 
         return StatusResponse(
@@ -1884,7 +1920,7 @@ async def runtime_set_warp(request: RuntimeSetWarpRequest):
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_warp(request.enabled)
 
         if success:
@@ -1909,7 +1945,7 @@ async def runtime_get_version():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         version_info = await client.get_version()
 
         return StatusResponse(
@@ -1930,7 +1966,7 @@ async def runtime_ping():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.ping()
 
         if success:
@@ -1953,7 +1989,7 @@ async def runtime_frame_advance(request: RuntimeFrameAdvanceRequest):
         raise HTTPException(status_code=400, detail="Count must be at least 1")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.frame_advance(request.count)
 
         if success:
@@ -1981,7 +2017,7 @@ async def runtime_send_key(request: RuntimeSendKeyRequest):
         raise HTTPException(status_code=400, detail="State must be 0 or 1")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.send_key(request.keycode, request.state)
 
         if success:
@@ -2007,7 +2043,7 @@ async def runtime_send_mouse(request: RuntimeSendMouseRequest):
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.send_mouse(request.dx, request.dy, request.buttons)
 
         if success:
@@ -2034,7 +2070,7 @@ async def runtime_set_mouse_speed(request: RuntimeSetMouseSpeedRequest):
         raise HTTPException(status_code=400, detail="Speed must be 10-200")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_mouse_speed(request.speed)
 
         if success:
@@ -2064,7 +2100,7 @@ async def runtime_quicksave(request: RuntimeQuickSaveRequest):
         raise HTTPException(status_code=400, detail="Slot must be 0-9")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.quicksave(request.slot)
 
         if success:
@@ -2091,7 +2127,7 @@ async def runtime_quickload(request: RuntimeQuickLoadRequest):
         raise HTTPException(status_code=400, detail="Slot must be 0-9")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.quickload(request.slot)
 
         if success:
@@ -2118,7 +2154,7 @@ async def runtime_get_joyport_mode(port: int):
         raise HTTPException(status_code=400, detail="Port must be 0-3")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         result = await client.get_joyport_mode(port)
 
         if result:
@@ -2149,7 +2185,7 @@ async def runtime_set_joyport_mode(request: RuntimeSetJoyportModeRequest):
         raise HTTPException(status_code=400, detail="Mode must be 0-8")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_joyport_mode(request.port, request.mode)
 
         if success:
@@ -2176,7 +2212,7 @@ async def runtime_get_autofire(port: int):
         raise HTTPException(status_code=400, detail="Port must be 0-3")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         mode = await client.get_autofire(port)
 
         if mode is not None:
@@ -2207,7 +2243,7 @@ async def runtime_set_autofire(request: RuntimeSetAutofireRequest):
         raise HTTPException(status_code=400, detail="Mode must be 0-4")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_autofire(request.port, request.mode)
 
         if success:
@@ -2231,7 +2267,7 @@ async def runtime_get_led_status():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         status = await client.get_led_status()
 
         return StatusResponse(
@@ -2252,7 +2288,7 @@ async def runtime_list_harddrives():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         drives = await client.list_harddrives()
 
         return StatusResponse(
@@ -2273,7 +2309,7 @@ async def runtime_get_display_mode():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         result = await client.get_display_mode()
 
         if result:
@@ -2302,7 +2338,7 @@ async def runtime_set_display_mode(request: RuntimeSetDisplayModeRequest):
         raise HTTPException(status_code=400, detail="Mode must be 0-2")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_display_mode(request.mode)
 
         modes = {0: "window", 1: "fullscreen", 2: "fullwindow"}
@@ -2327,7 +2363,7 @@ async def runtime_get_ntsc():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         result = await client.get_ntsc()
 
         if result:
@@ -2352,7 +2388,7 @@ async def runtime_set_ntsc(request: RuntimeSetNTSCRequest):
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_ntsc(request.enabled)
 
         mode = "NTSC" if request.enabled else "PAL"
@@ -2377,7 +2413,7 @@ async def runtime_get_sound_mode():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         result = await client.get_sound_mode()
 
         if result:
@@ -2406,7 +2442,7 @@ async def runtime_set_sound_mode(request: RuntimeSetSoundModeRequest):
         raise HTTPException(status_code=400, detail="Mode must be 0-3")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_sound_mode(request.mode)
 
         modes = {0: "off", 1: "normal", 2: "stereo", 3: "best"}
@@ -2434,7 +2470,7 @@ async def runtime_toggle_mouse_grab():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.toggle_mouse_grab()
 
         if success:
@@ -2454,7 +2490,7 @@ async def runtime_get_mouse_speed():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         speed = await client.get_mouse_speed()
 
         if speed is not None:
@@ -2478,7 +2514,7 @@ async def runtime_get_cpu_speed():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         result = await client.get_cpu_speed()
 
         if result:
@@ -2504,7 +2540,7 @@ async def runtime_set_cpu_speed(request: RuntimeSetCPUSpeedRequest):
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_cpu_speed(request.speed)
 
         if success:
@@ -2528,7 +2564,7 @@ async def runtime_toggle_rtg(request: RuntimeToggleRTGRequest = RuntimeToggleRTG
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         result = await client.toggle_rtg(request.monid)
 
         if result:
@@ -2552,7 +2588,7 @@ async def runtime_get_floppy_speed():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         result = await client.get_floppy_speed()
 
         if result:
@@ -2581,7 +2617,7 @@ async def runtime_set_floppy_speed(request: RuntimeSetFloppySpeedRequest):
         raise HTTPException(status_code=400, detail="Speed must be 0, 100, 200, 400, or 800")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_floppy_speed(request.speed)
 
         descs = {0: "turbo", 100: "1x", 200: "2x", 400: "4x", 800: "8x"}
@@ -2609,7 +2645,7 @@ async def runtime_get_disk_write_protect(drive: int):
         raise HTTPException(status_code=400, detail="Drive must be 0-3")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         result = await client.get_disk_write_protect(drive)
 
         if result:
@@ -2637,7 +2673,7 @@ async def runtime_disk_write_protect(request: RuntimeDiskWriteProtectRequest):
         raise HTTPException(status_code=400, detail="Drive must be 0-3")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.disk_write_protect(request.drive, request.protect)
 
         status = "protected" if request.protect else "writable"
@@ -2662,7 +2698,7 @@ async def runtime_toggle_status_line():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         result = await client.toggle_status_line()
 
         if result:
@@ -2687,7 +2723,7 @@ async def runtime_get_chipset():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         result = await client.get_chipset()
 
         if result:
@@ -2717,7 +2753,7 @@ async def runtime_set_chipset(request: RuntimeSetChipsetRequest):
         raise HTTPException(status_code=400, detail=f"Chipset must be one of: {valid}")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_chipset(request.chipset)
 
         if success:
@@ -2741,7 +2777,7 @@ async def runtime_get_memory_config():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         config = await client.get_memory_config()
 
         return StatusResponse(
@@ -2762,7 +2798,7 @@ async def runtime_get_fps():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         info = await client.get_fps()
 
         return StatusResponse(
@@ -2792,7 +2828,7 @@ async def runtime_set_chip_mem(request: RuntimeSetChipMemRequest):
         raise HTTPException(status_code=400, detail=f"Size must be one of: {valid_sizes}")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_chip_mem(request.size_kb)
 
         if success:
@@ -2822,7 +2858,7 @@ async def runtime_set_fast_mem(request: RuntimeSetFastMemRequest):
         raise HTTPException(status_code=400, detail=f"Size must be one of: {valid_sizes}")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_fast_mem(request.size_kb)
 
         if success:
@@ -2852,7 +2888,7 @@ async def runtime_set_slow_mem(request: RuntimeSetSlowMemRequest):
         raise HTTPException(status_code=400, detail=f"Size must be one of: {valid_sizes}")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_slow_mem(request.size_kb)
 
         if success:
@@ -2882,7 +2918,7 @@ async def runtime_set_z3_mem(request: RuntimeSetZ3MemRequest):
         raise HTTPException(status_code=400, detail=f"Size must be one of: {valid_sizes}")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_z3_mem(request.size_mb)
 
         if success:
@@ -2906,7 +2942,7 @@ async def runtime_get_cpu_model():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         info = await client.get_cpu_model()
 
         return StatusResponse(
@@ -2933,7 +2969,7 @@ async def runtime_set_cpu_model(request: RuntimeSetCPUModelRequest):
         raise HTTPException(status_code=400, detail=f"Model must be one of: {valid_models}")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_cpu_model(request.model)
 
         if success:
@@ -2957,7 +2993,7 @@ async def runtime_get_window_size():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         info = await client.get_window_size()
 
         return StatusResponse(
@@ -2984,7 +3020,7 @@ async def runtime_set_window_size(request: RuntimeSetWindowSizeRequest):
         raise HTTPException(status_code=400, detail="Height must be 200-2160")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_window_size(request.width, request.height)
 
         if success:
@@ -3008,7 +3044,7 @@ async def runtime_get_scaling():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         info = await client.get_scaling()
 
         return StatusResponse(
@@ -3034,7 +3070,7 @@ async def runtime_set_scaling(request: RuntimeSetScalingRequest):
 
     mode_names = ["auto", "nearest", "linear", "integer"]
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_scaling(request.mode)
 
         if success:
@@ -3059,7 +3095,7 @@ async def runtime_get_line_mode():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         info = await client.get_line_mode()
 
         return StatusResponse(
@@ -3085,7 +3121,7 @@ async def runtime_set_line_mode(request: RuntimeSetLineModeRequest):
 
     mode_names = ["single", "double", "scanlines"]
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_line_mode(request.mode)
 
         if success:
@@ -3109,7 +3145,7 @@ async def runtime_get_resolution():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         result = await client.get_resolution()
 
         if result:
@@ -3139,7 +3175,7 @@ async def runtime_set_resolution(request: RuntimeSetResolutionRequest):
 
     mode_names = ["lores", "hires", "superhires"]
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_resolution(request.mode)
 
         if success:
@@ -3164,7 +3200,7 @@ async def runtime_get_autocrop():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         result = await client.get_autocrop()
 
         if result is not None:
@@ -3188,7 +3224,7 @@ async def runtime_set_autocrop(request: RuntimeSetAutocropRequest):
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_autocrop(request.enabled)
 
         if success:
@@ -3212,7 +3248,7 @@ async def runtime_get_whdload():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         info = await client.get_whdload()
 
         if info:
@@ -3238,7 +3274,7 @@ async def runtime_insert_whdload(request: RuntimeInsertWHDLoadRequest):
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.insert_whdload(request.path)
 
         if success:
@@ -3262,7 +3298,7 @@ async def runtime_eject_whdload():
     Requires Amiberry to be running with IPC enabled.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.eject_whdload()
 
         if success:
@@ -3289,7 +3325,7 @@ async def runtime_debug_activate():
     Requires Amiberry to be built with debugger support.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.debug_activate()
 
         if success:
@@ -3315,7 +3351,7 @@ async def runtime_debug_deactivate():
     Deactivate the debugger and resume emulation.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.debug_deactivate()
 
         if success:
@@ -3338,7 +3374,7 @@ async def runtime_debug_status():
     Get debugger status (active/inactive).
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         info = await client.debug_status()
 
         if info:
@@ -3361,7 +3397,7 @@ async def runtime_debug_step(request: RuntimeDebugStepRequest):
     Single-step CPU instructions when debugger is active.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.debug_step(request.count)
 
         if success:
@@ -3386,7 +3422,7 @@ async def runtime_debug_continue():
     Continue execution until next breakpoint.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.debug_continue()
 
         if success:
@@ -3409,7 +3445,7 @@ async def runtime_get_cpu_regs():
     Get all CPU registers (D0-D7, A0-A7, PC, SR, USP, ISP).
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         info = await client.get_cpu_regs()
 
         if info:
@@ -3432,7 +3468,7 @@ async def runtime_get_custom_regs():
     Get key custom chip registers (DMACON, INTENA, INTREQ, Copper addresses).
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         info = await client.get_custom_regs()
 
         if info:
@@ -3455,7 +3491,7 @@ async def runtime_disassemble(request: RuntimeDisassembleRequest):
     Disassemble instructions at a memory address.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         lines = await client.disassemble(request.address, request.count)
 
         return StatusResponse(
@@ -3475,7 +3511,7 @@ async def runtime_list_breakpoints():
     List all active breakpoints.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         breakpoints = await client.list_breakpoints()
 
         return StatusResponse(
@@ -3495,7 +3531,7 @@ async def runtime_set_breakpoint(request: RuntimeSetBreakpointRequest):
     Set a breakpoint at a memory address. Maximum 20 breakpoints.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.set_breakpoint(request.address)
 
         if success:
@@ -3521,7 +3557,7 @@ async def runtime_clear_breakpoint(request: RuntimeClearBreakpointRequest):
     Clear a breakpoint at a specific address or all breakpoints (address='ALL').
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.clear_breakpoint(request.address)
 
         if success:
@@ -3551,7 +3587,7 @@ async def runtime_get_copper_state():
     Get Copper coprocessor state (addresses, enabled status).
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         info = await client.get_copper_state()
 
         if info:
@@ -3574,7 +3610,7 @@ async def runtime_get_blitter_state():
     Get Blitter state (busy status, channels, dimensions, addresses).
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         info = await client.get_blitter_state()
 
         if info:
@@ -3598,7 +3634,7 @@ async def runtime_get_drive_state(drive: Optional[int] = None):
     Optionally specify drive number 0-3, or omit for all drives.
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         info = await client.get_drive_state(drive)
 
         if info:
@@ -3621,7 +3657,7 @@ async def runtime_get_audio_state():
     Get audio channel states (volume, period, enabled).
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         info = await client.get_audio_state()
 
         if info:
@@ -3644,7 +3680,7 @@ async def runtime_get_dma_state():
     Get DMA channel states (bitplane, sprite, audio, disk, copper, blitter).
     """
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         info = await client.get_dma_state()
 
         if info:
@@ -3827,7 +3863,7 @@ async def runtime_read_memory(request: RuntimeReadMemoryRequest):
         address = int(request.address, 0)
         if request.width not in (1, 2, 4):
             raise HTTPException(status_code=400, detail="Width must be 1, 2, or 4")
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         value = await client.read_memory(address, request.width)
         if value is not None:
             return StatusResponse(
@@ -3854,7 +3890,7 @@ async def runtime_write_memory(request: RuntimeWriteMemoryRequest):
         address = int(request.address, 0)
         if request.width not in (1, 2, 4):
             raise HTTPException(status_code=400, detail="Width must be 1, 2, or 4")
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.write_memory(address, request.width, request.value)
         if success:
             return StatusResponse(
@@ -3877,7 +3913,7 @@ async def runtime_write_memory(request: RuntimeWriteMemoryRequest):
 async def runtime_load_config(request: RuntimeLoadConfigRequest):
     """Load a .uae configuration file into the running emulation."""
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.load_config(request.config_path)
         if success:
             return StatusResponse(success=True, message=f"Configuration loaded: {request.config_path}")
@@ -3893,7 +3929,7 @@ async def runtime_load_config(request: RuntimeLoadConfigRequest):
 async def runtime_debug_step_over():
     """Step over subroutine calls (JSR/BSR)."""
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.debug_step_over()
         if success:
             return StatusResponse(success=True, message="Stepped over subroutine.")
@@ -3921,7 +3957,7 @@ async def runtime_screenshot_view(request: RuntimeScreenshotViewRequest):
         filename = str(SCREENSHOT_DIR / f"debug_{timestamp}.png")
 
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         success = await client.screenshot(filename)
         if success:
             screenshot_path = Path(filename)
@@ -4118,7 +4154,7 @@ async def health_check():
 
     # IPC check
     try:
-        client = AmiberryIPCClient(prefer_dbus=False)
+        client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
         pong = await client.ping()
         if pong:
             data["ipc"] = {"status": "CONNECTED"}
@@ -4223,7 +4259,7 @@ async def launch_and_wait_for_ipc(request: LaunchAndWaitRequest):
             )
 
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             pong = await client.ping()
             if pong:
                 ipc_ready = True

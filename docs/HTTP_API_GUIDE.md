@@ -143,6 +143,8 @@ The API server provides these endpoints:
 - `GET /runtime/version` - Get Amiberry version info
 - `GET /runtime/ping` - Test IPC connection
 - `GET /runtime/ipc-check` - Check if IPC is available
+- `GET /runtime/active-instance` - Get the currently active Amiberry instance
+- `POST /runtime/active-instance` - Set the active Amiberry instance (e.g. 0, 1, 2)
 
 ### Process Lifecycle & Troubleshooting Endpoints
 
@@ -879,6 +881,17 @@ curl http://localhost:8080/runtime/version
 
 # Ping (test connection)
 curl http://localhost:8080/runtime/ping
+
+# Check IPC availability
+curl http://localhost:8080/runtime/ipc-check
+
+# Get active Amiberry instance
+curl http://localhost:8080/runtime/active-instance
+
+# Set active Amiberry instance to control
+curl -X POST http://localhost:8080/runtime/active-instance \
+  -H "Content-Type: application/json" \
+  -d '{"instance": 1}'
 
 # Advance 1 frame (when paused)
 curl -X POST http://localhost:8080/runtime/frame-advance \
