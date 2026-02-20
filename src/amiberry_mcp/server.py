@@ -62,6 +62,9 @@ from .ipc_client import (
     CommandError,
 )
 
+# Global configuration for multi-instance control
+_active_instance: int | None = None
+
 # ROM directory
 ROM_DIR = AMIBERRY_HOME / "Kickstarts" if IS_MACOS else AMIBERRY_HOME / "kickstarts"
 
@@ -790,6 +793,28 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="runtime_ping",
             description="Test the IPC connection to a running Amiberry instance.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="set_active_instance",
+            description="Set the active Amiberry instance to control (e.g. 0, 1, 2). Set to null to auto-discover.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "instance": {
+                        "type": ["integer", "null"],
+                        "description": "Instance number to control, or null to auto-discover.",
+                    }
+                },
+                "required": ["instance"],
+            },
+        ),
+        Tool(
+            name="get_active_instance",
+            description="Get the currently active Amiberry instance being controlled.",
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -2719,7 +2744,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     # Runtime control tools (IPC)
     elif name == "pause_emulation":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.pause()
             if success:
                 return [TextContent(type="text", text="Emulation paused.")]
@@ -2732,7 +2757,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "resume_emulation":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.resume()
             if success:
                 return [TextContent(type="text", text="Emulation resumed.")]
@@ -2746,7 +2771,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "reset_emulation":
         hard = arguments.get("hard", False)
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.reset(hard=hard)
             reset_type = "hard" if hard else "soft"
             if success:
@@ -2761,7 +2786,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_screenshot":
         filename = arguments["filename"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.screenshot(filename)
             if success:
                 return [TextContent(type="text", text=f"Screenshot saved to: {filename}")]
@@ -2776,7 +2801,7 @@ async def call_tool(name: str, arguments: Any) -> list:
         state_file = arguments["state_file"]
         config_file = arguments["config_file"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.save_state(state_file, config_file)
             if success:
                 return [TextContent(type="text", text=f"State saved:\n  State: {state_file}\n  Config: {config_file}")]
@@ -2790,7 +2815,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_load_state":
         state_file = arguments["state_file"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.load_state(state_file)
             if success:
                 return [TextContent(type="text", text=f"Loading state: {state_file}")]
@@ -2805,7 +2830,7 @@ async def call_tool(name: str, arguments: Any) -> list:
         drive = arguments["drive"]
         image_path = arguments["image_path"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.insert_floppy(drive, image_path)
             if success:
                 return [TextContent(type="text", text=f"Inserted {Path(image_path).name} into DF{drive}:")]
@@ -2821,7 +2846,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_insert_cd":
         image_path = arguments["image_path"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.insert_cd(image_path)
             if success:
                 return [TextContent(type="text", text=f"Inserted CD: {Path(image_path).name}")]
@@ -2834,7 +2859,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "get_runtime_status":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             status = await client.get_status()
 
             result = "Amiberry Runtime Status:\n\n"
@@ -2858,7 +2883,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_get_config":
         option = arguments["option"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             value = await client.get_config(option)
             if value is not None:
                 return [TextContent(type="text", text=f"{option} = {value}")]
@@ -2873,7 +2898,7 @@ async def call_tool(name: str, arguments: Any) -> list:
         option = arguments["option"]
         value = arguments["value"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_config(option, value)
             if success:
                 return [TextContent(type="text", text=f"Set {option} = {value}")]
@@ -2886,7 +2911,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "check_ipc_connection":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
 
             result = "Amiberry IPC Connection Check:\n\n"
             result += f"  Transport: {client.transport}\n"
@@ -2912,7 +2937,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_eject_floppy":
         drive = arguments["drive"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.eject_floppy(drive)
             if success:
                 return [TextContent(type="text", text=f"Ejected disk from DF{drive}:")]
@@ -2927,7 +2952,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_eject_cd":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.eject_cd()
             if success:
                 return [TextContent(type="text", text="CD ejected.")]
@@ -2940,7 +2965,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_list_floppies":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             drives = await client.list_floppies()
 
             result = "Floppy Drives:\n\n"
@@ -2957,7 +2982,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_list_configs":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             configs = await client.list_configs()
 
             if not configs:
@@ -2976,7 +3001,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_set_volume":
         volume = arguments["volume"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_volume(volume)
             if success:
                 return [TextContent(type="text", text=f"Volume set to {volume}%")]
@@ -2991,7 +3016,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_volume":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             volume = await client.get_volume()
             if volume is not None:
                 return [TextContent(type="text", text=f"Current volume: {volume}%")]
@@ -3004,7 +3029,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_mute":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.mute()
             if success:
                 return [TextContent(type="text", text="Audio muted.")]
@@ -3017,7 +3042,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_unmute":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.unmute()
             if success:
                 return [TextContent(type="text", text="Audio unmuted.")]
@@ -3030,7 +3055,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_toggle_fullscreen":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.toggle_fullscreen()
             if success:
                 return [TextContent(type="text", text="Fullscreen mode toggled.")]
@@ -3044,7 +3069,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_set_warp":
         enabled = arguments["enabled"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_warp(enabled)
             status = "enabled" if enabled else "disabled"
             if success:
@@ -3058,7 +3083,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_warp":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             enabled = await client.get_warp()
             if enabled is not None:
                 status = "enabled" if enabled else "disabled"
@@ -3072,7 +3097,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_version":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             info = await client.get_version()
 
             result = "Amiberry Version Info:\n\n"
@@ -3090,7 +3115,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_frame_advance":
         frames = arguments.get("frames", 1)
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.frame_advance(frames)
             if success:
                 return [TextContent(type="text", text=f"Advanced {frames} frame(s).")]
@@ -3108,7 +3133,7 @@ async def call_tool(name: str, arguments: Any) -> list:
         dy = arguments["dy"]
         buttons = arguments.get("buttons", 0)
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.send_mouse(dx, dy, buttons)
             if success:
                 return [TextContent(type="text", text=f"Mouse input sent: dx={dx}, dy={dy}, buttons={buttons}")]
@@ -3122,7 +3147,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_set_mouse_speed":
         speed = arguments["speed"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_mouse_speed(speed)
             if success:
                 return [TextContent(type="text", text=f"Mouse speed set to {speed}.")]
@@ -3137,7 +3162,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_ping":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.ping()
             if success:
                 return [TextContent(type="text", text="PONG - Amiberry IPC connection is working.")]
@@ -3148,11 +3173,24 @@ async def call_tool(name: str, arguments: Any) -> list:
         except Exception as e:
             return [TextContent(type="text", text=f"Error: {str(e)}")]
 
+    elif name == "set_active_instance":
+        global _active_instance
+        instance = arguments.get("instance")
+        _active_instance = instance
+        status = f"Active instance set to {instance}" if instance is not None else "Active instance set to auto-discover"
+        return [TextContent(type="text", text=status)]
+
+    elif name == "get_active_instance":
+        if _active_instance is None:
+            return [TextContent(type="text", text="Auto-discovering (no specific instance set)")]
+        else:
+            return [TextContent(type="text", text=f"Active instance: {_active_instance}")]
+
     # Round 2 runtime control tools
     elif name == "runtime_quicksave":
         slot = arguments.get("slot", 0)
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.quicksave(slot)
             if success:
                 return [TextContent(type="text", text=f"Quick saved to slot {slot}.")]
@@ -3168,7 +3206,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_quickload":
         slot = arguments.get("slot", 0)
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.quickload(slot)
             if success:
                 return [TextContent(type="text", text=f"Quick loading from slot {slot}.")]
@@ -3184,7 +3222,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_get_joyport_mode":
         port = arguments["port"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             result = await client.get_joyport_mode(port)
             if result:
                 mode, mode_name = result
@@ -3202,7 +3240,7 @@ async def call_tool(name: str, arguments: Any) -> list:
         port = arguments["port"]
         mode = arguments["mode"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_joyport_mode(port, mode)
             if success:
                 return [TextContent(type="text", text=f"Port {port} mode set to {mode}.")]
@@ -3218,7 +3256,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_get_autofire":
         port = arguments["port"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             mode = await client.get_autofire(port)
             if mode is not None:
                 modes = {0: "off", 1: "normal", 2: "toggle", 3: "always", 4: "toggle (no autofire)"}
@@ -3237,7 +3275,7 @@ async def call_tool(name: str, arguments: Any) -> list:
         port = arguments["port"]
         mode = arguments["mode"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_autofire(port, mode)
             if success:
                 return [TextContent(type="text", text=f"Port {port} autofire set to {mode}.")]
@@ -3252,7 +3290,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_led_status":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             status = await client.get_led_status()
 
             result = "LED Status:\n\n"
@@ -3269,7 +3307,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_list_harddrives":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             drives = await client.list_harddrives()
 
             if not drives or (len(drives) == 1 and "<no harddrives mounted>" in str(drives)):
@@ -3290,7 +3328,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_set_display_mode":
         mode = arguments["mode"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_display_mode(mode)
             modes = {0: "window", 1: "fullscreen", 2: "fullwindow"}
             if success:
@@ -3306,7 +3344,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_display_mode":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             result = await client.get_display_mode()
             if result:
                 mode, mode_name = result
@@ -3321,7 +3359,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_set_ntsc":
         enabled = arguments["enabled"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_ntsc(enabled)
             mode = "NTSC" if enabled else "PAL"
             if success:
@@ -3335,7 +3373,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_ntsc":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             result = await client.get_ntsc()
             if result:
                 is_ntsc, mode_name = result
@@ -3350,7 +3388,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_set_sound_mode":
         mode = arguments["mode"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_sound_mode(mode)
             modes = {0: "off", 1: "normal", 2: "stereo", 3: "best"}
             if success:
@@ -3366,7 +3404,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_sound_mode":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             result = await client.get_sound_mode()
             if result:
                 mode, mode_name = result
@@ -3381,7 +3419,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     # Round 3 runtime control tools
     elif name == "runtime_toggle_mouse_grab":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.toggle_mouse_grab()
             if success:
                 return [TextContent(type="text", text="Mouse grab toggled.")]
@@ -3394,7 +3432,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_mouse_speed":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             speed = await client.get_mouse_speed()
             if speed is not None:
                 return [TextContent(type="text", text=f"Mouse speed: {speed}")]
@@ -3408,7 +3446,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_set_cpu_speed":
         speed = arguments["speed"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_cpu_speed(speed)
             if success:
                 return [TextContent(type="text", text=f"CPU speed set to {speed}.")]
@@ -3421,7 +3459,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_cpu_speed":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             result = await client.get_cpu_speed()
             if result:
                 speed, desc = result
@@ -3436,7 +3474,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_toggle_rtg":
         monid = arguments.get("monid", 0)
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             result = await client.toggle_rtg(monid)
             if result:
                 return [TextContent(type="text", text=f"Display mode: {result}")]
@@ -3450,7 +3488,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_set_floppy_speed":
         speed = arguments["speed"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_floppy_speed(speed)
             if success:
                 desc = {0: "turbo", 100: "1x", 200: "2x", 400: "4x", 800: "8x"}.get(speed, str(speed))
@@ -3466,7 +3504,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_floppy_speed":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             result = await client.get_floppy_speed()
             if result:
                 speed, desc = result
@@ -3482,7 +3520,7 @@ async def call_tool(name: str, arguments: Any) -> list:
         drive = arguments["drive"]
         protect = arguments["protect"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.disk_write_protect(drive, protect)
             if success:
                 status = "protected" if protect else "writable"
@@ -3499,7 +3537,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_get_disk_write_protect":
         drive = arguments["drive"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             result = await client.get_disk_write_protect(drive)
             if result:
                 is_protected, status = result
@@ -3515,7 +3553,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_toggle_status_line":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             result = await client.toggle_status_line()
             if result:
                 mode, mode_name = result
@@ -3530,7 +3568,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_set_chipset":
         chipset = arguments["chipset"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_chipset(chipset)
             if success:
                 return [TextContent(type="text", text=f"Chipset set to {chipset}.")]
@@ -3545,7 +3583,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_chipset":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             result = await client.get_chipset()
             if result:
                 mask, name = result
@@ -3559,7 +3597,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_memory_config":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             config = await client.get_memory_config()
             result = "Memory configuration:\n"
             for key, value in config.items():
@@ -3572,7 +3610,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_fps":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             info = await client.get_fps()
             result = "Performance info:\n"
             for key, value in info.items():
@@ -3587,7 +3625,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_set_chip_mem":
         size_kb = arguments["size_kb"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_chip_mem(size_kb)
             if success:
                 return [TextContent(type="text", text=f"Chip RAM set to {size_kb} KB. Reset required for changes to take effect.")]
@@ -3603,7 +3641,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_set_fast_mem":
         size_kb = arguments["size_kb"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_fast_mem(size_kb)
             if success:
                 return [TextContent(type="text", text=f"Fast RAM set to {size_kb} KB. Reset required for changes to take effect.")]
@@ -3619,7 +3657,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_set_slow_mem":
         size_kb = arguments["size_kb"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_slow_mem(size_kb)
             if success:
                 return [TextContent(type="text", text=f"Slow RAM set to {size_kb} KB. Reset required for changes to take effect.")]
@@ -3635,7 +3673,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_set_z3_mem":
         size_mb = arguments["size_mb"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_z3_mem(size_mb)
             if success:
                 return [TextContent(type="text", text=f"Z3 Fast RAM set to {size_mb} MB. Reset required for changes to take effect.")]
@@ -3650,7 +3688,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_cpu_model":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             info = await client.get_cpu_model()
             result = "CPU Model:\n"
             for key, value in info.items():
@@ -3664,7 +3702,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_set_cpu_model":
         model = arguments["model"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_cpu_model(model)
             if success:
                 return [TextContent(type="text", text=f"CPU model set to {model}. Reset required for changes to take effect.")]
@@ -3681,7 +3719,7 @@ async def call_tool(name: str, arguments: Any) -> list:
         width = arguments["width"]
         height = arguments["height"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_window_size(width, height)
             if success:
                 return [TextContent(type="text", text=f"Window size set to {width}x{height}.")]
@@ -3696,7 +3734,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_window_size":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             info = await client.get_window_size()
             width = info.get("width", "?")
             height = info.get("height", "?")
@@ -3710,7 +3748,7 @@ async def call_tool(name: str, arguments: Any) -> list:
         mode = arguments["mode"]
         mode_names = ["auto", "nearest", "linear", "integer"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_scaling(mode)
             if success:
                 mode_index = mode + 1  # -1..2 -> 0..3
@@ -3727,7 +3765,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_scaling":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             info = await client.get_scaling()
             result = "Scaling:\n"
             for key, value in info.items():
@@ -3742,7 +3780,7 @@ async def call_tool(name: str, arguments: Any) -> list:
         mode = arguments["mode"]
         mode_names = ["single", "double", "scanlines"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_line_mode(mode)
             if success:
                 mode_name = mode_names[mode] if 0 <= mode < len(mode_names) else str(mode)
@@ -3758,7 +3796,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_line_mode":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             info = await client.get_line_mode()
             result = "Line mode:\n"
             for key, value in info.items():
@@ -3773,7 +3811,7 @@ async def call_tool(name: str, arguments: Any) -> list:
         mode = arguments["mode"]
         mode_names = ["lores", "hires", "superhires"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_resolution(mode)
             if success:
                 mode_name = mode_names[mode] if 0 <= mode < len(mode_names) else str(mode)
@@ -3789,7 +3827,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_resolution":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             result = await client.get_resolution()
             if result:
                 mode, mode_name = result
@@ -3805,7 +3843,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_set_autocrop":
         enabled = arguments["enabled"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_autocrop(enabled)
             if success:
                 return [TextContent(type="text", text=f"Autocrop {'enabled' if enabled else 'disabled'}.")]
@@ -3818,7 +3856,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_autocrop":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             result = await client.get_autocrop()
             if result is not None:
                 return [TextContent(type="text", text=f"Autocrop: {'enabled' if result else 'disabled'}")]
@@ -3832,7 +3870,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_insert_whdload":
         path = arguments["path"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.insert_whdload(path)
             if success:
                 return [TextContent(type="text", text=f"WHDLoad game loaded: {path}\nNote: A reset may be required for the game to start.")]
@@ -3845,7 +3883,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_eject_whdload":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.eject_whdload()
             if success:
                 return [TextContent(type="text", text="WHDLoad game ejected.")]
@@ -3858,7 +3896,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_whdload":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             info = await client.get_whdload()
             if info:
                 if info.get("loaded") == "0":
@@ -3878,7 +3916,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     # Round 6 - Debugging and Diagnostics
     elif name == "runtime_debug_activate":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.debug_activate()
             if success:
                 return [TextContent(type="text", text="Debugger activated.")]
@@ -3891,7 +3929,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_debug_deactivate":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.debug_deactivate()
             if success:
                 return [TextContent(type="text", text="Debugger deactivated, emulation resumed.")]
@@ -3904,7 +3942,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_debug_status":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             info = await client.debug_status()
             if info:
                 result = "Debugger status:\n"
@@ -3921,7 +3959,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_debug_step":
         count = arguments.get("count", 1)
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.debug_step(count)
             if success:
                 return [TextContent(type="text", text=f"Stepped {count} instruction(s).")]
@@ -3934,7 +3972,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_debug_continue":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.debug_continue()
             if success:
                 return [TextContent(type="text", text="Execution continued.")]
@@ -3947,7 +3985,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_cpu_regs":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             info = await client.get_cpu_regs()
             if info:
                 result = "CPU Registers:\n"
@@ -3968,7 +4006,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_custom_regs":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             info = await client.get_custom_regs()
             if info:
                 result = "Custom Chip Registers:\n"
@@ -3986,7 +4024,7 @@ async def call_tool(name: str, arguments: Any) -> list:
         address = arguments["address"]
         count = arguments.get("count", 10)
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             lines = await client.disassemble(address, count)
             if lines:
                 result = f"Disassembly at {address}:\n"
@@ -4003,7 +4041,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_set_breakpoint":
         address = arguments["address"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.set_breakpoint(address)
             if success:
                 return [TextContent(type="text", text=f"Breakpoint set at {address}.")]
@@ -4017,7 +4055,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_clear_breakpoint":
         address = arguments["address"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.clear_breakpoint(address)
             if success:
                 if address.upper() == "ALL":
@@ -4033,7 +4071,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_list_breakpoints":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             breakpoints = await client.list_breakpoints()
             if breakpoints:
                 result = "Active breakpoints:\n"
@@ -4049,7 +4087,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_copper_state":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             info = await client.get_copper_state()
             if info:
                 result = "Copper State:\n"
@@ -4065,7 +4103,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_blitter_state":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             info = await client.get_blitter_state()
             if info:
                 result = "Blitter State:\n"
@@ -4082,7 +4120,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_get_drive_state":
         drive = arguments.get("drive")
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             info = await client.get_drive_state(drive)
             if info:
                 result = f"Drive State{' (DF' + str(drive) + ')' if drive is not None else ''}:\n"
@@ -4098,7 +4136,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_audio_state":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             info = await client.get_audio_state()
             if info:
                 result = "Audio State:\n"
@@ -4114,7 +4152,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_get_dma_state":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             info = await client.get_dma_state()
             if info:
                 result = "DMA State:\n"
@@ -4319,7 +4357,7 @@ async def call_tool(name: str, arguments: Any) -> list:
         width = arguments["width"]
         try:
             address = int(address_str, 0)  # Handles both hex (0x...) and decimal
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             value = await client.read_memory(address, width)
             if value is not None:
                 return [
@@ -4348,7 +4386,7 @@ async def call_tool(name: str, arguments: Any) -> list:
         value = arguments["value"]
         try:
             address = int(address_str, 0)
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.write_memory(address, width, value)
             if success:
                 return [
@@ -4374,7 +4412,7 @@ async def call_tool(name: str, arguments: Any) -> list:
     elif name == "runtime_load_config":
         config_path = arguments["config_path"]
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.load_config(config_path)
             if success:
                 return [
@@ -4397,7 +4435,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
     elif name == "runtime_debug_step_over":
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.debug_step_over()
             if success:
                 return [TextContent(type="text", text="Stepped over subroutine.")]
@@ -4427,7 +4465,7 @@ async def call_tool(name: str, arguments: Any) -> list:
             filename = str(SCREENSHOT_DIR / f"debug_{timestamp}.png")
 
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             success = await client.screenshot(filename)
             if success:
                 screenshot_path = Path(filename)
@@ -4686,7 +4724,7 @@ async def call_tool(name: str, arguments: Any) -> list:
 
         # 2. IPC check
         try:
-            client = AmiberryIPCClient(prefer_dbus=False)
+            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
             pong = await client.ping()
             if pong:
                 results.append("IPC Ping: OK")
@@ -4820,7 +4858,7 @@ async def call_tool(name: str, arguments: Any) -> list:
                 ]
 
             try:
-                client = AmiberryIPCClient(prefer_dbus=False)
+                client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
                 pong = await client.ping()
                 if pong:
                     ipc_ready = True
