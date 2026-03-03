@@ -4,24 +4,26 @@ Reads metadata from Amiga savestate files without loading the full state.
 """
 
 import struct
-import zlib
 from pathlib import Path
 from typing import Any
-
 
 # ASF file format constants
 ASF_MAGIC = b"ASF "  # AmigaStateFile header
 CHUNK_HEADER_SIZE = 8  # 4 bytes name + 4 bytes size
 
+# Pre-compiled struct formats to avoid repeated format string parsing
+_STRUCT_U32_BE = struct.Struct(">I")
+_STRUCT_U16_BE = struct.Struct(">H")
+
 
 def _read_u32_be(data: bytes, offset: int) -> int:
     """Read a big-endian 32-bit unsigned integer."""
-    return struct.unpack(">I", data[offset : offset + 4])[0]
+    return _STRUCT_U32_BE.unpack_from(data, offset)[0]
 
 
 def _read_u16_be(data: bytes, offset: int) -> int:
     """Read a big-endian 16-bit unsigned integer."""
-    return struct.unpack(">H", data[offset : offset + 2])[0]
+    return _STRUCT_U16_BE.unpack_from(data, offset)[0]
 
 
 def _read_string(data: bytes, offset: int) -> tuple[str, int]:
@@ -31,6 +33,50 @@ def _read_string(data: bytes, offset: int) -> tuple[str, int]:
         return "", 0
     string = data[offset:end].decode("latin-1", errors="replace")
     return string, end - offset + 1
+
+
+def _parse_header(data: bytes) -> tuple[dict[str, Any], int]:
+    """Parse the ASF header and return (metadata_dict, offset_to_first_chunk).
+
+    Validates the magic header and reads version + 3 null-terminated strings
+    (emulator name, version, description).
+    """
+    if len(data) < 4 or data[:4] != ASF_MAGIC:
+        raise ValueError("Invalid savestate file: missing ASF header")
+
+    metadata: dict[str, Any] = {}
+    offset = 4
+
+    # Version (4 bytes)
+    if offset + 4 <= len(data):
+        metadata["version"] = _read_u32_be(data, offset)
+        offset += 4
+
+    # Emulator name
+    if offset < len(data):
+        emulator, consumed = _read_string(data, offset)
+        if consumed == 0:
+            return metadata, offset
+        metadata["emulator"] = emulator
+        offset += consumed
+
+    # Emulator version
+    if offset < len(data):
+        emu_version, consumed = _read_string(data, offset)
+        if consumed == 0:
+            return metadata, offset
+        metadata["emulator_version"] = emu_version
+        offset += consumed
+
+    # Description
+    if offset < len(data):
+        description, consumed = _read_string(data, offset)
+        if consumed == 0:
+            return metadata, offset
+        metadata["description"] = description
+        offset += consumed
+
+    return metadata, offset
 
 
 def inspect_savestate(path: Path) -> dict[str, Any]:
@@ -50,44 +96,15 @@ def inspect_savestate(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Savestate file not found: {path}")
 
-    # Read the file
     data = path.read_bytes()
-
-    # Check magic header
-    if len(data) < 4 or data[:4] != ASF_MAGIC:
-        raise ValueError(f"Invalid savestate file: missing ASF header")
+    header_meta, offset = _parse_header(data)
 
     metadata: dict[str, Any] = {
         "file": str(path),
         "filename": path.name,
         "size_bytes": len(data),
+        **header_meta,
     }
-
-    # Parse header after magic
-    offset = 4
-
-    # Version (4 bytes)
-    if offset + 4 <= len(data):
-        metadata["version"] = _read_u32_be(data, offset)
-        offset += 4
-
-    # Emulator name (null-terminated string)
-    if offset < len(data):
-        emulator, consumed = _read_string(data, offset)
-        metadata["emulator"] = emulator
-        offset += consumed
-
-    # Emulator version (null-terminated string)
-    if offset < len(data):
-        emu_version, consumed = _read_string(data, offset)
-        metadata["emulator_version"] = emu_version
-        offset += consumed
-
-    # Description/comment (null-terminated string)
-    if offset < len(data):
-        description, consumed = _read_string(data, offset)
-        metadata["description"] = description
-        offset += consumed
 
     # Parse chunks to extract more info
     chunks = []
@@ -100,7 +117,7 @@ def inspect_savestate(path: Path) -> dict[str, Any]:
         chunk_name = data[offset : offset + 4].decode("latin-1", errors="replace")
         chunk_size = _read_u32_be(data, offset + 4)
 
-        if chunk_size == 0 or chunk_size > len(data) - offset:
+        if chunk_size < CHUNK_HEADER_SIZE or chunk_size > len(data) - offset:
             break
 
         chunk_data = data[offset + CHUNK_HEADER_SIZE : offset + chunk_size]
@@ -274,37 +291,24 @@ def list_savestate_chunks(path: Path) -> list[dict[str, Any]]:
         raise FileNotFoundError(f"Savestate file not found: {path}")
 
     data = path.read_bytes()
-
-    if len(data) < 4 or data[:4] != ASF_MAGIC:
-        raise ValueError(f"Invalid savestate file: missing ASF header")
-
-    # Skip header to find first chunk
-    offset = 4
-
-    # Skip version
-    offset += 4
-
-    # Skip strings (emulator, version, description)
-    for _ in range(3):
-        end = data.find(b"\x00", offset)
-        if end == -1:
-            break
-        offset = end + 1
+    _, offset = _parse_header(data)
 
     chunks = []
     while offset + CHUNK_HEADER_SIZE <= len(data):
         chunk_name = data[offset : offset + 4].decode("latin-1", errors="replace")
         chunk_size = _read_u32_be(data, offset + 4)
 
-        if chunk_size == 0 or chunk_size > len(data) - offset:
+        if chunk_size < CHUNK_HEADER_SIZE or chunk_size > len(data) - offset:
             break
 
-        chunks.append({
-            "name": chunk_name,
-            "offset": offset,
-            "size": chunk_size,
-            "data_size": chunk_size - CHUNK_HEADER_SIZE,
-        })
+        chunks.append(
+            {
+                "name": chunk_name,
+                "offset": offset,
+                "size": chunk_size,
+                "data_size": chunk_size - CHUNK_HEADER_SIZE,
+            }
+        )
 
         if chunk_name == "END ":
             break

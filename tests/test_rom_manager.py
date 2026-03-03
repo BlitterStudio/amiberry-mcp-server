@@ -3,9 +3,7 @@
 Unit tests for the rom_manager module.
 """
 
-import tempfile
 import zlib
-from pathlib import Path
 
 import pytest
 
@@ -14,10 +12,10 @@ from amiberry_mcp.rom_manager import (
     ROM_EXTENSIONS,
     calculate_rom_crc32,
     calculate_rom_md5,
+    find_rom_for_model,
+    get_rom_summary,
     identify_rom,
     scan_rom_directory,
-    get_rom_summary,
-    find_rom_for_model,
 )
 
 
@@ -81,7 +79,7 @@ class TestIdentifyRom:
 
         assert result["filename"] == "unknown.rom"
         assert result["size"] == 262144
-        assert result["identified"] == False
+        assert not result["identified"]
         assert "crc32" in result
         assert "md5" in result
         assert result["probable_type"] == "Kickstart 1.x (256KB)"
@@ -94,7 +92,7 @@ class TestIdentifyRom:
         result = identify_rom(test_file)
 
         assert result["size"] == 524288
-        assert result["identified"] == False
+        assert not result["identified"]
         assert result["probable_type"] == "Kickstart 2.x/3.x (512KB)"
 
     def test_identify_1mb_rom(self, tmp_path):
@@ -105,7 +103,7 @@ class TestIdentifyRom:
         result = identify_rom(test_file)
 
         assert result["size"] == 1048576
-        assert result["identified"] == False
+        assert not result["identified"]
         assert result["probable_type"] == "Extended ROM or combined ROM (1MB)"
 
     def test_identify_unknown_size(self, tmp_path):
@@ -326,7 +324,9 @@ class TestKnownRomsDatabase:
         valid_sizes = {262144, 524288, 1048576}  # 256KB, 512KB, 1MB
 
         for crc, info in KNOWN_ROMS.items():
-            assert info["size"] in valid_sizes, f"Invalid size for {crc}: {info['size']}"
+            assert info["size"] in valid_sizes, (
+                f"Invalid size for {crc}: {info['size']}"
+            )
 
     def test_kickstart_versions_present(self):
         """Test that common Kickstart versions are present."""

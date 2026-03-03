@@ -4,9 +4,10 @@ Test MCP server connection via stdio
 This tests the actual MCP protocol communication using the MCP SDK client
 """
 
-import asyncio
 import sys
 from pathlib import Path
+
+import pytest
 
 # Try to import MCP client SDK
 try:
@@ -16,22 +17,9 @@ try:
     MCP_CLIENT_AVAILABLE = True
 except ImportError:
     MCP_CLIENT_AVAILABLE = False
-    print("=" * 50)
-    print("MCP Client SDK not found!")
-    print("=" * 50)
-    print()
-    print("The MCP client SDK needs to be installed to run this test.")
-    print()
-    print("To install, run:")
-    print("  scripts/install.sh")
-    print()
-    print("Or manually install in your virtual environment:")
-    print("  source venv/bin/activate")
-    print("  pip install -e .")
-    print()
-    sys.exit(1)
 
 
+@pytest.mark.skipif(not MCP_CLIENT_AVAILABLE, reason="MCP client SDK not installed")
 async def test_mcp_protocol():
     """Test the MCP protocol communication using the MCP SDK client"""
 
@@ -46,9 +34,7 @@ async def test_mcp_protocol():
     python_path = project_dir / "venv" / "bin" / "python"
 
     if not python_path.exists():
-        print(f"Error: Virtual environment Python not found: {python_path}")
-        print("  Run scripts/install.sh first")
-        return False
+        pytest.skip(f"Virtual environment Python not found: {python_path}")
 
     print(f"Starting server from: {project_dir}")
     print()
@@ -103,17 +89,12 @@ async def test_mcp_protocol():
                 return True
 
     except Exception as e:
-        print(f"Error during testing: {e}")
-        import traceback
-
-        traceback.print_exc()
-        return False
+        pytest.fail(f"MCP protocol test failed: {e}")
 
 
 def main():
     """Main entry point"""
-    success = asyncio.run(test_mcp_protocol())
-    sys.exit(0 if success else 1)
+    sys.exit(pytest.main([__file__, "-v"]))
 
 
 if __name__ == "__main__":

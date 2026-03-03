@@ -20,13 +20,14 @@ async def test_server():
 
     try:
         # Import from the package
-        from amiberry_mcp.server import app, call_tool
+        from mcp.types import TextContent
+
         from amiberry_mcp.config import (
-            EMULATOR_BINARY,
             CONFIG_DIR,
             DISK_IMAGE_DIRS,
+            EMULATOR_BINARY,
         )
-        from mcp.types import TextContent
+        from amiberry_mcp.server import app, call_tool
 
         print("Server module imported successfully")
         print()
@@ -103,7 +104,7 @@ async def test_server():
         ]
 
         dirs_to_check.extend(
-            [(f"Disk image dir {i+1}", d) for i, d in enumerate(DISK_IMAGE_DIRS)]
+            [(f"Disk image dir {i + 1}", d) for i, d in enumerate(DISK_IMAGE_DIRS)]
         )
 
         for name, path in dirs_to_check:

@@ -10,9 +10,8 @@ The client automatically chooses the best available transport.
 
 import asyncio
 import os
-import socket
 import sys
-from typing import Any, Optional
+from typing import Any
 
 # Check for D-Bus support (Linux only)
 DBUS_AVAILABLE = False
@@ -26,21 +25,20 @@ if sys.platform == "linux":
         pass
 
 
-# Socket paths
+# Socket paths - cache base directory
+_SOCKET_BASE_DIR = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+
+
 def _get_socket_path(instance: int = 0) -> str:
     """Generate socket path for a given instance number."""
-    xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
-    base_dir = xdg_runtime if xdg_runtime else "/tmp"
-
     if instance == 0:
-        return os.path.join(base_dir, "amiberry.sock")
+        return os.path.join(_SOCKET_BASE_DIR, "amiberry.sock")
     else:
-        return os.path.join(base_dir, f"amiberry_{instance}.sock")
+        return os.path.join(_SOCKET_BASE_DIR, f"amiberry_{instance}.sock")
 
 
 def _find_socket_path() -> str:
     """Find the first available Amiberry socket (supports multiple instances)."""
-    # Try default socket first
     for instance in range(10):
         path = _get_socket_path(instance)
         if os.path.exists(path):
@@ -61,7 +59,7 @@ class IPCError(Exception):
     pass
 
 
-class ConnectionError(IPCError):
+class IPCConnectionError(IPCError):
     """Failed to connect to Amiberry."""
 
     pass
@@ -73,6 +71,47 @@ class CommandError(IPCError):
     pass
 
 
+def _safe_int(value: str, default: int = 0) -> int:
+    """Convert a string to int, returning default on failure."""
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
+
+def _parse_kv_response(data: list[str], coerce_bools: bool = False) -> dict[str, Any]:
+    """Parse a list of 'key=value' strings into a dictionary.
+
+    Args:
+        data: List of tab-delimited response items from IPC.
+        coerce_bools: If True, convert "true"/"false" strings to bool values.
+    """
+    result: dict[str, Any] = {}
+    for item in data:
+        if "=" in item:
+            key, value = item.split("=", 1)
+            if coerce_bools:
+                if value.lower() == "true":
+                    value = True
+                elif value.lower() == "false":
+                    value = False
+            result[key] = value
+    return result
+
+
+# Mode lookup tables (avoid recreating per call)
+_SCALING_MODE_MAP = {"auto": -1, "nearest": 0, "linear": 1, "integer": 2}
+_LINE_MODE_MAP = {"single": 0, "none": 0, "double": 1, "doubled": 1, "scanlines": 2}
+_RESOLUTION_MODE_MAP = {
+    "lores": 0,
+    "low": 0,
+    "hires": 1,
+    "high": 1,
+    "superhires": 2,
+    "super": 2,
+}
+
+
 class AmiberryIPCClient:
     """
     Async IPC client for Amiberry runtime control.
@@ -81,7 +120,12 @@ class AmiberryIPCClient:
     Automatically selects the best available transport.
     """
 
-    def __init__(self, prefer_dbus: bool = True, socket_path: Optional[str] = None, instance: Optional[int] = None):
+    def __init__(
+        self,
+        prefer_dbus: bool = True,
+        socket_path: str | None = None,
+        instance: int | None = None,
+    ):
         """
         Initialize the IPC client.
 
@@ -93,9 +137,8 @@ class AmiberryIPCClient:
             instance: Specific instance number to connect to. Overrides auto-discovery.
         """
         self._prefer_dbus = prefer_dbus and DBUS_AVAILABLE
-        self._dbus_conn = None
         self._instance = instance
-        
+
         if socket_path:
             self._socket_path = socket_path
         elif instance is not None:
@@ -126,7 +169,7 @@ class AmiberryIPCClient:
         socket_path = self._socket_path
 
         if not os.path.exists(socket_path):
-            raise ConnectionError(
+            raise IPCConnectionError(
                 f"Socket not found at {socket_path}. Is Amiberry running with USE_IPC_SOCKET?"
             )
 
@@ -134,6 +177,7 @@ class AmiberryIPCClient:
         parts = [command.upper()] + list(args)
         message = "\t".join(parts) + "\n"
 
+        writer = None
         try:
             # Create socket and connect
             reader, writer = await asyncio.wait_for(
@@ -146,40 +190,46 @@ class AmiberryIPCClient:
 
             # Read response
             response = await asyncio.wait_for(reader.readline(), timeout=timeout)
-            writer.close()
-            await writer.wait_closed()
 
             # Parse response
             response_str = response.decode("utf-8").strip()
-            parts = response_str.split("\t")
-
-            if not parts:
+            if not response_str:
                 return False, ["Empty response"]
 
+            parts = response_str.split("\t")
             success = parts[0] == "OK"
             data = parts[1:] if len(parts) > 1 else []
 
             return success, data
 
-        except asyncio.TimeoutError:
-            raise ConnectionError(f"Connection to {socket_path} timed out")
-        except FileNotFoundError:
-            raise ConnectionError(f"Socket not found: {socket_path}")
-        except ConnectionRefusedError:
-            raise ConnectionError(f"Connection refused to {socket_path}")
+        except asyncio.TimeoutError as e:
+            raise IPCConnectionError(f"Connection to {socket_path} timed out") from e
+        except FileNotFoundError as e:
+            raise IPCConnectionError(f"Socket not found: {socket_path}") from e
+        except ConnectionRefusedError as e:
+            raise IPCConnectionError(f"Connection refused to {socket_path}") from e
         except Exception as e:
-            raise ConnectionError(f"Socket error: {e}")
+            raise IPCConnectionError(f"Socket error: {e}") from e
+        finally:
+            if writer is not None:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
 
     async def _send_dbus_command(
         self, method: str, *args: Any, timeout: float = 5.0
     ) -> tuple[bool, list[str]]:
         """Send a command over D-Bus and return the response."""
         if not DBUS_AVAILABLE:
-            raise ConnectionError("D-Bus support not available")
+            raise IPCConnectionError("D-Bus support not available")
 
         try:
             async with open_dbus_connection(bus="SESSION") as conn:
-                addr = DBusAddress(DBUS_PATH, bus_name=DBUS_INTERFACE, interface=DBUS_INTERFACE)
+                addr = DBusAddress(
+                    DBUS_PATH, bus_name=DBUS_INTERFACE, interface=DBUS_INTERFACE
+                )
 
                 # Build the method call
                 msg = new_method_call(addr, method)
@@ -187,7 +237,9 @@ class AmiberryIPCClient:
                     msg.body = args
 
                 # Send and wait for reply
-                reply = await asyncio.wait_for(conn.send_and_get_reply(msg), timeout=timeout)
+                reply = await asyncio.wait_for(
+                    conn.send_and_get_reply(msg), timeout=timeout
+                )
 
                 # Parse reply - D-Bus returns boolean success
                 if reply.body and len(reply.body) > 0:
@@ -196,10 +248,10 @@ class AmiberryIPCClient:
                     return success, [str(d) for d in data]
                 return True, []
 
-        except asyncio.TimeoutError:
-            raise ConnectionError("D-Bus call timed out")
+        except asyncio.TimeoutError as e:
+            raise IPCConnectionError("D-Bus call timed out") from e
         except Exception as e:
-            raise ConnectionError(f"D-Bus error: {e}")
+            raise IPCConnectionError(f"D-Bus error: {e}") from e
 
     async def _send_command(
         self, command: str, *args: str, timeout: float = 5.0
@@ -315,7 +367,7 @@ class AmiberryIPCClient:
         """
         success, data = await self._send_command("QUERYDISKSWAP", str(drive_num))
         if success and data:
-            return int(data[0])
+            return _safe_int(data[0], -1)
         return -1
 
     async def get_status(self) -> dict[str, Any]:
@@ -329,20 +381,9 @@ class AmiberryIPCClient:
         if not success:
             raise CommandError("Failed to get status")
 
-        status = {}
-        for item in data:
-            if "=" in item:
-                key, value = item.split("=", 1)
-                # Convert boolean strings
-                if value.lower() == "true":
-                    value = True
-                elif value.lower() == "false":
-                    value = False
-                status[key] = value
+        return _parse_kv_response(data, coerce_bools=True)
 
-        return status
-
-    async def get_config(self, option: str) -> Optional[str]:
+    async def get_config(self, option: str) -> str | None:
         """
         Get a configuration option value.
 
@@ -399,7 +440,7 @@ class AmiberryIPCClient:
         success, _ = await self._send_command("SEND_KEY", str(keycode), state)
         return success
 
-    async def read_memory(self, address: int, width: int = 1) -> Optional[int]:
+    async def read_memory(self, address: int, width: int = 1) -> int | None:
         """
         Read memory from the emulated Amiga.
 
@@ -417,7 +458,10 @@ class AmiberryIPCClient:
         addr_str = f"0x{address:x}" if isinstance(address, int) else str(address)
         success, data = await self._send_command("READ_MEM", addr_str, str(width))
         if success and data:
-            return int(data[0])
+            try:
+                return int(data[0], 0)  # support hex "0x..." responses
+            except (ValueError, TypeError):
+                return None
         return None
 
     async def write_memory(self, address: int, width: int, value: int) -> bool:
@@ -483,7 +527,7 @@ class AmiberryIPCClient:
         success, _ = await self._send_command("SET_VOLUME", str(volume))
         return success
 
-    async def get_volume(self) -> Optional[int]:
+    async def get_volume(self) -> int | None:
         """
         Get the current volume.
 
@@ -492,7 +536,7 @@ class AmiberryIPCClient:
         """
         success, data = await self._send_command("GET_VOLUME")
         if success and data:
-            return int(data[0])
+            return _safe_int(data[0])
         return None
 
     async def mute(self) -> bool:
@@ -538,7 +582,7 @@ class AmiberryIPCClient:
         success, _ = await self._send_command("SET_WARP", "1" if enabled else "0")
         return success
 
-    async def get_warp(self) -> Optional[bool]:
+    async def get_warp(self) -> bool | None:
         """
         Get warp mode status.
 
@@ -561,12 +605,7 @@ class AmiberryIPCClient:
         if not success:
             raise CommandError("Failed to get version")
 
-        info = {}
-        for item in data:
-            if "=" in item:
-                key, value = item.split("=", 1)
-                info[key] = value
-        return info
+        return _parse_kv_response(data)
 
     async def list_floppies(self) -> dict[str, str]:
         """
@@ -579,12 +618,7 @@ class AmiberryIPCClient:
         if not success:
             raise CommandError("Failed to list floppies")
 
-        drives = {}
-        for item in data:
-            if "=" in item:
-                key, value = item.split("=", 1)
-                drives[key] = value
-        return drives
+        return _parse_kv_response(data)
 
     async def list_configs(self) -> list[str]:
         """
@@ -654,7 +688,7 @@ class AmiberryIPCClient:
             True if connection is working
         """
         success, data = await self._send_command("PING")
-        return success and data and data[0] == "PONG"
+        return bool(success and data and data[0] == "PONG")
 
     async def help(self) -> list[str]:
         """
@@ -712,7 +746,7 @@ class AmiberryIPCClient:
             raise ValueError("Port must be 0-3")
         success, data = await self._send_command("GET_JOYPORT_MODE", str(port))
         if success and len(data) >= 2:
-            return int(data[0]), data[1]
+            return _safe_int(data[0]), data[1]
         return None
 
     async def set_joyport_mode(self, port: int, mode: int) -> bool:
@@ -747,7 +781,7 @@ class AmiberryIPCClient:
             raise ValueError("Port must be 0-3")
         success, data = await self._send_command("GET_AUTOFIRE", str(port))
         if success and data:
-            return int(data[0])
+            return _safe_int(data[0])
         return None
 
     async def set_autofire(self, port: int, mode: int) -> bool:
@@ -779,12 +813,7 @@ class AmiberryIPCClient:
         if not success:
             raise CommandError("Failed to get LED status")
 
-        status = {}
-        for item in data:
-            if "=" in item:
-                key, value = item.split("=", 1)
-                status[key] = value
-        return status
+        return _parse_kv_response(data)
 
     async def list_harddrives(self) -> dict[str, str]:
         """
@@ -797,12 +826,7 @@ class AmiberryIPCClient:
         if not success:
             raise CommandError("Failed to list hard drives")
 
-        drives = {}
-        for item in data:
-            if "=" in item:
-                key, value = item.split("=", 1)
-                drives[key] = value
-        return drives
+        return _parse_kv_response(data)
 
     async def set_display_mode(self, mode: int) -> bool:
         """
@@ -828,7 +852,7 @@ class AmiberryIPCClient:
         """
         success, data = await self._send_command("GET_DISPLAY_MODE")
         if success and len(data) >= 2:
-            return int(data[0]), data[1]
+            return _safe_int(data[0]), data[1]
         return None
 
     async def set_ntsc(self, enabled: bool) -> bool:
@@ -880,7 +904,7 @@ class AmiberryIPCClient:
         """
         success, data = await self._send_command("GET_SOUND_MODE")
         if success and len(data) >= 2:
-            return int(data[0]), data[1]
+            return _safe_int(data[0]), data[1]
         return None
 
     # === ROUND 3 COMMANDS ===
@@ -904,7 +928,7 @@ class AmiberryIPCClient:
         """
         success, data = await self._send_command("GET_MOUSE_SPEED")
         if success and data:
-            return int(data[0])
+            return _safe_int(data[0])
         return None
 
     async def set_cpu_speed(self, speed: int) -> bool:
@@ -929,7 +953,7 @@ class AmiberryIPCClient:
         """
         success, data = await self._send_command("GET_CPU_SPEED")
         if success and len(data) >= 2:
-            return int(data[0]), data[1]
+            return _safe_int(data[0]), data[1]
         return None
 
     async def toggle_rtg(self, monid: int = 0) -> str | None:
@@ -971,7 +995,7 @@ class AmiberryIPCClient:
         """
         success, data = await self._send_command("GET_FLOPPY_SPEED")
         if success and len(data) >= 2:
-            return int(data[0]), data[1]
+            return _safe_int(data[0]), data[1]
         return None
 
     async def disk_write_protect(self, drive: int, protect: bool) -> bool:
@@ -1018,7 +1042,7 @@ class AmiberryIPCClient:
         """
         success, data = await self._send_command("TOGGLE_STATUS_LINE")
         if success and len(data) >= 2:
-            return int(data[0]), data[1]
+            return _safe_int(data[0]), data[1]
         return None
 
     async def set_chipset(self, chipset: str) -> bool:
@@ -1031,7 +1055,18 @@ class AmiberryIPCClient:
         Returns:
             True if successful
         """
-        valid = ("OCS", "ECS_AGNUS", "ECS_DENISE", "ECS", "AGA", "0", "1", "2", "3", "4")
+        valid = (
+            "OCS",
+            "ECS_AGNUS",
+            "ECS_DENISE",
+            "ECS",
+            "AGA",
+            "0",
+            "1",
+            "2",
+            "3",
+            "4",
+        )
         if chipset.upper() not in valid:
             raise ValueError(f"Chipset must be one of: {valid}")
         success, _ = await self._send_command("SET_CHIPSET", chipset.upper())
@@ -1046,7 +1081,7 @@ class AmiberryIPCClient:
         """
         success, data = await self._send_command("GET_CHIPSET")
         if success and len(data) >= 2:
-            return int(data[0]), data[1]
+            return _safe_int(data[0]), data[1]
         return None
 
     async def get_memory_config(self) -> dict[str, str]:
@@ -1060,12 +1095,7 @@ class AmiberryIPCClient:
         if not success:
             raise CommandError("Failed to get memory config")
 
-        config = {}
-        for item in data:
-            if "=" in item:
-                key, value = item.split("=", 1)
-                config[key] = value
-        return config
+        return _parse_kv_response(data)
 
     async def get_fps(self) -> dict[str, str]:
         """
@@ -1078,12 +1108,7 @@ class AmiberryIPCClient:
         if not success:
             raise CommandError("Failed to get FPS")
 
-        info = {}
-        for item in data:
-            if "=" in item:
-                key, value = item.split("=", 1)
-                info[key] = value
-        return info
+        return _parse_kv_response(data)
 
     # === ROUND 4 COMMANDS - Memory and Window Control ===
 
@@ -1162,12 +1187,7 @@ class AmiberryIPCClient:
         if not success:
             raise CommandError("Failed to get CPU model")
 
-        info = {}
-        for item in data:
-            if "=" in item:
-                key, value = item.split("=", 1)
-                info[key] = value
-        return info
+        return _parse_kv_response(data)
 
     async def set_cpu_model(self, model: str | int) -> bool:
         """
@@ -1180,9 +1200,24 @@ class AmiberryIPCClient:
             True if successful
         """
         model_str = str(model)
-        valid_models = ("68000", "68010", "68020", "68030", "68040", "68060", "0", "10", "20", "30", "40", "60")
+        valid_models = (
+            "68000",
+            "68010",
+            "68020",
+            "68030",
+            "68040",
+            "68060",
+            "0",
+            "10",
+            "20",
+            "30",
+            "40",
+            "60",
+        )
         if model_str not in valid_models:
-            raise ValueError(f"Model must be one of: 68000, 68010, 68020, 68030, 68040, 68060")
+            raise ValueError(
+                "Model must be one of: 68000, 68010, 68020, 68030, 68040, 68060"
+            )
         success, _ = await self._send_command("SET_CPU_MODEL", model_str)
         return success
 
@@ -1199,7 +1234,9 @@ class AmiberryIPCClient:
         """
         if not 320 <= width <= 3840 or not 200 <= height <= 2160:
             raise ValueError("Size must be between 320x200 and 3840x2160")
-        success, _ = await self._send_command("SET_WINDOW_SIZE", str(width), str(height))
+        success, _ = await self._send_command(
+            "SET_WINDOW_SIZE", str(width), str(height)
+        )
         return success
 
     async def get_window_size(self) -> dict[str, int]:
@@ -1213,12 +1250,8 @@ class AmiberryIPCClient:
         if not success:
             raise CommandError("Failed to get window size")
 
-        info = {}
-        for item in data:
-            if "=" in item:
-                key, value = item.split("=", 1)
-                info[key] = int(value)
-        return info
+        raw = _parse_kv_response(data)
+        return {k: _safe_int(v) for k, v in raw.items()}
 
     async def set_scaling(self, mode: int | str) -> bool:
         """
@@ -1230,9 +1263,14 @@ class AmiberryIPCClient:
         Returns:
             True if successful
         """
-        mode_map = {"auto": -1, "nearest": 0, "linear": 1, "integer": 2}
         if isinstance(mode, str):
-            mode = mode_map.get(mode.lower(), -1)
+            resolved = _SCALING_MODE_MAP.get(mode.lower())
+            if resolved is None:
+                raise ValueError(
+                    f"Unknown scaling mode: '{mode}'. "
+                    f"Valid: {list(_SCALING_MODE_MAP.keys())}"
+                )
+            mode = resolved
         if not -1 <= mode <= 2:
             raise ValueError("Mode must be -1..2 (auto, nearest, linear, integer)")
         success, _ = await self._send_command("SET_SCALING", str(mode))
@@ -1249,12 +1287,7 @@ class AmiberryIPCClient:
         if not success:
             raise CommandError("Failed to get scaling")
 
-        info = {}
-        for item in data:
-            if "=" in item:
-                key, value = item.split("=", 1)
-                info[key] = value
-        return info
+        return _parse_kv_response(data)
 
     async def set_line_mode(self, mode: int | str) -> bool:
         """
@@ -1266,9 +1299,13 @@ class AmiberryIPCClient:
         Returns:
             True if successful
         """
-        mode_map = {"single": 0, "none": 0, "double": 1, "doubled": 1, "scanlines": 2}
         if isinstance(mode, str):
-            mode = mode_map.get(mode.lower(), -1)
+            resolved = _LINE_MODE_MAP.get(mode.lower())
+            if resolved is None:
+                raise ValueError(
+                    f"Unknown line mode: '{mode}'. Valid: {list(_LINE_MODE_MAP.keys())}"
+                )
+            mode = resolved
         if not 0 <= mode <= 2:
             raise ValueError("Mode must be 0-2 (single, double, scanlines)")
         success, _ = await self._send_command("SET_LINE_MODE", str(mode))
@@ -1285,12 +1322,7 @@ class AmiberryIPCClient:
         if not success:
             raise CommandError("Failed to get line mode")
 
-        info = {}
-        for item in data:
-            if "=" in item:
-                key, value = item.split("=", 1)
-                info[key] = value
-        return info
+        return _parse_kv_response(data)
 
     async def set_resolution(self, mode: int | str) -> bool:
         """
@@ -1302,9 +1334,14 @@ class AmiberryIPCClient:
         Returns:
             True if successful
         """
-        mode_map = {"lores": 0, "low": 0, "hires": 1, "high": 1, "superhires": 2, "super": 2}
         if isinstance(mode, str):
-            mode = mode_map.get(mode.lower(), -1)
+            resolved = _RESOLUTION_MODE_MAP.get(mode.lower())
+            if resolved is None:
+                raise ValueError(
+                    f"Unknown resolution mode: '{mode}'. "
+                    f"Valid: {list(_RESOLUTION_MODE_MAP.keys())}"
+                )
+            mode = resolved
         if not 0 <= mode <= 2:
             raise ValueError("Mode must be 0-2 (lores, hires, superhires)")
         success, _ = await self._send_command("SET_RESOLUTION", str(mode))
@@ -1319,7 +1356,7 @@ class AmiberryIPCClient:
         """
         success, data = await self._send_command("GET_RESOLUTION")
         if success and len(data) >= 2:
-            return int(data[0]), data[1]
+            return _safe_int(data[0]), data[1]
         return None
 
     # === ROUND 5 COMMANDS - Autocrop and WHDLoad ===
@@ -1384,12 +1421,7 @@ class AmiberryIPCClient:
         if not success:
             return None
 
-        info = {}
-        for item in data:
-            if "=" in item:
-                key, value = item.split("=", 1)
-                info[key] = value
-        return info
+        return _parse_kv_response(data)
 
     # === ROUND 6 COMMANDS - Debugging and Diagnostics ===
 
@@ -1424,12 +1456,7 @@ class AmiberryIPCClient:
         if not success:
             return None
 
-        info = {}
-        for item in data:
-            if "=" in item:
-                key, value = item.split("=", 1)
-                info[key] = value
-        return info
+        return _parse_kv_response(data)
 
     async def debug_step(self, count: int = 1) -> bool:
         """
@@ -1476,12 +1503,7 @@ class AmiberryIPCClient:
         if not success:
             return None
 
-        info = {}
-        for item in data:
-            if "=" in item:
-                key, value = item.split("=", 1)
-                info[key] = value
-        return info
+        return _parse_kv_response(data)
 
     async def get_custom_regs(self) -> dict[str, str] | None:
         """
@@ -1495,12 +1517,7 @@ class AmiberryIPCClient:
         if not success:
             return None
 
-        info = {}
-        for item in data:
-            if "=" in item:
-                key, value = item.split("=", 1)
-                info[key] = value
-        return info
+        return _parse_kv_response(data)
 
     async def disassemble(self, address: int | str, count: int = 10) -> list[str]:
         """
@@ -1584,12 +1601,7 @@ class AmiberryIPCClient:
         if not success:
             return None
 
-        info = {}
-        for item in data:
-            if "=" in item:
-                key, value = item.split("=", 1)
-                info[key] = value
-        return info
+        return _parse_kv_response(data)
 
     async def get_blitter_state(self) -> dict[str, str] | None:
         """
@@ -1603,12 +1615,7 @@ class AmiberryIPCClient:
         if not success:
             return None
 
-        info = {}
-        for item in data:
-            if "=" in item:
-                key, value = item.split("=", 1)
-                info[key] = value
-        return info
+        return _parse_kv_response(data)
 
     async def get_drive_state(self, drive: int | None = None) -> dict[str, str] | None:
         """
@@ -1631,12 +1638,7 @@ class AmiberryIPCClient:
         if not success:
             return None
 
-        info = {}
-        for item in data:
-            if "=" in item:
-                key, value = item.split("=", 1)
-                info[key] = value
-        return info
+        return _parse_kv_response(data)
 
     async def get_audio_state(self) -> dict[str, str] | None:
         """
@@ -1650,12 +1652,7 @@ class AmiberryIPCClient:
         if not success:
             return None
 
-        info = {}
-        for item in data:
-            if "=" in item:
-                key, value = item.split("=", 1)
-                info[key] = value
-        return info
+        return _parse_kv_response(data)
 
     async def get_dma_state(self) -> dict[str, str] | None:
         """
@@ -1669,25 +1666,26 @@ class AmiberryIPCClient:
         if not success:
             return None
 
-        info = {}
-        for item in data:
-            if "=" in item:
-                key, value = item.split("=", 1)
-                info[key] = value
-        return info
+        return _parse_kv_response(data)
 
 
 # Convenience function for quick commands
-async def send_ipc_command(command: str, *args: str) -> tuple[bool, list[str]]:
+async def send_ipc_command(
+    command: str,
+    *args: str,
+    client: AmiberryIPCClient | None = None,
+) -> tuple[bool, list[str]]:
     """
     Send a single IPC command to Amiberry.
 
     Args:
         command: Command name
         *args: Command arguments
+        client: Optional existing client to reuse (avoids reconnecting)
 
     Returns:
         Tuple of (success, response_data)
     """
-    client = AmiberryIPCClient(prefer_dbus=False)  # Use socket for simplicity
-    return await client._send_socket_command(command, *args)
+    if client is None:
+        client = AmiberryIPCClient(prefer_dbus=False)
+    return await client._send_command(command, *args)

@@ -5,16 +5,19 @@ Enables Claude AI to interact with Amiberry through the Model Context Protocol.
 """
 
 import asyncio
+import base64
 import datetime
 import json
+import re
+import signal
 import subprocess
-import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from mcp.server import Server
-from mcp.types import Tool, TextContent
 import mcp.server.stdio
+from mcp.server import Server
+from mcp.types import TextContent, Tool
 
 try:
     from mcp.types import ImageContent
@@ -23,72 +26,145 @@ try:
 except ImportError:
     _HAS_IMAGE_CONTENT = False
 
+from .common import (
+    build_launch_command,
+    detect_amiberry_version,
+    format_log_timestamp,
+    format_signal_info,
+    launch_process,
+    normalize_log_path,
+    scan_disk_images,
+    terminate_process,
+)
+from .common import (
+    find_config_path as _find_config_path,
+)
 from .config import (
+    AMIBERRY_HOME,
+    CD_EXTENSIONS,
+    CONFIG_DIR,
+    DISK_IMAGE_DIRS,
     IS_LINUX,
     IS_MACOS,
-    AMIBERRY_HOME,
-    EMULATOR_BINARY,
-    CONFIG_DIR,
-    SYSTEM_CONFIG_DIR,
+    LOG_DIR,
+    ROM_DIR,
     SAVESTATE_DIR,
-    DISK_IMAGE_DIRS,
-    FLOPPY_EXTENSIONS,
-    HARDFILE_EXTENSIONS,
-    LHA_EXTENSIONS,
+    SCREENSHOT_DIR,
     SUPPORTED_MODELS,
+    SYSTEM_CONFIG_DIR,
     get_platform_info,
-)
-from .uae_config import (
-    parse_uae_config,
-    write_uae_config,
-    modify_uae_config,
-    create_config_from_template,
-    get_config_summary,
-)
-from .savestate import (
-    inspect_savestate,
-    get_savestate_summary,
-    list_savestate_chunks,
-)
-from .rom_manager import (
-    identify_rom,
-    scan_rom_directory,
-    get_rom_summary,
 )
 from .ipc_client import (
     AmiberryIPCClient,
-    IPCError,
-    ConnectionError as IPCConnectionError,
-    CommandError,
+    IPCConnectionError,
+)
+from .rom_manager import (
+    get_rom_summary,
+    identify_rom,
+    scan_rom_directory,
+)
+from .savestate import (
+    get_savestate_summary,
+    inspect_savestate,
+)
+from .uae_config import (
+    create_config_from_template,
+    get_config_summary,
+    modify_uae_config,
+    parse_uae_config,
 )
 
-# Global configuration for multi-instance control
-_active_instance: int | None = None
 
-# ROM directory
-ROM_DIR = AMIBERRY_HOME / "Kickstarts" if IS_MACOS else AMIBERRY_HOME / "kickstarts"
+@dataclass
+class _ProcessState:
+    process: subprocess.Popen | None = None
+    launch_cmd: list[str] | None = None
+    log_path: Path | None = None
+    log_file_handle: Any | None = None
+    log_read_positions: dict[str, int] = field(default_factory=dict)
+    active_instance: int | None = None
+    ipc_client_cache: tuple[int | None, AmiberryIPCClient] | None = None
 
-# CD image extensions
-CD_EXTENSIONS = [".iso", ".cue", ".chd", ".bin", ".nrg"]
+    def close_log_handle(self) -> None:
+        """Close the log file handle if open."""
+        if self.log_file_handle is not None:
+            try:
+                self.log_file_handle.close()
+            except OSError:
+                pass
+            self.log_file_handle = None
 
-# Log directory for captured output
-LOG_DIR = AMIBERRY_HOME / "logs"
 
-# Process lifecycle tracking
-_amiberry_process: subprocess.Popen | None = None
-_amiberry_launch_cmd: list[str] | None = None
-_amiberry_log_path: Path | None = None
-
-# Log tailing state (byte offset per log file)
-_last_log_read_position: dict[str, int] = {}
+_state = _ProcessState()
 
 app = Server("amiberry-emulator")
 
 
+def _get_ipc_client() -> AmiberryIPCClient:
+    """Get an IPC client for the active instance, reusing cached clients."""
+    if (
+        _state.ipc_client_cache is not None
+        and _state.ipc_client_cache[0] == _state.active_instance
+    ):
+        return _state.ipc_client_cache[1]
+    client = AmiberryIPCClient(prefer_dbus=False, instance=_state.active_instance)
+    _state.ipc_client_cache = (_state.active_instance, client)
+    return client
+
+
+def _text_result(msg: str) -> list[TextContent]:
+    """Wrap a string in the MCP TextContent return format."""
+    return [TextContent(type="text", text=msg)]
+
+
+async def _ipc_bool_call(
+    method_name: str,
+    *args: Any,
+    success_msg: str,
+    failure_msg: str,
+) -> list[TextContent]:
+    """Call a boolean-returning IPC method with standard error handling."""
+
+    async def _cb(client):
+        method = getattr(client, method_name)
+        success = await method(*args)
+        if success:
+            return success_msg
+        else:
+            return failure_msg
+
+    return await _ipc_call(_cb)
+
+
+async def _ipc_call(
+    callback: Any,
+) -> list[TextContent]:
+    """Call an IPC callback with standard error handling.
+
+    The callback receives the IPC client and should return a string result.
+    """
+    try:
+        client = _get_ipc_client()
+        result = await callback(client)
+        return _text_result(result)
+    except IPCConnectionError as e:
+        return _text_result(f"Connection error: {str(e)}")
+    except ValueError as e:
+        return _text_result(f"Invalid argument: {str(e)}")
+    except Exception as e:
+        return _text_result(f"Error: {str(e)}")
+
+
+_TOOLS_CACHE: list[Tool] | None = None
+
+
 @app.list_tools()
 async def list_tools() -> list[Tool]:
-    """Define available tools."""
-    return [
+    """Define available tools (cached after first call)."""
+    global _TOOLS_CACHE
+    if _TOOLS_CACHE is not None:
+        return _TOOLS_CACHE
+    _TOOLS_CACHE = [
         Tool(
             name="list_configs",
             description="List available Amiberry configuration files",
@@ -273,7 +349,15 @@ async def list_tools() -> list[Tool]:
                     },
                     "template": {
                         "type": "string",
-                        "enum": ["A500", "A500P", "A600", "A1200", "A4000", "CD32", "CDTV"],
+                        "enum": [
+                            "A500",
+                            "A500P",
+                            "A600",
+                            "A1200",
+                            "A4000",
+                            "CD32",
+                            "CDTV",
+                        ],
                         "description": "Template to base the config on (default: A500)",
                     },
                     "overrides": {
@@ -1771,7 +1855,15 @@ async def list_tools() -> list[Tool]:
                     "model": {
                         "type": "string",
                         "description": "Amiga model (A500, A500P, A600, A1200, A4000, CD32, CDTV)",
-                        "enum": ["A500", "A500P", "A600", "A1200", "A4000", "CD32", "CDTV"],
+                        "enum": [
+                            "A500",
+                            "A500P",
+                            "A600",
+                            "A1200",
+                            "A4000",
+                            "CD32",
+                            "CDTV",
+                        ],
                     },
                     "disk_image": {
                         "type": "string",
@@ -1793,544 +1885,447 @@ async def list_tools() -> list[Tool]:
             },
         ),
     ]
+    return _TOOLS_CACHE
 
 
-def _get_extensions_for_type(image_type: str) -> list[str]:
-    """Get file extensions for a given image type."""
-    if image_type == "floppy":
-        return FLOPPY_EXTENSIONS
-    elif image_type == "hardfile":
-        return HARDFILE_EXTENSIONS
-    elif image_type == "lha":
-        return LHA_EXTENSIONS
-    else:  # all
-        return FLOPPY_EXTENSIONS + HARDFILE_EXTENSIONS + LHA_EXTENSIONS
+# ---- Tool handler functions ----
 
 
-def _classify_image_type(suffix: str) -> str:
-    """Classify a disk image by its file extension."""
-    suffix_lower = suffix.lower()
-    if suffix_lower in FLOPPY_EXTENSIONS:
-        return "floppy"
-    elif suffix_lower in LHA_EXTENSIONS:
-        return "lha"
-    else:
-        return "hardfile"
+async def _handle_get_platform_info(arguments: Any) -> list:
+    """Handle get_platform_info tool."""
+    info = get_platform_info()
+    lines = [f"{key}: {value}" for key, value in info.items()]
+    return _text_result("\n".join(lines))
 
 
-def _find_config_path(config_name: str) -> Path | None:
-    """Find a configuration file by name, checking user and system directories."""
-    config_path = CONFIG_DIR / config_name
-    if config_path.exists():
-        return config_path
+async def _handle_list_configs(arguments: Any) -> list:
+    """Handle list_configs tool."""
+    include_system = arguments.get("include_system", False)
 
-    if IS_LINUX and SYSTEM_CONFIG_DIR:
-        config_path = SYSTEM_CONFIG_DIR / config_name
-        if config_path.exists():
-            return config_path
-
-    return None
-
-
-@app.call_tool()
-async def call_tool(name: str, arguments: Any) -> list:
-    """Handle tool execution."""
-    global _amiberry_process, _amiberry_launch_cmd, _amiberry_log_path
-
-    if name == "get_platform_info":
-        info = get_platform_info()
-        lines = [f"{key}: {value}" for key, value in info.items()]
-        return [TextContent(type="text", text="\n".join(lines))]
-
-    elif name == "list_configs":
+    def _scan_configs():
         configs = []
-
         # User configs
         if CONFIG_DIR.exists():
             user_configs = [(f.name, "user", str(f)) for f in CONFIG_DIR.glob("*.uae")]
             configs.extend(user_configs)
 
         # System configs (Linux only)
-        if IS_LINUX and arguments.get("include_system", False):
+        if IS_LINUX and include_system:
             if SYSTEM_CONFIG_DIR and SYSTEM_CONFIG_DIR.exists():
                 sys_configs = [
-                    (f.name, "system", str(f))
-                    for f in SYSTEM_CONFIG_DIR.glob("*.uae")
+                    (f.name, "system", str(f)) for f in SYSTEM_CONFIG_DIR.glob("*.uae")
                 ]
                 configs.extend(sys_configs)
+        return configs
 
-        if not configs:
-            return [TextContent(type="text", text="No configuration files found.")]
+    configs = await asyncio.to_thread(_scan_configs)
 
-        result = f"Found {len(configs)} configuration(s):\n\n"
-        for cfg_name, source, path in sorted(configs):
-            result += f"- {cfg_name} ({source})\n  Path: {path}\n"
+    if not configs:
+        return _text_result("No configuration files found.")
 
-        return [TextContent(type="text", text=result)]
+    result = f"Found {len(configs)} configuration(s):\n\n"
+    for cfg_name, source, path in sorted(configs):
+        result += f"- {cfg_name} ({source})\n  Path: {path}\n"
 
-    elif name == "get_config_content":
-        config_name = arguments["config_name"]
-        config_path = _find_config_path(config_name)
+    return _text_result(result)
 
+
+async def _handle_get_config_content(arguments: Any) -> list:
+    """Handle get_config_content tool."""
+    config_name = arguments["config_name"]
+    config_path = _find_config_path(config_name)
+
+    if not config_path:
+        return _text_result(f"Error: Configuration '{config_name}' not found")
+
+    try:
+        content = await asyncio.to_thread(config_path.read_text)
+        return _text_result(f"Configuration: {config_name}\n\n{content}")
+    except Exception as e:
+        return _text_result(f"Error reading config: {str(e)}")
+
+
+async def _handle_list_disk_images(arguments: Any) -> list:
+    """Handle list_disk_images tool."""
+    search_term = arguments.get("search_term", "")
+    image_type = arguments.get("image_type", "all")
+
+    images = await asyncio.to_thread(
+        scan_disk_images, DISK_IMAGE_DIRS, image_type, search_term
+    )
+
+    if not images:
+        msg = "No disk images found"
+        if search_term:
+            msg += f' matching "{search_term}"'
+        return _text_result(f"{msg}.")
+
+    result = f"Found {len(images)} disk image(s):\n\n"
+    for img in images:
+        result += f"- {img['name']} ({img['type']})\n  {img['path']}\n"
+
+    return _text_result(result)
+
+
+async def _handle_launch_amiberry(arguments: Any) -> list:
+    """Handle launch_amiberry tool."""
+
+    model = arguments.get("model")
+    config = arguments.get("config")
+    lha_file = arguments.get("lha_file")
+
+    # Validate that at least one of model, config, or lha_file is specified
+    if not model and not config and not lha_file:
+        return _text_result(
+            "Error: Either 'model', 'config', or 'lha_file' must be specified"
+        )
+
+    # Resolve config path if specified
+    config_path = None
+    if config:
+        config_path = _find_config_path(config)
         if not config_path:
-            return [
-                TextContent(
-                    type="text", text=f"Error: Configuration '{config_name}' not found"
-                )
-            ]
+            return _text_result(f"Error: Configuration '{config}' not found")
 
-        try:
-            content = config_path.read_text()
-            return [
-                TextContent(
-                    type="text", text=f"Configuration: {config_name}\n\n{content}"
-                )
-            ]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error reading config: {str(e)}")]
+    # Validate LHA file
+    if lha_file:
+        lha_path = Path(lha_file)
+        if not lha_path.exists():
+            return _text_result(f"Error: LHA file not found: {lha_file}")
 
-    elif name == "list_disk_images":
-        search_term = arguments.get("search_term", "").lower()
-        image_type = arguments.get("image_type", "all")
-        images = []
+    cmd = build_launch_command(
+        model=model,
+        config_path=config_path,
+        disk_image=arguments.get("disk_image"),
+        lha_file=lha_file,
+        autostart=arguments.get("autostart", True),
+    )
 
-        extensions = _get_extensions_for_type(image_type)
+    try:
+        # Launch in background
+        _state.close_log_handle()
+        _state.process, _ = launch_process(cmd)
+        _state.launch_cmd = cmd
+        _state.log_path = None
 
-        for directory in DISK_IMAGE_DIRS:
-            if directory.exists():
-                for ext in extensions:
-                    # Search both lowercase and uppercase extensions
-                    for pattern in [f"**/*{ext}", f"**/*{ext.upper()}"]:
-                        for img in directory.glob(pattern):
-                            if not search_term or search_term in img.name.lower():
-                                images.append(
-                                    {
-                                        "path": str(img),
-                                        "name": img.name,
-                                        "type": _classify_image_type(img.suffix),
-                                    }
-                                )
-
-        # Remove duplicates (from case-insensitive matching)
-        seen = set()
-        unique_images = []
-        for img in images:
-            if img["path"] not in seen:
-                seen.add(img["path"])
-                unique_images.append(img)
-        images = unique_images
-
-        if not images:
-            msg = "No disk images found"
-            if search_term:
-                msg += f' matching "{search_term}"'
-            return [TextContent(type="text", text=f"{msg}.")]
-
-        result = f"Found {len(images)} disk image(s):\n\n"
-        for img in sorted(images, key=lambda x: x["name"].lower()):
-            result += f"- {img['name']} ({img['type']})\n  {img['path']}\n"
-
-        return [TextContent(type="text", text=result)]
-
-    elif name == "launch_amiberry":
-        model = arguments.get("model")
-        config = arguments.get("config")
-        lha_file = arguments.get("lha_file")
-
-        # Validate that at least one of model, config, or lha_file is specified
-        if not model and not config and not lha_file:
-            return [
-                TextContent(
-                    type="text",
-                    text="Error: Either 'model', 'config', or 'lha_file' must be specified",
-                )
-            ]
-
-        # Build command
-        cmd = [EMULATOR_BINARY]
-
-        # Add model or config (optional if lha_file is provided)
         if model:
-            cmd.extend(["--model", model])
+            result = f"Launched Amiberry with model: {model}"
         elif config:
-            config_path = _find_config_path(config)
-            if not config_path:
-                return [
-                    TextContent(
-                        type="text", text=f"Error: Configuration '{config}' not found"
-                    )
-                ]
-            cmd.extend(["-f", str(config_path)])
+            result = f"Launched Amiberry with config: {config}"
+        elif lha_file:
+            result = f"Launched Amiberry with LHA: {Path(lha_file).name}"
+        else:
+            result = "Launched Amiberry"
 
-        # Add disk image if specified
+        result += f"\n  PID: {_state.process.pid}"
+
         if "disk_image" in arguments and arguments["disk_image"]:
-            cmd.extend(["-0", arguments["disk_image"]])
+            result += f"\n  Disk in DF0: {Path(arguments['disk_image']).name}"
 
-        # Add .lha file if specified (Amiberry auto-extracts and mounts)
-        if lha_file:
-            lha_path = Path(lha_file)
-            if not lha_path.exists():
-                return [
-                    TextContent(
-                        type="text", text=f"Error: LHA file not found: {lha_file}"
-                    )
-                ]
-            cmd.append(str(lha_path))
+        if lha_file and (model or config):
+            result += f"\n  LHA: {Path(lha_file).name}"
 
-        # Add autostart flag
-        if arguments.get("autostart", True):
-            cmd.append("-G")
+        return _text_result(result)
+    except Exception as e:
+        return _text_result(f"Error launching Amiberry: {str(e)}")
 
-        try:
-            # Launch in background
-            _amiberry_process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            _amiberry_launch_cmd = cmd
-            _amiberry_log_path = None
 
-            if model:
-                result = f"Launched Amiberry with model: {model}"
-            elif config:
-                result = f"Launched Amiberry with config: {config}"
-            elif lha_file:
-                result = f"Launched Amiberry with LHA: {Path(lha_file).name}"
-            else:
-                result = "Launched Amiberry"
+async def _handle_list_savestates(arguments: Any) -> list:
+    """Handle list_savestates tool."""
+    search_term = arguments.get("search_term", "").lower()
 
-            result += f"\n  PID: {_amiberry_process.pid}"
-
-            if "disk_image" in arguments and arguments["disk_image"]:
-                result += f"\n  Disk in DF0: {Path(arguments['disk_image']).name}"
-
-            if lha_file and (model or config):
-                result += f"\n  LHA: {Path(lha_file).name}"
-
-            return [TextContent(type="text", text=result)]
-        except Exception as e:
-            return [
-                TextContent(type="text", text=f"Error launching Amiberry: {str(e)}")
-            ]
-
-    elif name == "list_savestates":
-        search_term = arguments.get("search_term", "").lower()
-        savestates = []
-
-        if SAVESTATE_DIR.exists():
-            for state in SAVESTATE_DIR.glob("**/*.uss"):
-                if not search_term or search_term in state.name.lower():
+    def _scan_savestates():
+        results = []
+        if not SAVESTATE_DIR.exists():
+            return results
+        for state in SAVESTATE_DIR.glob("**/*.uss"):
+            if not search_term or search_term in state.name.lower():
+                try:
                     mtime = state.stat().st_mtime
-                    timestamp = datetime.datetime.fromtimestamp(mtime).strftime(
-                        "%Y-%m-%d %H:%M:%S"
-                    )
-
-                    savestates.append(
-                        {
-                            "path": str(state),
-                            "name": state.name,
-                            "modified": timestamp,
-                        }
-                    )
-
-        if not savestates:
-            msg = "No savestates found"
-            if search_term:
-                msg += f' matching "{search_term}"'
-            return [TextContent(type="text", text=f"{msg}.")]
-
-        result = f"Found {len(savestates)} savestate(s):\n\n"
-        for state in sorted(savestates, key=lambda x: x["name"]):
-            result += f"- {state['name']}\n  Modified: {state['modified']}\n  Path: {state['path']}\n"
-
-        return [TextContent(type="text", text=result)]
-
-    elif name == "launch_with_logging":
-        model = arguments.get("model")
-        config = arguments.get("config")
-        lha_file = arguments.get("lha_file")
-
-        if not model and not config and not lha_file:
-            return [
-                TextContent(
-                    type="text",
-                    text="Error: Either 'model', 'config', or 'lha_file' must be specified",
+                except OSError:
+                    continue
+                timestamp = format_log_timestamp(mtime)
+                results.append(
+                    {
+                        "path": str(state),
+                        "name": state.name,
+                        "modified": timestamp,
+                    }
                 )
-            ]
+        return results
 
-        # Create log directory if needed
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
+    savestates = await asyncio.to_thread(_scan_savestates)
 
-        # Generate log filename
-        log_name = arguments.get("log_name")
-        if not log_name:
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            log_name = f"amiberry_{timestamp}.log"
-        if not log_name.endswith(".log"):
-            log_name += ".log"
+    if not savestates:
+        msg = "No savestates found"
+        if search_term:
+            msg += f' matching "{search_term}"'
+        return _text_result(f"{msg}.")
 
-        log_path = LOG_DIR / log_name
+    result = f"Found {len(savestates)} savestate(s):\n\n"
+    for state in sorted(savestates, key=lambda x: x["name"]):
+        result += f"- {state['name']}\n  Modified: {state['modified']}\n  Path: {state['path']}\n"
 
-        # Build command
-        cmd = [EMULATOR_BINARY, "--log"]
+    return _text_result(result)
 
-        if model:
-            cmd.extend(["--model", model])
-        elif config:
-            config_path = _find_config_path(config)
-            if not config_path:
-                return [
-                    TextContent(
-                        type="text", text=f"Error: Configuration '{config}' not found"
-                    )
-                ]
-            cmd.extend(["-f", str(config_path)])
 
-        if "disk_image" in arguments and arguments["disk_image"]:
-            cmd.extend(["-0", arguments["disk_image"]])
+async def _handle_launch_with_logging(arguments: Any) -> list:
+    """Handle launch_with_logging tool."""
 
-        if lha_file:
-            lha_path = Path(lha_file)
-            if not lha_path.exists():
-                return [
-                    TextContent(
-                        type="text", text=f"Error: LHA file not found: {lha_file}"
-                    )
-                ]
-            cmd.append(str(lha_path))
+    model = arguments.get("model")
+    config = arguments.get("config")
+    lha_file = arguments.get("lha_file")
 
-        if arguments.get("autostart", True):
-            cmd.append("-G")
+    if not model and not config and not lha_file:
+        return _text_result(
+            "Error: Either 'model', 'config', or 'lha_file' must be specified"
+        )
 
-        try:
-            log_file = open(log_path, "w")
-            _amiberry_process = subprocess.Popen(
-                cmd,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-            _amiberry_launch_cmd = cmd
-            _amiberry_log_path = log_path
+    # Create log directory if needed
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-            result = f"Launched Amiberry with logging enabled\n"
-            result += f"PID: {_amiberry_process.pid}\n"
-            result += f"Log file: {log_path}\n"
-            result += f"Command: {' '.join(cmd)}"
+    # Generate log filename
+    log_name = arguments.get("log_name")
+    if not log_name:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_name = f"amiberry_{timestamp}.log"
+    try:
+        log_path = normalize_log_path(log_name)
+    except ValueError:
+        return _text_result(f"Error: Invalid log name '{log_name}'")
 
-            return [TextContent(type="text", text=result)]
-        except Exception as e:
-            return [
-                TextContent(type="text", text=f"Error launching Amiberry: {str(e)}")
-            ]
-
-    elif name == "parse_config":
-        config_name = arguments["config_name"]
-        config_path = _find_config_path(config_name)
-
+    # Resolve config path if specified
+    config_path = None
+    if config:
+        config_path = _find_config_path(config)
         if not config_path:
-            return [
-                TextContent(
-                    type="text", text=f"Error: Configuration '{config_name}' not found"
-                )
-            ]
+            return _text_result(f"Error: Configuration '{config}' not found")
 
-        try:
-            config = parse_uae_config(config_path)
-            summary = get_config_summary(config)
+    # Validate LHA file
+    if lha_file:
+        lha_path = Path(lha_file)
+        if not lha_path.exists():
+            return _text_result(f"Error: LHA file not found: {lha_file}")
 
-            result = f"Configuration: {config_name}\n\n"
-            result += "=== Summary ===\n"
-            result += f"CPU: {summary['cpu']['model']} ({summary['cpu']['speed']})\n"
-            result += f"Chipset: {summary['chipset']}\n"
-            result += f"Memory: {summary['memory']['chip_kb']}KB Chip"
-            if summary["memory"]["fast_kb"]:
-                result += f", {summary['memory']['fast_kb']}KB Fast"
-            result += "\n"
+    cmd = build_launch_command(
+        model=model,
+        config_path=config_path,
+        disk_image=arguments.get("disk_image"),
+        lha_file=lha_file,
+        autostart=arguments.get("autostart", True),
+        with_logging=True,
+    )
 
-            if summary["floppies"]:
-                result += "Floppies:\n"
-                for floppy in summary["floppies"]:
-                    result += f"  {floppy['drive']}: {floppy['image']}\n"
+    _state.close_log_handle()
+    try:
+        _state.process, _state.log_file_handle = launch_process(cmd, log_path=log_path)
+        _state.launch_cmd = cmd
+        _state.log_path = log_path
 
-            if summary["kickstart"]:
-                result += f"Kickstart: {summary['kickstart']}\n"
+        result = "Launched Amiberry with logging enabled\n"
+        result += f"PID: {_state.process.pid}\n"
+        result += f"Log file: {log_path}\n"
+        result += f"Command: {' '.join(cmd)}"
 
-            result += f"Graphics: {summary['graphics']['width']}x{summary['graphics']['height']}"
-            if summary["graphics"]["fullscreen"]:
-                result += " (fullscreen)"
-            result += "\n"
+        return _text_result(result)
+    except Exception as e:
+        _state.close_log_handle()
+        return _text_result(f"Error launching Amiberry: {str(e)}")
 
-            if arguments.get("include_raw", False):
-                result += "\n=== Raw Configuration ===\n"
-                result += json.dumps(config, indent=2)
 
-            return [TextContent(type="text", text=result)]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error parsing config: {str(e)}")]
+async def _handle_parse_config(arguments: Any) -> list:
+    """Handle parse_config tool."""
+    config_name = arguments["config_name"]
+    config_path = _find_config_path(config_name)
 
-    elif name == "modify_config":
-        config_name = arguments["config_name"]
-        modifications = arguments["modifications"]
-        config_path = _find_config_path(config_name)
+    if not config_path:
+        return _text_result(f"Error: Configuration '{config_name}' not found")
 
-        if not config_path:
-            return [
-                TextContent(
-                    type="text", text=f"Error: Configuration '{config_name}' not found"
-                )
-            ]
+    try:
+        config = await asyncio.to_thread(parse_uae_config, config_path)
+        summary = get_config_summary(config)
 
-        try:
-            updated_config = modify_uae_config(config_path, modifications)
+        result = f"Configuration: {config_name}\n\n"
+        result += "=== Summary ===\n"
+        result += f"CPU: {summary['cpu']['model']} ({summary['cpu']['speed']})\n"
+        result += f"Chipset: {summary['chipset']}\n"
+        result += f"Memory: {summary['memory']['chip_kb']}KB Chip"
+        if summary["memory"]["fast_kb"]:
+            result += f", {summary['memory']['fast_kb']}KB Fast"
+        result += "\n"
 
-            result = f"Modified configuration: {config_name}\n\n"
-            result += "Changes applied:\n"
-            for key, value in modifications.items():
-                if value is None:
-                    result += f"  - Removed: {key}\n"
-                else:
-                    result += f"  - {key} = {value}\n"
+        if summary["floppies"]:
+            result += "Floppies:\n"
+            for floppy in summary["floppies"]:
+                result += f"  {floppy['drive']}: {floppy['image']}\n"
 
-            return [TextContent(type="text", text=result)]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error modifying config: {str(e)}")]
+        if summary["kickstart"]:
+            result += f"Kickstart: {summary['kickstart']}\n"
 
-    elif name == "create_config":
-        config_name = arguments["config_name"]
-        template = arguments.get("template", "A500")
-        overrides = arguments.get("overrides", {})
+        result += (
+            f"Graphics: {summary['graphics']['width']}x{summary['graphics']['height']}"
+        )
+        if summary["graphics"]["fullscreen"]:
+            result += " (fullscreen)"
+        result += "\n"
 
-        if not config_name.endswith(".uae"):
-            config_name += ".uae"
+        if arguments.get("include_raw", False):
+            result += "\n=== Raw Configuration ===\n"
+            result += json.dumps(config, indent=2)
 
-        config_path = CONFIG_DIR / config_name
+        return _text_result(result)
+    except Exception as e:
+        return _text_result(f"Error parsing config: {str(e)}")
 
-        if config_path.exists():
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Error: Configuration '{config_name}' already exists. Use modify_config to update it.",
-                )
-            ]
 
-        try:
-            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            config = create_config_from_template(config_path, template, overrides)
+async def _handle_modify_config(arguments: Any) -> list:
+    """Handle modify_config tool."""
+    config_name = arguments["config_name"]
+    modifications = arguments["modifications"]
+    config_path = _find_config_path(config_name)
 
-            result = f"Created configuration: {config_name}\n"
-            result += f"Based on template: {template}\n"
-            result += f"Path: {config_path}\n"
+    if not config_path:
+        return _text_result(f"Error: Configuration '{config_name}' not found")
 
-            if overrides:
-                result += "\nCustom overrides:\n"
-                for key, value in overrides.items():
-                    result += f"  - {key} = {value}\n"
+    try:
+        await asyncio.to_thread(modify_uae_config, config_path, modifications)
 
-            return [TextContent(type="text", text=result)]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error creating config: {str(e)}")]
+        result = f"Modified configuration: {config_name}\n\n"
+        result += "Changes applied:\n"
+        for key, value in modifications.items():
+            if value is None:
+                result += f"  - Removed: {key}\n"
+            else:
+                result += f"  - {key} = {value}\n"
 
-    elif name == "launch_whdload":
-        search_term = arguments.get("search_term", "").lower()
-        exact_path = arguments.get("exact_path")
-        model = arguments.get("model", "A1200")  # A1200 is typical for WHDLoad
+        return _text_result(result)
+    except Exception as e:
+        return _text_result(f"Error modifying config: {str(e)}")
 
-        lha_path = None
 
-        if exact_path:
-            lha_path = Path(exact_path)
-            if not lha_path.exists():
-                return [
-                    TextContent(
-                        type="text", text=f"Error: LHA file not found: {exact_path}"
-                    )
-                ]
-        elif search_term:
-            # Search for the LHA file
-            lha_files = []
+async def _handle_create_config(arguments: Any) -> list:
+    """Handle create_config tool."""
+    config_name = arguments["config_name"]
+    template = arguments.get("template", "A500")
+    overrides = arguments.get("overrides", {})
+
+    if not config_name.endswith(".uae"):
+        config_name += ".uae"
+
+    config_path = (CONFIG_DIR / config_name).resolve()
+    if not config_path.is_relative_to(CONFIG_DIR.resolve()):
+        return _text_result(f"Error: Invalid config name '{config_name}'")
+
+    if config_path.exists():
+        return _text_result(
+            f"Error: Configuration '{config_name}' already exists. Use modify_config to update it."
+        )
+
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(
+            lambda: create_config_from_template(config_path, template, overrides)
+        )
+
+        result = f"Created configuration: {config_name}\n"
+        result += f"Based on template: {template}\n"
+        result += f"Path: {config_path}\n"
+
+        if overrides:
+            result += "\nCustom overrides:\n"
+            for key, value in overrides.items():
+                result += f"  - {key} = {value}\n"
+
+        return _text_result(result)
+    except ValueError as e:
+        return _text_result(f"Error: {str(e)}")
+    except Exception as e:
+        return _text_result(f"Error creating config: {str(e)}")
+
+
+async def _handle_launch_whdload(arguments: Any) -> list:
+    """Handle launch_whdload tool."""
+
+    search_term = arguments.get("search_term", "").lower()
+    exact_path = arguments.get("exact_path")
+    model = arguments.get("model", "A1200")  # A1200 is typical for WHDLoad
+
+    lha_path = None
+
+    if exact_path:
+        lha_path = Path(exact_path)
+        if not lha_path.exists():
+            return _text_result(f"Error: LHA file not found: {exact_path}")
+    elif search_term:
+        # Search for the LHA file
+        def _scan_lha_files():
+            results = []
             for directory in DISK_IMAGE_DIRS:
                 if directory.exists():
                     for pattern in ["**/*.lha", "**/*.LHA"]:
                         for lha in directory.glob(pattern):
                             if search_term in lha.name.lower():
-                                lha_files.append(lha)
+                                results.append(lha)
+            return results
 
-            if not lha_files:
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"No WHDLoad games found matching '{search_term}'",
-                    )
-                ]
+        lha_files = await asyncio.to_thread(_scan_lha_files)
 
-            if len(lha_files) > 1:
-                result = f"Found {len(lha_files)} matches for '{search_term}':\n\n"
-                for lha in sorted(lha_files, key=lambda x: x.name.lower())[:10]:
-                    result += f"- {lha.name}\n  {lha}\n"
-                if len(lha_files) > 10:
-                    result += f"\n... and {len(lha_files) - 10} more"
-                result += "\n\nPlease specify exact_path or use a more specific search term."
-                return [TextContent(type="text", text=result)]
+        if not lha_files:
+            return _text_result(f"No WHDLoad games found matching '{search_term}'")
 
-            lha_path = lha_files[0]
-        else:
-            return [
-                TextContent(
-                    type="text",
-                    text="Error: Either 'search_term' or 'exact_path' must be specified",
-                )
-            ]
-
-        # Build and launch command
-        cmd = [EMULATOR_BINARY, "--model", model, str(lha_path)]
-
-        if arguments.get("autostart", True):
-            cmd.append("-G")
-
-        try:
-            _amiberry_process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
+        if len(lha_files) > 1:
+            result = f"Found {len(lha_files)} matches for '{search_term}':\n\n"
+            for lha in sorted(lha_files, key=lambda x: x.name.lower())[:10]:
+                result += f"- {lha.name}\n  {lha}\n"
+            if len(lha_files) > 10:
+                result += f"\n... and {len(lha_files) - 10} more"
+            result += (
+                "\n\nPlease specify exact_path or use a more specific search term."
             )
-            _amiberry_launch_cmd = cmd
-            _amiberry_log_path = None
+            return _text_result(result)
 
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Launched WHDLoad game: {lha_path.name}\nModel: {model}\nPID: {_amiberry_process.pid}",
-                )
-            ]
-        except Exception as e:
-            return [
-                TextContent(type="text", text=f"Error launching WHDLoad game: {str(e)}")
-            ]
+        lha_path = lha_files[0]
+    else:
+        return _text_result(
+            "Error: Either 'search_term' or 'exact_path' must be specified"
+        )
 
-    elif name == "launch_cd":
-        cd_image = arguments.get("cd_image")
-        search_term = arguments.get("search_term", "").lower()
-        model = arguments.get("model", "CD32")
+    cmd = build_launch_command(
+        model=model,
+        lha_file=str(lha_path),
+        autostart=arguments.get("autostart", True),
+    )
 
-        cd_path = None
+    try:
+        _state.close_log_handle()
+        _state.process, _ = launch_process(cmd)
+        _state.launch_cmd = cmd
+        _state.log_path = None
 
-        if cd_image:
-            cd_path = Path(cd_image)
-            if not cd_path.exists():
-                return [
-                    TextContent(
-                        type="text", text=f"Error: CD image not found: {cd_image}"
-                    )
-                ]
-        elif search_term:
-            # Search for CD images
-            cd_files = []
+        return _text_result(
+            f"Launched WHDLoad game: {lha_path.name}\nModel: {model}\nPID: {_state.process.pid}"
+        )
+    except Exception as e:
+        return _text_result(f"Error launching WHDLoad game: {str(e)}")
+
+
+async def _handle_launch_cd(arguments: Any) -> list:
+    """Handle launch_cd tool."""
+
+    cd_image = arguments.get("cd_image")
+    search_term = arguments.get("search_term", "").lower()
+    model = arguments.get("model", "CD32")
+
+    cd_path = None
+
+    if cd_image:
+        cd_path = Path(cd_image)
+        if not cd_path.exists():
+            return _text_result(f"Error: CD image not found: {cd_image}")
+    elif search_term:
+        # Search for CD images
+        def _scan_cd_files():
+            results = []
             search_dirs = DISK_IMAGE_DIRS + [AMIBERRY_HOME / "CD"]
             if IS_MACOS:
                 search_dirs.append(AMIBERRY_HOME / "CDs")
@@ -2341,2549 +2336,2303 @@ async def call_tool(name: str, arguments: Any) -> list:
                         for pattern in [f"**/*{ext}", f"**/*{ext.upper()}"]:
                             for cd in directory.glob(pattern):
                                 if search_term in cd.name.lower():
-                                    cd_files.append(cd)
+                                    results.append(cd)
 
             # Remove duplicates
-            cd_files = list(set(cd_files))
+            return list(set(results))
 
-            if not cd_files:
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"No CD images found matching '{search_term}'",
-                    )
-                ]
-
-            if len(cd_files) > 1:
-                result = f"Found {len(cd_files)} CD images matching '{search_term}':\n\n"
-                for cd in sorted(cd_files, key=lambda x: x.name.lower())[:10]:
-                    result += f"- {cd.name}\n  {cd}\n"
-                if len(cd_files) > 10:
-                    result += f"\n... and {len(cd_files) - 10} more"
-                result += "\n\nPlease specify cd_image path or use a more specific search term."
-                return [TextContent(type="text", text=result)]
-
-            cd_path = cd_files[0]
-        else:
-            return [
-                TextContent(
-                    type="text",
-                    text="Error: Either 'cd_image' or 'search_term' must be specified",
-                )
-            ]
-
-        # Build and launch command
-        cmd = [EMULATOR_BINARY, "--model", model, "--cdimage", str(cd_path)]
-
-        if arguments.get("autostart", True):
-            cmd.append("-G")
-
-        try:
-            _amiberry_process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            _amiberry_launch_cmd = cmd
-            _amiberry_log_path = None
-
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Launched CD image: {cd_path.name}\nModel: {model}\nPID: {_amiberry_process.pid}",
-                )
-            ]
-        except Exception as e:
-            return [
-                TextContent(type="text", text=f"Error launching CD image: {str(e)}")
-            ]
-
-    elif name == "set_disk_swapper":
-        disk_images = arguments.get("disk_images", [])
-
-        if not disk_images:
-            return [
-                TextContent(
-                    type="text", text="Error: No disk images specified"
-                )
-            ]
-
-        if len(disk_images) < 2:
-            return [
-                TextContent(
-                    type="text",
-                    text="Error: Disk swapper requires at least 2 disk images",
-                )
-            ]
-
-        # Verify all disk images exist
-        verified_paths = []
-        for img in disk_images:
-            img_path = Path(img)
-            if not img_path.exists():
-                return [
-                    TextContent(
-                        type="text", text=f"Error: Disk image not found: {img}"
-                    )
-                ]
-            verified_paths.append(str(img_path))
-
-        model = arguments.get("model")
-        config = arguments.get("config")
-
-        # Build command
-        cmd = [EMULATOR_BINARY]
-
-        if model:
-            cmd.extend(["--model", model])
-        elif config:
-            config_path = _find_config_path(config)
-            if not config_path:
-                return [
-                    TextContent(
-                        type="text", text=f"Error: Configuration '{config}' not found"
-                    )
-                ]
-            cmd.extend(["-f", str(config_path)])
-        else:
-            cmd.extend(["--model", "A500"])  # Default to A500 for disk games
-
-        # Add first disk to DF0
-        cmd.extend(["-0", verified_paths[0]])
-
-        # Add disk swapper with all disks
-        cmd.append(f"-diskswapper={','.join(verified_paths)}")
-
-        if arguments.get("autostart", True):
-            cmd.append("-G")
-
-        try:
-            _amiberry_process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            _amiberry_launch_cmd = cmd
-            _amiberry_log_path = None
-
-            result = f"Launched with disk swapper ({len(verified_paths)} disks):\n"
-            result += f"  PID: {_amiberry_process.pid}\n"
-            for i, path in enumerate(verified_paths):
-                result += f"  Disk {i + 1}: {Path(path).name}\n"
-
-            return [TextContent(type="text", text=result)]
-        except Exception as e:
-            return [
-                TextContent(type="text", text=f"Error launching with disk swapper: {str(e)}")
-            ]
-
-    elif name == "list_cd_images":
-        search_term = arguments.get("search_term", "").lower()
-        cd_files = []
-
-        search_dirs = DISK_IMAGE_DIRS + [AMIBERRY_HOME / "CD"]
-        if IS_MACOS:
-            search_dirs.append(AMIBERRY_HOME / "CDs")
-
-        for directory in search_dirs:
-            if directory.exists():
-                for ext in CD_EXTENSIONS:
-                    for pattern in [f"**/*{ext}", f"**/*{ext.upper()}"]:
-                        for cd in directory.glob(pattern):
-                            if not search_term or search_term in cd.name.lower():
-                                cd_files.append(
-                                    {
-                                        "path": str(cd),
-                                        "name": cd.name,
-                                        "type": cd.suffix.lower().lstrip("."),
-                                    }
-                                )
-
-        # Remove duplicates
-        seen = set()
-        unique_cds = []
-        for cd in cd_files:
-            if cd["path"] not in seen:
-                seen.add(cd["path"])
-                unique_cds.append(cd)
-        cd_files = unique_cds
+        cd_files = await asyncio.to_thread(_scan_cd_files)
 
         if not cd_files:
-            msg = "No CD images found"
-            if search_term:
-                msg += f' matching "{search_term}"'
-            return [TextContent(type="text", text=f"{msg}.")]
+            return _text_result(f"No CD images found matching '{search_term}'")
 
-        result = f"Found {len(cd_files)} CD image(s):\n\n"
-        for cd in sorted(cd_files, key=lambda x: x["name"].lower()):
-            result += f"- {cd['name']} ({cd['type']})\n  {cd['path']}\n"
-
-        return [TextContent(type="text", text=result)]
-
-    elif name == "get_log_content":
-        log_name = arguments["log_name"]
-        tail_lines = arguments.get("tail_lines")
-
-        if not log_name.endswith(".log"):
-            log_name += ".log"
-
-        log_path = LOG_DIR / log_name
-
-        if not log_path.exists():
-            return [
-                TextContent(type="text", text=f"Error: Log file not found: {log_name}")
-            ]
-
-        try:
-            content = log_path.read_text(errors="replace")
-
-            if tail_lines and tail_lines > 0:
-                lines = content.splitlines()
-                content = "\n".join(lines[-tail_lines:])
-                result = f"Last {min(tail_lines, len(lines))} lines of {log_name}:\n\n{content}"
-            else:
-                result = f"Log file: {log_name}\n\n{content}"
-
-            return [TextContent(type="text", text=result)]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error reading log: {str(e)}")]
-
-    elif name == "list_logs":
-        if not LOG_DIR.exists():
-            return [TextContent(type="text", text="No log directory found.")]
-
-        logs = []
-        for log in LOG_DIR.glob("*.log"):
-            mtime = log.stat().st_mtime
-            timestamp = datetime.datetime.fromtimestamp(mtime).strftime(
-                "%Y-%m-%d %H:%M:%S"
+        if len(cd_files) > 1:
+            result = f"Found {len(cd_files)} CD images matching '{search_term}':\n\n"
+            for cd in sorted(cd_files, key=lambda x: x.name.lower())[:10]:
+                result += f"- {cd.name}\n  {cd}\n"
+            if len(cd_files) > 10:
+                result += f"\n... and {len(cd_files) - 10} more"
+            result += (
+                "\n\nPlease specify cd_image path or use a more specific search term."
             )
-            size = log.stat().st_size
-            logs.append(
+            return _text_result(result)
+
+        cd_path = cd_files[0]
+    else:
+        return _text_result(
+            "Error: Either 'cd_image' or 'search_term' must be specified"
+        )
+
+    cmd = build_launch_command(
+        model=model,
+        cd_image=str(cd_path),
+        autostart=arguments.get("autostart", True),
+    )
+
+    try:
+        _state.close_log_handle()
+        _state.process, _ = launch_process(cmd)
+        _state.launch_cmd = cmd
+        _state.log_path = None
+
+        return _text_result(
+            f"Launched CD image: {cd_path.name}\nModel: {model}\nPID: {_state.process.pid}"
+        )
+    except Exception as e:
+        return _text_result(f"Error launching CD image: {str(e)}")
+
+
+async def _handle_set_disk_swapper(arguments: Any) -> list:
+    """Handle set_disk_swapper tool."""
+
+    disk_images = arguments.get("disk_images", [])
+
+    if not disk_images:
+        return _text_result("Error: No disk images specified")
+
+    if len(disk_images) < 2:
+        return _text_result("Error: Disk swapper requires at least 2 disk images")
+
+    # Verify all disk images exist
+    verified_paths = []
+    for img in disk_images:
+        img_path = Path(img)
+        if not img_path.exists():
+            return _text_result(f"Error: Disk image not found: {img}")
+        verified_paths.append(str(img_path))
+
+    model = arguments.get("model")
+    config = arguments.get("config")
+
+    # Resolve config path if specified
+    config_path = None
+    if config:
+        config_path = _find_config_path(config)
+        if not config_path:
+            return _text_result(f"Error: Configuration '{config}' not found")
+
+    cmd = build_launch_command(
+        model=model or ("A500" if not config else None),
+        config_path=config_path,
+        disk_image=verified_paths[0],
+        disk_swapper=verified_paths,
+        autostart=arguments.get("autostart", True),
+    )
+
+    try:
+        _state.close_log_handle()
+        _state.process, _ = launch_process(cmd)
+        _state.launch_cmd = cmd
+        _state.log_path = None
+
+        result = f"Launched with disk swapper ({len(verified_paths)} disks):\n"
+        result += f"  PID: {_state.process.pid}\n"
+        for i, path in enumerate(verified_paths):
+            result += f"  Disk {i + 1}: {Path(path).name}\n"
+
+        return _text_result(result)
+    except Exception as e:
+        return _text_result(f"Error launching with disk swapper: {str(e)}")
+
+
+async def _handle_list_cd_images(arguments: Any) -> list:
+    """Handle list_cd_images tool."""
+    search_term = arguments.get("search_term", "")
+
+    search_dirs = DISK_IMAGE_DIRS + [AMIBERRY_HOME / "CD"]
+    if IS_MACOS:
+        search_dirs.append(AMIBERRY_HOME / "CDs")
+
+    cd_files = await asyncio.to_thread(scan_disk_images, search_dirs, "cd", search_term)
+
+    if not cd_files:
+        msg = "No CD images found"
+        if search_term:
+            msg += f' matching "{search_term}"'
+        return _text_result(f"{msg}.")
+
+    result = f"Found {len(cd_files)} CD image(s):\n\n"
+    for cd in cd_files:
+        result += f"- {cd['name']} ({cd['type']})\n  {cd['path']}\n"
+
+    return _text_result(result)
+
+
+async def _handle_get_log_content(arguments: Any) -> list:
+    """Handle get_log_content tool."""
+    log_name = arguments["log_name"]
+    tail_lines = arguments.get("tail_lines")
+    try:
+        log_path = normalize_log_path(log_name)
+    except ValueError:
+        return _text_result(f"Error: Invalid log name '{log_name}'")
+
+    if not log_path.exists():
+        return _text_result(f"Error: Log file not found: {log_name}")
+
+    try:
+        content = await asyncio.to_thread(log_path.read_text, errors="replace")
+
+        if tail_lines and tail_lines > 0:
+            lines = content.splitlines()
+            content = "\n".join(lines[-tail_lines:])
+            result = (
+                f"Last {min(tail_lines, len(lines))} lines of {log_name}:\n\n{content}"
+            )
+        else:
+            result = f"Log file: {log_name}\n\n{content}"
+
+        return _text_result(result)
+    except Exception as e:
+        return _text_result(f"Error reading log: {str(e)}")
+
+
+async def _handle_list_logs(arguments: Any) -> list:
+    """Handle list_logs tool."""
+
+    def _scan_logs():
+        if not LOG_DIR.exists():
+            return None
+        result = []
+        for log in LOG_DIR.glob("*.log"):
+            try:
+                st = log.stat()
+            except OSError:
+                continue
+            timestamp = format_log_timestamp(st.st_mtime)
+            result.append(
                 {
                     "name": log.name,
                     "modified": timestamp,
-                    "size": size,
+                    "size": st.st_size,
                 }
             )
+        return result
 
-        if not logs:
-            return [TextContent(type="text", text="No log files found.")]
+    logs = await asyncio.to_thread(_scan_logs)
 
-        result = f"Found {len(logs)} log file(s):\n\n"
-        for log in sorted(logs, key=lambda x: x["modified"], reverse=True):
-            size_str = f"{log['size']} bytes"
-            if log["size"] > 1024:
-                size_str = f"{log['size'] / 1024:.1f} KB"
-            result += f"- {log['name']}\n  Modified: {log['modified']} ({size_str})\n"
+    if logs is None:
+        return _text_result("No log directory found.")
 
-        return [TextContent(type="text", text=result)]
+    if not logs:
+        return _text_result("No log files found.")
 
-    # Phase 2 tools
-    elif name == "inspect_savestate":
-        savestate_path = arguments["savestate_path"]
+    result = f"Found {len(logs)} log file(s):\n\n"
+    for log in sorted(logs, key=lambda x: x["modified"], reverse=True):
+        size_str = f"{log['size']} bytes"
+        if log["size"] > 1024:
+            size_str = f"{log['size'] / 1024:.1f} KB"
+        result += f"- {log['name']}\n  Modified: {log['modified']} ({size_str})\n"
 
-        # If just a filename, look in default savestates directory
-        path = Path(savestate_path)
-        if not path.is_absolute():
-            path = SAVESTATE_DIR / savestate_path
+    return _text_result(result)
 
-        if not path.exists():
-            return [
-                TextContent(
-                    type="text", text=f"Error: Savestate not found: {savestate_path}"
-                )
-            ]
 
-        try:
-            metadata = inspect_savestate(path)
-            summary = get_savestate_summary(metadata)
+# Phase 2 tools
 
-            result = summary + "\n\n"
-            result += f"Chunks: {', '.join(metadata.get('chunks', []))}"
 
-            return [TextContent(type="text", text=result)]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-        except Exception as e:
-            return [
-                TextContent(type="text", text=f"Error inspecting savestate: {str(e)}")
-            ]
+async def _handle_inspect_savestate(arguments: Any) -> list:
+    """Handle inspect_savestate tool."""
+    savestate_path = arguments["savestate_path"]
 
-    elif name == "list_roms":
-        directory = arguments.get("directory")
+    # If just a filename, look in default savestates directory
+    path = Path(savestate_path)
+    if not path.is_absolute():
+        path = SAVESTATE_DIR / savestate_path
 
-        if directory:
-            rom_dir = Path(directory)
-        else:
-            rom_dir = ROM_DIR
+    if not path.exists():
+        return _text_result(f"Error: Savestate not found: {savestate_path}")
 
-        if not rom_dir.exists():
-            return [
-                TextContent(
-                    type="text",
-                    text=f"ROM directory not found: {rom_dir}\n\nCreate this directory and add your Kickstart ROMs.",
-                )
-            ]
+    try:
+        metadata = await asyncio.to_thread(inspect_savestate, path)
+        summary = get_savestate_summary(metadata)
 
-        try:
-            roms = scan_rom_directory(rom_dir)
+        result = summary + "\n\n"
+        result += f"Chunks: {', '.join(metadata.get('chunks', []))}"
 
-            if not roms:
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"No ROM files found in {rom_dir}\n\nAdd Kickstart ROM files (.rom, .bin) to this directory.",
-                    )
-                ]
+        return _text_result(result)
+    except ValueError as e:
+        return _text_result(f"Error: {str(e)}")
+    except Exception as e:
+        return _text_result(f"Error inspecting savestate: {str(e)}")
 
-            result = f"Found {len(roms)} ROM file(s) in {rom_dir}:\n\n"
-            for rom in sorted(roms, key=lambda x: x.get("filename", "").lower()):
-                if rom.get("error"):
-                    result += f"- {rom['filename']}: Error - {rom['error']}\n"
-                elif rom.get("identified"):
-                    result += f"- {rom['filename']}\n"
-                    result += f"  Kickstart {rom['version']} (Rev {rom['revision']})\n"
-                    result += f"  Model: {rom['model']}\n"
-                    result += f"  CRC32: {rom['crc32']}\n"
-                else:
-                    result += f"- {rom['filename']}\n"
-                    result += f"  {rom.get('probable_type', 'Unknown type')}\n"
-                    result += f"  CRC32: {rom['crc32']}\n"
 
-            return [TextContent(type="text", text=result)]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error scanning ROMs: {str(e)}")]
+async def _handle_list_roms(arguments: Any) -> list:
+    """Handle list_roms tool."""
+    directory = arguments.get("directory")
 
-    elif name == "identify_rom":
-        rom_path = arguments["rom_path"]
-        path = Path(rom_path)
+    if directory:
+        rom_dir = Path(directory)
+    else:
+        rom_dir = ROM_DIR
 
-        if not path.exists():
-            return [
-                TextContent(type="text", text=f"Error: ROM file not found: {rom_path}")
-            ]
+    if not rom_dir.exists():
+        return _text_result(
+            f"ROM directory not found: {rom_dir}\n\nCreate this directory and add your Kickstart ROMs."
+        )
 
-        try:
-            rom_info = identify_rom(path)
-            summary = get_rom_summary(rom_info)
+    try:
+        roms = await asyncio.to_thread(scan_rom_directory, rom_dir)
 
-            return [TextContent(type="text", text=summary)]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error identifying ROM: {str(e)}")]
-
-    elif name == "get_amiberry_version":
-        try:
-            # Try running amiberry --help to get version info
-            result = subprocess.run(
-                [EMULATOR_BINARY, "--help"],
-                capture_output=True,
-                text=True,
-                timeout=5,
+        if not roms:
+            return _text_result(
+                f"No ROM files found in {rom_dir}\n\nAdd Kickstart ROM files (.rom, .bin) to this directory."
             )
 
-            output = result.stdout + result.stderr
-
-            # Parse version from output
-            version_info = {
-                "binary": str(EMULATOR_BINARY),
-                "available": True,
-            }
-
-            # Look for version string
-            for line in output.split("\n"):
-                line_lower = line.lower()
-                if "version" in line_lower or "amiberry" in line_lower:
-                    version_info["version_line"] = line.strip()
-                    break
-
-            result_text = f"Amiberry Binary: {version_info['binary']}\n"
-            if version_info.get("version_line"):
-                result_text += f"Version: {version_info['version_line']}\n"
-            result_text += f"Status: Available\n"
-
-            # Check for common features based on help output
-            features = []
-            if "--log" in output:
-                features.append("Console logging")
-            if "--model" in output:
-                features.append("Model presets")
-            if "--cdimage" in output or "cdimage" in output:
-                features.append("CD image support")
-            if "lua" in output.lower():
-                features.append("Lua scripting")
-
-            if features:
-                result_text += f"Features detected: {', '.join(features)}"
-
-            return [TextContent(type="text", text=result_text)]
-
-        except subprocess.TimeoutExpired:
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Amiberry binary found at {EMULATOR_BINARY} but timed out getting version info.",
-                )
-            ]
-        except FileNotFoundError:
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Amiberry binary not found at {EMULATOR_BINARY}.\n\nPlease install Amiberry or check the path.",
-                )
-            ]
-        except Exception as e:
-            return [
-                TextContent(
-                    type="text", text=f"Error getting Amiberry version: {str(e)}"
-                )
-            ]
-
-    # Runtime control tools (IPC)
-    elif name == "pause_emulation":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.pause()
-            if success:
-                return [TextContent(type="text", text="Emulation paused.")]
+        result = f"Found {len(roms)} ROM file(s) in {rom_dir}:\n\n"
+        for rom in sorted(roms, key=lambda x: x.get("filename", "").lower()):
+            if rom.get("error"):
+                result += f"- {rom['filename']}: Error - {rom['error']}\n"
+            elif rom.get("identified"):
+                result += f"- {rom['filename']}\n"
+                result += f"  Kickstart {rom['version']} (Rev {rom['revision']})\n"
+                result += f"  Model: {rom['model']}\n"
+                result += f"  CRC32: {rom['crc32']}\n"
             else:
-                return [TextContent(type="text", text="Failed to pause emulation.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+                result += f"- {rom['filename']}\n"
+                result += f"  {rom.get('probable_type', 'Unknown type')}\n"
+                result += f"  CRC32: {rom['crc32']}\n"
 
-    elif name == "resume_emulation":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.resume()
-            if success:
-                return [TextContent(type="text", text="Emulation resumed.")]
-            else:
-                return [TextContent(type="text", text="Failed to resume emulation.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+        return _text_result(result)
+    except Exception as e:
+        return _text_result(f"Error scanning ROMs: {str(e)}")
 
-    elif name == "reset_emulation":
-        hard = arguments.get("hard", False)
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.reset(hard=hard)
-            reset_type = "hard" if hard else "soft"
-            if success:
-                return [TextContent(type="text", text=f"Emulation {reset_type} reset performed.")]
-            else:
-                return [TextContent(type="text", text=f"Failed to perform {reset_type} reset.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
-    elif name == "runtime_screenshot":
-        filename = arguments["filename"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.screenshot(filename)
-            if success:
-                return [TextContent(type="text", text=f"Screenshot saved to: {filename}")]
-            else:
-                return [TextContent(type="text", text="Failed to take screenshot.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+async def _handle_identify_rom(arguments: Any) -> list:
+    """Handle identify_rom tool."""
+    rom_path = arguments["rom_path"]
+    path = Path(rom_path)
 
-    elif name == "runtime_save_state":
-        state_file = arguments["state_file"]
-        config_file = arguments["config_file"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.save_state(state_file, config_file)
-            if success:
-                return [TextContent(type="text", text=f"State saved:\n  State: {state_file}\n  Config: {config_file}")]
-            else:
-                return [TextContent(type="text", text="Failed to save state.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+    if not path.exists():
+        return _text_result(f"Error: ROM file not found: {rom_path}")
 
-    elif name == "runtime_load_state":
-        state_file = arguments["state_file"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.load_state(state_file)
-            if success:
-                return [TextContent(type="text", text=f"Loading state: {state_file}")]
-            else:
-                return [TextContent(type="text", text="Failed to load state.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+    try:
+        rom_info = await asyncio.to_thread(identify_rom, path)
+        summary = get_rom_summary(rom_info)
 
-    elif name == "runtime_insert_floppy":
-        drive = arguments["drive"]
-        image_path = arguments["image_path"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.insert_floppy(drive, image_path)
-            if success:
-                return [TextContent(type="text", text=f"Inserted {Path(image_path).name} into DF{drive}:")]
-            else:
-                return [TextContent(type="text", text=f"Failed to insert disk into DF{drive}:.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+        return _text_result(summary)
+    except Exception as e:
+        return _text_result(f"Error identifying ROM: {str(e)}")
 
-    elif name == "runtime_insert_cd":
-        image_path = arguments["image_path"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.insert_cd(image_path)
-            if success:
-                return [TextContent(type="text", text=f"Inserted CD: {Path(image_path).name}")]
-            else:
-                return [TextContent(type="text", text="Failed to insert CD.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
-    elif name == "get_runtime_status":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            status = await client.get_status()
+async def _handle_get_amiberry_version(arguments: Any) -> list:
+    """Handle get_amiberry_version tool."""
+    version_info = await detect_amiberry_version()
 
-            result = "Amiberry Runtime Status:\n\n"
-            result += f"  Paused: {status.get('Paused', 'Unknown')}\n"
-            result += f"  Config: {status.get('Config', 'Unknown')}\n"
+    result_text = f"Amiberry Binary: {version_info['binary']}\n"
+    if version_info.get("available"):
+        if version_info.get("version_line"):
+            result_text += f"Version: {version_info['version_line']}\n"
+        result_text += "Status: Available\n"
+        features = version_info.get("features", [])
+        if features:
+            result_text += f"Features detected: {', '.join(features)}"
+    elif version_info.get("error"):
+        result_text += f"Status: {version_info['error']}"
+    else:
+        result_text += "Status: Not available"
 
-            # Show mounted floppies
-            for i in range(4):
-                key = f"Floppy{i}"
-                if key in status:
-                    result += f"  DF{i}: {status[key]}\n"
+    return _text_result(result_text)
 
-            return [TextContent(type="text", text=result)]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except CommandError as e:
-            return [TextContent(type="text", text=f"Command error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
-    elif name == "runtime_get_config":
-        option = arguments["option"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            value = await client.get_config(option)
-            if value is not None:
-                return [TextContent(type="text", text=f"{option} = {value}")]
-            else:
-                return [TextContent(type="text", text=f"Unknown or unavailable option: {option}")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+# Runtime control tools (IPC)
 
-    elif name == "runtime_set_config":
-        option = arguments["option"]
-        value = arguments["value"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_config(option, value)
-            if success:
-                return [TextContent(type="text", text=f"Set {option} = {value}")]
-            else:
-                return [TextContent(type="text", text=f"Failed to set {option}. Unknown option or invalid value.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
-    elif name == "check_ipc_connection":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
+async def _handle_pause_emulation(arguments: Any) -> list:
+    """Handle pause_emulation tool."""
+    return await _ipc_bool_call(
+        "pause",
+        success_msg="Emulation paused.",
+        failure_msg="Failed to pause emulation.",
+    )
 
-            result = "Amiberry IPC Connection Check:\n\n"
-            result += f"  Transport: {client.transport}\n"
-            result += f"  Socket available: {client.is_available()}\n"
 
-            if client.is_available():
-                # Try to get status to verify connection works
-                try:
-                    status = await client.get_status()
-                    result += f"  Connection: OK\n"
-                    result += f"  Emulation paused: {status.get('Paused', 'Unknown')}\n"
-                except Exception as e:
-                    result += f"  Connection: Failed ({str(e)})\n"
-            else:
-                result += f"  Connection: Not available\n"
-                result += f"\nAmiberry may not be running, or was not built with USE_IPC_SOCKET=ON."
+async def _handle_resume_emulation(arguments: Any) -> list:
+    """Handle resume_emulation tool."""
+    return await _ipc_bool_call(
+        "resume",
+        success_msg="Emulation resumed.",
+        failure_msg="Failed to resume emulation.",
+    )
 
-            return [TextContent(type="text", text=result)]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error checking IPC: {str(e)}")]
 
-    # New runtime control tools
-    elif name == "runtime_eject_floppy":
-        drive = arguments["drive"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.eject_floppy(drive)
-            if success:
-                return [TextContent(type="text", text=f"Ejected disk from DF{drive}:")]
-            else:
-                return [TextContent(type="text", text=f"Failed to eject disk from DF{drive}:.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+async def _handle_reset_emulation(arguments: Any) -> list:
+    """Handle reset_emulation tool."""
+    hard = arguments.get("hard", False)
 
-    elif name == "runtime_eject_cd":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.eject_cd()
-            if success:
-                return [TextContent(type="text", text="CD ejected.")]
-            else:
-                return [TextContent(type="text", text="Failed to eject CD.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_list_floppies":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            drives = await client.list_floppies()
-
-            result = "Floppy Drives:\n\n"
-            for drive, path in sorted(drives.items()):
-                result += f"  {drive}: {path}\n"
-
-            return [TextContent(type="text", text=result)]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except CommandError as e:
-            return [TextContent(type="text", text=f"Command error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_list_configs":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            configs = await client.list_configs()
-
-            if not configs:
-                return [TextContent(type="text", text="No configuration files found.")]
-
-            result = f"Found {len(configs)} configuration file(s):\n\n"
-            for cfg in sorted(configs):
-                result += f"  - {cfg}\n"
-
-            return [TextContent(type="text", text=result)]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_set_volume":
-        volume = arguments["volume"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_volume(volume)
-            if success:
-                return [TextContent(type="text", text=f"Volume set to {volume}%")]
-            else:
-                return [TextContent(type="text", text="Failed to set volume.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_get_volume":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            volume = await client.get_volume()
-            if volume is not None:
-                return [TextContent(type="text", text=f"Current volume: {volume}%")]
-            else:
-                return [TextContent(type="text", text="Failed to get volume.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_mute":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.mute()
-            if success:
-                return [TextContent(type="text", text="Audio muted.")]
-            else:
-                return [TextContent(type="text", text="Failed to mute audio.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_unmute":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.unmute()
-            if success:
-                return [TextContent(type="text", text="Audio unmuted.")]
-            else:
-                return [TextContent(type="text", text="Failed to unmute audio.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_toggle_fullscreen":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.toggle_fullscreen()
-            if success:
-                return [TextContent(type="text", text="Fullscreen mode toggled.")]
-            else:
-                return [TextContent(type="text", text="Failed to toggle fullscreen.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_set_warp":
-        enabled = arguments["enabled"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_warp(enabled)
-            status = "enabled" if enabled else "disabled"
-            if success:
-                return [TextContent(type="text", text=f"Warp mode {status}.")]
-            else:
-                return [TextContent(type="text", text=f"Failed to {status[:-1]} warp mode.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_get_warp":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            enabled = await client.get_warp()
-            if enabled is not None:
-                status = "enabled" if enabled else "disabled"
-                return [TextContent(type="text", text=f"Warp mode is {status}.")]
-            else:
-                return [TextContent(type="text", text="Failed to get warp mode status.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_get_version":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            info = await client.get_version()
-
-            result = "Amiberry Version Info:\n\n"
-            for key, value in info.items():
-                result += f"  {key}: {value}\n"
-
-            return [TextContent(type="text", text=result)]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except CommandError as e:
-            return [TextContent(type="text", text=f"Command error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_frame_advance":
-        frames = arguments.get("frames", 1)
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.frame_advance(frames)
-            if success:
-                return [TextContent(type="text", text=f"Advanced {frames} frame(s).")]
-            else:
-                return [TextContent(type="text", text="Failed to advance frames. Is emulation paused?")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_send_mouse":
-        dx = arguments["dx"]
-        dy = arguments["dy"]
-        buttons = arguments.get("buttons", 0)
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.send_mouse(dx, dy, buttons)
-            if success:
-                return [TextContent(type="text", text=f"Mouse input sent: dx={dx}, dy={dy}, buttons={buttons}")]
-            else:
-                return [TextContent(type="text", text="Failed to send mouse input.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_set_mouse_speed":
-        speed = arguments["speed"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_mouse_speed(speed)
-            if success:
-                return [TextContent(type="text", text=f"Mouse speed set to {speed}.")]
-            else:
-                return [TextContent(type="text", text="Failed to set mouse speed.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_ping":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.ping()
-            if success:
-                return [TextContent(type="text", text="PONG - Amiberry IPC connection is working.")]
-            else:
-                return [TextContent(type="text", text="Ping failed - no response from Amiberry.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "set_active_instance":
-        global _active_instance
-        instance = arguments.get("instance")
-        _active_instance = instance
-        status = f"Active instance set to {instance}" if instance is not None else "Active instance set to auto-discover"
-        return [TextContent(type="text", text=status)]
-
-    elif name == "get_active_instance":
-        if _active_instance is None:
-            return [TextContent(type="text", text="Auto-discovering (no specific instance set)")]
+    async def _cb(client):
+        success = await client.reset(hard=hard)
+        reset_type = "hard" if hard else "soft"
+        if success:
+            return f"Emulation {reset_type} reset performed."
         else:
-            return [TextContent(type="text", text=f"Active instance: {_active_instance}")]
+            return f"Failed to perform {reset_type} reset."
 
-    # Round 2 runtime control tools
-    elif name == "runtime_quicksave":
-        slot = arguments.get("slot", 0)
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.quicksave(slot)
-            if success:
-                return [TextContent(type="text", text=f"Quick saved to slot {slot}.")]
-            else:
-                return [TextContent(type="text", text=f"Failed to quick save to slot {slot}.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+    return await _ipc_call(_cb)
 
-    elif name == "runtime_quickload":
-        slot = arguments.get("slot", 0)
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.quickload(slot)
-            if success:
-                return [TextContent(type="text", text=f"Quick loading from slot {slot}.")]
-            else:
-                return [TextContent(type="text", text=f"Failed to quick load from slot {slot}.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
-    elif name == "runtime_get_joyport_mode":
-        port = arguments["port"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            result = await client.get_joyport_mode(port)
-            if result:
-                mode, mode_name = result
-                return [TextContent(type="text", text=f"Port {port} mode: {mode} ({mode_name})")]
-            else:
-                return [TextContent(type="text", text=f"Failed to get port {port} mode.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+async def _handle_runtime_screenshot(arguments: Any) -> list:
+    """Handle runtime_screenshot tool."""
+    filename = arguments["filename"]
+    return await _ipc_bool_call(
+        "screenshot",
+        filename,
+        success_msg=f"Screenshot saved to: {filename}",
+        failure_msg="Failed to take screenshot.",
+    )
 
-    elif name == "runtime_set_joyport_mode":
-        port = arguments["port"]
-        mode = arguments["mode"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_joyport_mode(port, mode)
-            if success:
-                return [TextContent(type="text", text=f"Port {port} mode set to {mode}.")]
-            else:
-                return [TextContent(type="text", text=f"Failed to set port {port} mode.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
-    elif name == "runtime_get_autofire":
-        port = arguments["port"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            mode = await client.get_autofire(port)
-            if mode is not None:
-                modes = {0: "off", 1: "normal", 2: "toggle", 3: "always", 4: "toggle (no autofire)"}
-                mode_name = modes.get(mode, "unknown")
-                return [TextContent(type="text", text=f"Port {port} autofire: {mode} ({mode_name})")]
-            else:
-                return [TextContent(type="text", text=f"Failed to get port {port} autofire mode.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+async def _handle_runtime_save_state(arguments: Any) -> list:
+    """Handle runtime_save_state tool."""
+    state_file = arguments["state_file"]
+    config_file = arguments["config_file"]
+    return await _ipc_bool_call(
+        "save_state",
+        state_file,
+        config_file,
+        success_msg=f"State saved:\n  State: {state_file}\n  Config: {config_file}",
+        failure_msg="Failed to save state.",
+    )
 
-    elif name == "runtime_set_autofire":
-        port = arguments["port"]
-        mode = arguments["mode"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_autofire(port, mode)
-            if success:
-                return [TextContent(type="text", text=f"Port {port} autofire set to {mode}.")]
-            else:
-                return [TextContent(type="text", text=f"Failed to set port {port} autofire.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
-    elif name == "runtime_get_led_status":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            status = await client.get_led_status()
+async def _handle_runtime_load_state(arguments: Any) -> list:
+    """Handle runtime_load_state tool."""
+    state_file = arguments["state_file"]
+    return await _ipc_bool_call(
+        "load_state",
+        state_file,
+        success_msg=f"Loading state: {state_file}",
+        failure_msg="Failed to load state.",
+    )
 
-            result = "LED Status:\n\n"
-            for key, value in sorted(status.items()):
-                result += f"  {key}: {value}\n"
 
-            return [TextContent(type="text", text=result)]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except CommandError as e:
-            return [TextContent(type="text", text=f"Command error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+async def _handle_runtime_insert_floppy(arguments: Any) -> list:
+    """Handle runtime_insert_floppy tool."""
+    drive = arguments["drive"]
+    image_path = arguments["image_path"]
+    return await _ipc_bool_call(
+        "insert_floppy",
+        drive,
+        image_path,
+        success_msg=f"Inserted {Path(image_path).name} into DF{drive}:",
+        failure_msg=f"Failed to insert disk into DF{drive}:.",
+    )
 
-    elif name == "runtime_list_harddrives":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            drives = await client.list_harddrives()
 
-            if not drives or (len(drives) == 1 and "<no harddrives mounted>" in str(drives)):
-                return [TextContent(type="text", text="No hard drives mounted.")]
+async def _handle_runtime_insert_cd(arguments: Any) -> list:
+    """Handle runtime_insert_cd tool."""
+    image_path = arguments["image_path"]
+    return await _ipc_bool_call(
+        "insert_cd",
+        image_path,
+        success_msg=f"Inserted CD: {Path(image_path).name}",
+        failure_msg="Failed to insert CD.",
+    )
 
-            result = "Mounted Hard Drives:\n\n"
-            for key, value in sorted(drives.items()):
-                result += f"  {key}: {value}\n"
 
-            return [TextContent(type="text", text=result)]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except CommandError as e:
-            return [TextContent(type="text", text=f"Command error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+async def _handle_get_runtime_status(arguments: Any) -> list:
+    """Handle get_runtime_status tool."""
 
-    elif name == "runtime_set_display_mode":
-        mode = arguments["mode"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_display_mode(mode)
-            modes = {0: "window", 1: "fullscreen", 2: "fullwindow"}
-            if success:
-                return [TextContent(type="text", text=f"Display mode set to {modes.get(mode, mode)}.")]
-            else:
-                return [TextContent(type="text", text="Failed to set display mode.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+    async def _cb(client):
+        status = await client.get_status()
 
-    elif name == "runtime_get_display_mode":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            result = await client.get_display_mode()
-            if result:
-                mode, mode_name = result
-                return [TextContent(type="text", text=f"Display mode: {mode} ({mode_name})")]
-            else:
-                return [TextContent(type="text", text="Failed to get display mode.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+        result = "Amiberry Runtime Status:\n\n"
+        result += f"  Paused: {status.get('Paused', 'Unknown')}\n"
+        result += f"  Config: {status.get('Config', 'Unknown')}\n"
 
-    elif name == "runtime_set_ntsc":
-        enabled = arguments["enabled"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_ntsc(enabled)
-            mode = "NTSC" if enabled else "PAL"
-            if success:
-                return [TextContent(type="text", text=f"Video mode set to {mode}.")]
-            else:
-                return [TextContent(type="text", text=f"Failed to set video mode to {mode}.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+        # Show mounted floppies
+        for i in range(4):
+            key = f"Floppy{i}"
+            if key in status:
+                result += f"  DF{i}: {status[key]}\n"
 
-    elif name == "runtime_get_ntsc":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            result = await client.get_ntsc()
-            if result:
-                is_ntsc, mode_name = result
-                return [TextContent(type="text", text=f"Video mode: {mode_name}")]
-            else:
-                return [TextContent(type="text", text="Failed to get video mode.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+        return result
 
-    elif name == "runtime_set_sound_mode":
-        mode = arguments["mode"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_sound_mode(mode)
-            modes = {0: "off", 1: "normal", 2: "stereo", 3: "best"}
-            if success:
-                return [TextContent(type="text", text=f"Sound mode set to {modes.get(mode, mode)}.")]
-            else:
-                return [TextContent(type="text", text="Failed to set sound mode.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+    return await _ipc_call(_cb)
 
-    elif name == "runtime_get_sound_mode":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            result = await client.get_sound_mode()
-            if result:
-                mode, mode_name = result
-                return [TextContent(type="text", text=f"Sound mode: {mode} ({mode_name})")]
-            else:
-                return [TextContent(type="text", text="Failed to get sound mode.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
-    # Round 3 runtime control tools
-    elif name == "runtime_toggle_mouse_grab":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.toggle_mouse_grab()
-            if success:
-                return [TextContent(type="text", text="Mouse grab toggled.")]
-            else:
-                return [TextContent(type="text", text="Failed to toggle mouse grab.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+async def _handle_runtime_get_config(arguments: Any) -> list:
+    """Handle runtime_get_config tool."""
+    option = arguments["option"]
 
-    elif name == "runtime_get_mouse_speed":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            speed = await client.get_mouse_speed()
-            if speed is not None:
-                return [TextContent(type="text", text=f"Mouse speed: {speed}")]
-            else:
-                return [TextContent(type="text", text="Failed to get mouse speed.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+    async def _cb(client):
+        value = await client.get_config(option)
+        if value is not None:
+            return f"{option} = {value}"
+        else:
+            return f"Unknown or unavailable option: {option}"
 
-    elif name == "runtime_set_cpu_speed":
-        speed = arguments["speed"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_cpu_speed(speed)
-            if success:
-                return [TextContent(type="text", text=f"CPU speed set to {speed}.")]
-            else:
-                return [TextContent(type="text", text="Failed to set CPU speed.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+    return await _ipc_call(_cb)
 
-    elif name == "runtime_get_cpu_speed":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            result = await client.get_cpu_speed()
-            if result:
-                speed, desc = result
-                return [TextContent(type="text", text=f"CPU speed: {speed} ({desc})")]
-            else:
-                return [TextContent(type="text", text="Failed to get CPU speed.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
-    elif name == "runtime_toggle_rtg":
-        monid = arguments.get("monid", 0)
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            result = await client.toggle_rtg(monid)
-            if result:
-                return [TextContent(type="text", text=f"Display mode: {result}")]
-            else:
-                return [TextContent(type="text", text="Failed to toggle RTG.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+async def _handle_runtime_set_config(arguments: Any) -> list:
+    """Handle runtime_set_config tool."""
+    option = arguments["option"]
+    value = arguments["value"]
+    return await _ipc_bool_call(
+        "set_config",
+        option,
+        value,
+        success_msg=f"Set {option} = {value}",
+        failure_msg=f"Failed to set {option}. Unknown option or invalid value.",
+    )
 
-    elif name == "runtime_set_floppy_speed":
-        speed = arguments["speed"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_floppy_speed(speed)
-            if success:
-                desc = {0: "turbo", 100: "1x", 200: "2x", 400: "4x", 800: "8x"}.get(speed, str(speed))
-                return [TextContent(type="text", text=f"Floppy speed set to {speed} ({desc}).")]
-            else:
-                return [TextContent(type="text", text="Failed to set floppy speed.")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
-    elif name == "runtime_get_floppy_speed":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            result = await client.get_floppy_speed()
-            if result:
-                speed, desc = result
-                return [TextContent(type="text", text=f"Floppy speed: {speed} ({desc})")]
-            else:
-                return [TextContent(type="text", text="Failed to get floppy speed.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+async def _handle_check_ipc_connection(arguments: Any) -> list:
+    """Handle check_ipc_connection tool."""
+    try:
+        client = _get_ipc_client()
 
-    elif name == "runtime_disk_write_protect":
-        drive = arguments["drive"]
-        protect = arguments["protect"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.disk_write_protect(drive, protect)
-            if success:
-                status = "protected" if protect else "writable"
-                return [TextContent(type="text", text=f"Drive DF{drive} set to {status}.")]
-            else:
-                return [TextContent(type="text", text="Failed to set write protection.")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+        result = "Amiberry IPC Connection Check:\n\n"
+        result += f"  Transport: {client.transport}\n"
+        result += f"  Socket available: {client.is_available()}\n"
 
-    elif name == "runtime_get_disk_write_protect":
-        drive = arguments["drive"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            result = await client.get_disk_write_protect(drive)
-            if result:
-                is_protected, status = result
-                return [TextContent(type="text", text=f"Drive DF{drive}: {status}")]
-            else:
-                return [TextContent(type="text", text="Failed to get write protection status.")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+        if client.is_available():
+            # Try to get status to verify connection works
+            try:
+                status = await client.get_status()
+                result += "  Connection: OK\n"
+                result += f"  Emulation paused: {status.get('Paused', 'Unknown')}\n"
+            except Exception as e:
+                result += f"  Connection: Failed ({str(e)})\n"
+        else:
+            result += "  Connection: Not available\n"
+            result += "\nAmiberry may not be running, or was not built with USE_IPC_SOCKET=ON."
 
-    elif name == "runtime_toggle_status_line":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            result = await client.toggle_status_line()
-            if result:
-                mode, mode_name = result
-                return [TextContent(type="text", text=f"Status line: {mode_name}")]
-            else:
-                return [TextContent(type="text", text="Failed to toggle status line.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+        return _text_result(result)
+    except Exception as e:
+        return _text_result(f"Error checking IPC: {str(e)}")
 
-    elif name == "runtime_set_chipset":
-        chipset = arguments["chipset"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_chipset(chipset)
-            if success:
-                return [TextContent(type="text", text=f"Chipset set to {chipset}.")]
-            else:
-                return [TextContent(type="text", text="Failed to set chipset.")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
-    elif name == "runtime_get_chipset":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            result = await client.get_chipset()
-            if result:
-                mask, name = result
-                return [TextContent(type="text", text=f"Chipset: {name} (mask={mask})")]
-            else:
-                return [TextContent(type="text", text="Failed to get chipset.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+# New runtime control tools
 
-    elif name == "runtime_get_memory_config":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            config = await client.get_memory_config()
-            result = "Memory configuration:\n"
-            for key, value in config.items():
-                result += f"  {key}: {value}\n"
-            return [TextContent(type="text", text=result)]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
-    elif name == "runtime_get_fps":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            info = await client.get_fps()
-            result = "Performance info:\n"
+async def _handle_runtime_eject_floppy(arguments: Any) -> list:
+    """Handle runtime_eject_floppy tool."""
+    drive = arguments["drive"]
+    return await _ipc_bool_call(
+        "eject_floppy",
+        drive,
+        success_msg=f"Ejected disk from DF{drive}:",
+        failure_msg=f"Failed to eject disk from DF{drive}:.",
+    )
+
+
+async def _handle_runtime_eject_cd(arguments: Any) -> list:
+    """Handle runtime_eject_cd tool."""
+    return await _ipc_bool_call(
+        "eject_cd", success_msg="CD ejected.", failure_msg="Failed to eject CD."
+    )
+
+
+async def _handle_runtime_list_floppies(arguments: Any) -> list:
+    """Handle runtime_list_floppies tool."""
+
+    async def _cb(client):
+        drives = await client.list_floppies()
+
+        result = "Floppy Drives:\n\n"
+        for drive, path in sorted(drives.items()):
+            result += f"  {drive}: {path}\n"
+
+        return result
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_list_configs(arguments: Any) -> list:
+    """Handle runtime_list_configs tool."""
+
+    async def _cb(client):
+        configs = await client.list_configs()
+
+        if not configs:
+            return "No configuration files found."
+
+        result = f"Found {len(configs)} configuration file(s):\n\n"
+        for cfg in sorted(configs):
+            result += f"  - {cfg}\n"
+
+        return result
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_set_volume(arguments: Any) -> list:
+    """Handle runtime_set_volume tool."""
+    volume = arguments["volume"]
+    return await _ipc_bool_call(
+        "set_volume",
+        volume,
+        success_msg=f"Volume set to {volume}%",
+        failure_msg="Failed to set volume.",
+    )
+
+
+async def _handle_runtime_get_volume(arguments: Any) -> list:
+    """Handle runtime_get_volume tool."""
+
+    async def _cb(client):
+        volume = await client.get_volume()
+        if volume is not None:
+            return f"Current volume: {volume}%"
+        else:
+            return "Failed to get volume."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_mute(arguments: Any) -> list:
+    """Handle runtime_mute tool."""
+    return await _ipc_bool_call(
+        "mute", success_msg="Audio muted.", failure_msg="Failed to mute audio."
+    )
+
+
+async def _handle_runtime_unmute(arguments: Any) -> list:
+    """Handle runtime_unmute tool."""
+    return await _ipc_bool_call(
+        "unmute", success_msg="Audio unmuted.", failure_msg="Failed to unmute audio."
+    )
+
+
+async def _handle_runtime_toggle_fullscreen(arguments: Any) -> list:
+    """Handle runtime_toggle_fullscreen tool."""
+    return await _ipc_bool_call(
+        "toggle_fullscreen",
+        success_msg="Fullscreen mode toggled.",
+        failure_msg="Failed to toggle fullscreen.",
+    )
+
+
+async def _handle_runtime_set_warp(arguments: Any) -> list:
+    """Handle runtime_set_warp tool."""
+    enabled = arguments["enabled"]
+
+    async def _cb(client):
+        success = await client.set_warp(enabled)
+        status = "enabled" if enabled else "disabled"
+        if success:
+            return f"Warp mode {status}."
+        else:
+            return f"Failed to {status[:-1]} warp mode."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_get_warp(arguments: Any) -> list:
+    """Handle runtime_get_warp tool."""
+
+    async def _cb(client):
+        enabled = await client.get_warp()
+        if enabled is not None:
+            status = "enabled" if enabled else "disabled"
+            return f"Warp mode is {status}."
+        else:
+            return "Failed to get warp mode status."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_get_version(arguments: Any) -> list:
+    """Handle runtime_get_version tool."""
+
+    async def _cb(client):
+        info = await client.get_version()
+
+        result = "Amiberry Version Info:\n\n"
+        for key, value in info.items():
+            result += f"  {key}: {value}\n"
+
+        return result
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_frame_advance(arguments: Any) -> list:
+    """Handle runtime_frame_advance tool."""
+    frames = arguments.get("frames", 1)
+    return await _ipc_bool_call(
+        "frame_advance",
+        frames,
+        success_msg=f"Advanced {frames} frame(s).",
+        failure_msg="Failed to advance frames. Is emulation paused?",
+    )
+
+
+async def _handle_runtime_send_mouse(arguments: Any) -> list:
+    """Handle runtime_send_mouse tool."""
+    dx = arguments["dx"]
+    dy = arguments["dy"]
+    buttons = arguments.get("buttons", 0)
+    return await _ipc_bool_call(
+        "send_mouse",
+        dx,
+        dy,
+        buttons,
+        success_msg=f"Mouse input sent: dx={dx}, dy={dy}, buttons={buttons}",
+        failure_msg="Failed to send mouse input.",
+    )
+
+
+async def _handle_runtime_set_mouse_speed(arguments: Any) -> list:
+    """Handle runtime_set_mouse_speed tool."""
+    speed = arguments["speed"]
+    return await _ipc_bool_call(
+        "set_mouse_speed",
+        speed,
+        success_msg=f"Mouse speed set to {speed}.",
+        failure_msg="Failed to set mouse speed.",
+    )
+
+
+async def _handle_runtime_ping(arguments: Any) -> list:
+    """Handle runtime_ping tool."""
+    return await _ipc_bool_call(
+        "ping",
+        success_msg="PONG - Amiberry IPC connection is working.",
+        failure_msg="Ping failed - no response from Amiberry.",
+    )
+
+
+async def _handle_set_active_instance(arguments: Any) -> list:
+    """Handle set_active_instance tool."""
+
+    instance = arguments.get("instance")
+    _state.active_instance = instance
+    status = (
+        f"Active instance set to {instance}"
+        if instance is not None
+        else "Active instance set to auto-discover"
+    )
+    return _text_result(status)
+
+
+async def _handle_get_active_instance(arguments: Any) -> list:
+    """Handle get_active_instance tool."""
+    if _state.active_instance is None:
+        return _text_result("Auto-discovering (no specific instance set)")
+    else:
+        return _text_result(f"Active instance: {_state.active_instance}")
+
+
+# Round 2 runtime control tools
+
+
+async def _handle_runtime_quicksave(arguments: Any) -> list:
+    """Handle runtime_quicksave tool."""
+    slot = arguments.get("slot", 0)
+    return await _ipc_bool_call(
+        "quicksave",
+        slot,
+        success_msg=f"Quick saved to slot {slot}.",
+        failure_msg=f"Failed to quick save to slot {slot}.",
+    )
+
+
+async def _handle_runtime_quickload(arguments: Any) -> list:
+    """Handle runtime_quickload tool."""
+    slot = arguments.get("slot", 0)
+    return await _ipc_bool_call(
+        "quickload",
+        slot,
+        success_msg=f"Quick loading from slot {slot}.",
+        failure_msg=f"Failed to quick load from slot {slot}.",
+    )
+
+
+async def _handle_runtime_get_joyport_mode(arguments: Any) -> list:
+    """Handle runtime_get_joyport_mode tool."""
+    port = arguments["port"]
+
+    async def _cb(client):
+        result = await client.get_joyport_mode(port)
+        if result:
+            mode, mode_name = result
+            return f"Port {port} mode: {mode} ({mode_name})"
+        else:
+            return f"Failed to get port {port} mode."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_set_joyport_mode(arguments: Any) -> list:
+    """Handle runtime_set_joyport_mode tool."""
+    port = arguments["port"]
+    mode = arguments["mode"]
+    return await _ipc_bool_call(
+        "set_joyport_mode",
+        port,
+        mode,
+        success_msg=f"Port {port} mode set to {mode}.",
+        failure_msg=f"Failed to set port {port} mode.",
+    )
+
+
+async def _handle_runtime_get_autofire(arguments: Any) -> list:
+    """Handle runtime_get_autofire tool."""
+    port = arguments["port"]
+
+    async def _cb(client):
+        mode = await client.get_autofire(port)
+        if mode is not None:
+            modes = {
+                0: "off",
+                1: "normal",
+                2: "toggle",
+                3: "always",
+                4: "toggle (no autofire)",
+            }
+            mode_name = modes.get(mode, "unknown")
+            return f"Port {port} autofire: {mode} ({mode_name})"
+        else:
+            return f"Failed to get port {port} autofire mode."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_set_autofire(arguments: Any) -> list:
+    """Handle runtime_set_autofire tool."""
+    port = arguments["port"]
+    mode = arguments["mode"]
+    return await _ipc_bool_call(
+        "set_autofire",
+        port,
+        mode,
+        success_msg=f"Port {port} autofire set to {mode}.",
+        failure_msg=f"Failed to set port {port} autofire.",
+    )
+
+
+async def _handle_runtime_get_led_status(arguments: Any) -> list:
+    """Handle runtime_get_led_status tool."""
+
+    async def _cb(client):
+        status = await client.get_led_status()
+
+        result = "LED Status:\n\n"
+        for key, value in sorted(status.items()):
+            result += f"  {key}: {value}\n"
+
+        return result
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_list_harddrives(arguments: Any) -> list:
+    """Handle runtime_list_harddrives tool."""
+
+    async def _cb(client):
+        drives = await client.list_harddrives()
+
+        if not drives or (
+            len(drives) == 1 and "<no harddrives mounted>" in str(drives)
+        ):
+            return "No hard drives mounted."
+
+        result = "Mounted Hard Drives:\n\n"
+        for key, value in sorted(drives.items()):
+            result += f"  {key}: {value}\n"
+
+        return result
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_set_display_mode(arguments: Any) -> list:
+    """Handle runtime_set_display_mode tool."""
+    mode = arguments["mode"]
+
+    async def _cb(client):
+        success = await client.set_display_mode(mode)
+        modes = {0: "window", 1: "fullscreen", 2: "fullwindow"}
+        if success:
+            return f"Display mode set to {modes.get(mode, mode)}."
+        else:
+            return "Failed to set display mode."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_get_display_mode(arguments: Any) -> list:
+    """Handle runtime_get_display_mode tool."""
+
+    async def _cb(client):
+        result = await client.get_display_mode()
+        if result:
+            mode, mode_name = result
+            return f"Display mode: {mode} ({mode_name})"
+        else:
+            return "Failed to get display mode."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_set_ntsc(arguments: Any) -> list:
+    """Handle runtime_set_ntsc tool."""
+    enabled = arguments["enabled"]
+
+    async def _cb(client):
+        success = await client.set_ntsc(enabled)
+        mode = "NTSC" if enabled else "PAL"
+        if success:
+            return f"Video mode set to {mode}."
+        else:
+            return f"Failed to set video mode to {mode}."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_get_ntsc(arguments: Any) -> list:
+    """Handle runtime_get_ntsc tool."""
+
+    async def _cb(client):
+        result = await client.get_ntsc()
+        if result:
+            is_ntsc, mode_name = result
+            return f"Video mode: {mode_name}"
+        else:
+            return "Failed to get video mode."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_set_sound_mode(arguments: Any) -> list:
+    """Handle runtime_set_sound_mode tool."""
+    mode = arguments["mode"]
+
+    async def _cb(client):
+        success = await client.set_sound_mode(mode)
+        modes = {0: "off", 1: "normal", 2: "stereo", 3: "best"}
+        if success:
+            return f"Sound mode set to {modes.get(mode, mode)}."
+        else:
+            return "Failed to set sound mode."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_get_sound_mode(arguments: Any) -> list:
+    """Handle runtime_get_sound_mode tool."""
+
+    async def _cb(client):
+        result = await client.get_sound_mode()
+        if result:
+            mode, mode_name = result
+            return f"Sound mode: {mode} ({mode_name})"
+        else:
+            return "Failed to get sound mode."
+
+    return await _ipc_call(_cb)
+
+
+# Round 3 runtime control tools
+
+
+async def _handle_runtime_toggle_mouse_grab(arguments: Any) -> list:
+    """Handle runtime_toggle_mouse_grab tool."""
+    return await _ipc_bool_call(
+        "toggle_mouse_grab",
+        success_msg="Mouse grab toggled.",
+        failure_msg="Failed to toggle mouse grab.",
+    )
+
+
+async def _handle_runtime_get_mouse_speed(arguments: Any) -> list:
+    """Handle runtime_get_mouse_speed tool."""
+
+    async def _cb(client):
+        speed = await client.get_mouse_speed()
+        if speed is not None:
+            return f"Mouse speed: {speed}"
+        else:
+            return "Failed to get mouse speed."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_set_cpu_speed(arguments: Any) -> list:
+    """Handle runtime_set_cpu_speed tool."""
+    speed = arguments["speed"]
+    return await _ipc_bool_call(
+        "set_cpu_speed",
+        speed,
+        success_msg=f"CPU speed set to {speed}.",
+        failure_msg="Failed to set CPU speed.",
+    )
+
+
+async def _handle_runtime_get_cpu_speed(arguments: Any) -> list:
+    """Handle runtime_get_cpu_speed tool."""
+
+    async def _cb(client):
+        result = await client.get_cpu_speed()
+        if result:
+            speed, desc = result
+            return f"CPU speed: {speed} ({desc})"
+        else:
+            return "Failed to get CPU speed."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_toggle_rtg(arguments: Any) -> list:
+    """Handle runtime_toggle_rtg tool."""
+    monid = arguments.get("monid", 0)
+
+    async def _cb(client):
+        result = await client.toggle_rtg(monid)
+        if result:
+            return f"Display mode: {result}"
+        else:
+            return "Failed to toggle RTG."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_set_floppy_speed(arguments: Any) -> list:
+    """Handle runtime_set_floppy_speed tool."""
+    speed = arguments["speed"]
+
+    async def _cb(client):
+        success = await client.set_floppy_speed(speed)
+        if success:
+            desc = {0: "turbo", 100: "1x", 200: "2x", 400: "4x", 800: "8x"}.get(
+                speed, str(speed)
+            )
+            return f"Floppy speed set to {speed} ({desc})."
+        else:
+            return "Failed to set floppy speed."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_get_floppy_speed(arguments: Any) -> list:
+    """Handle runtime_get_floppy_speed tool."""
+
+    async def _cb(client):
+        result = await client.get_floppy_speed()
+        if result:
+            speed, desc = result
+            return f"Floppy speed: {speed} ({desc})"
+        else:
+            return "Failed to get floppy speed."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_disk_write_protect(arguments: Any) -> list:
+    """Handle runtime_disk_write_protect tool."""
+    drive = arguments["drive"]
+    protect = arguments["protect"]
+
+    async def _cb(client):
+        success = await client.disk_write_protect(drive, protect)
+        if success:
+            status = "protected" if protect else "writable"
+            return f"Drive DF{drive} set to {status}."
+        else:
+            return "Failed to set write protection."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_get_disk_write_protect(arguments: Any) -> list:
+    """Handle runtime_get_disk_write_protect tool."""
+    drive = arguments["drive"]
+
+    async def _cb(client):
+        result = await client.get_disk_write_protect(drive)
+        if result:
+            is_protected, status = result
+            return f"Drive DF{drive}: {status}"
+        else:
+            return "Failed to get write protection status."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_toggle_status_line(arguments: Any) -> list:
+    """Handle runtime_toggle_status_line tool."""
+
+    async def _cb(client):
+        result = await client.toggle_status_line()
+        if result:
+            mode, mode_name = result
+            return f"Status line: {mode_name}"
+        else:
+            return "Failed to toggle status line."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_set_chipset(arguments: Any) -> list:
+    """Handle runtime_set_chipset tool."""
+    chipset = arguments["chipset"]
+
+    async def _cb(client):
+        success = await client.set_chipset(chipset)
+        if success:
+            return f"Chipset set to {chipset}."
+        else:
+            return "Failed to set chipset."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_get_chipset(arguments: Any) -> list:
+    """Handle runtime_get_chipset tool."""
+
+    async def _cb(client):
+        result = await client.get_chipset()
+        if result:
+            mask, name = result
+            return f"Chipset: {name} (mask={mask})"
+        else:
+            return "Failed to get chipset."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_get_memory_config(arguments: Any) -> list:
+    """Handle runtime_get_memory_config tool."""
+
+    async def _cb(client):
+        config = await client.get_memory_config()
+        result = "Memory configuration:\n"
+        for key, value in config.items():
+            result += f"  {key}: {value}\n"
+        return result
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_get_fps(arguments: Any) -> list:
+    """Handle runtime_get_fps tool."""
+
+    async def _cb(client):
+        info = await client.get_fps()
+        result = "Performance info:\n"
+        for key, value in info.items():
+            result += f"  {key}: {value}\n"
+        return result
+
+    return await _ipc_call(_cb)
+
+
+# Round 4 runtime control tools - Memory and Window Control
+
+
+async def _handle_runtime_set_chip_mem(arguments: Any) -> list:
+    """Handle runtime_set_chip_mem tool."""
+    size_kb = arguments["size_kb"]
+
+    async def _cb(client):
+        success = await client.set_chip_mem(size_kb)
+        if success:
+            return f"Chip RAM set to {size_kb} KB. Reset required for changes to take effect."
+        else:
+            return "Failed to set Chip RAM size."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_set_fast_mem(arguments: Any) -> list:
+    """Handle runtime_set_fast_mem tool."""
+    size_kb = arguments["size_kb"]
+
+    async def _cb(client):
+        success = await client.set_fast_mem(size_kb)
+        if success:
+            return f"Fast RAM set to {size_kb} KB. Reset required for changes to take effect."
+        else:
+            return "Failed to set Fast RAM size."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_set_slow_mem(arguments: Any) -> list:
+    """Handle runtime_set_slow_mem tool."""
+    size_kb = arguments["size_kb"]
+
+    async def _cb(client):
+        success = await client.set_slow_mem(size_kb)
+        if success:
+            return f"Slow RAM set to {size_kb} KB. Reset required for changes to take effect."
+        else:
+            return "Failed to set Slow RAM size."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_set_z3_mem(arguments: Any) -> list:
+    """Handle runtime_set_z3_mem tool."""
+    size_mb = arguments["size_mb"]
+
+    async def _cb(client):
+        success = await client.set_z3_mem(size_mb)
+        if success:
+            return f"Z3 Fast RAM set to {size_mb} MB. Reset required for changes to take effect."
+        else:
+            return "Failed to set Z3 Fast RAM size."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_get_cpu_model(arguments: Any) -> list:
+    """Handle runtime_get_cpu_model tool."""
+
+    async def _cb(client):
+        info = await client.get_cpu_model()
+        result = "CPU Model:\n"
+        for key, value in info.items():
+            result += f"  {key}: {value}\n"
+        return result
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_set_cpu_model(arguments: Any) -> list:
+    """Handle runtime_set_cpu_model tool."""
+    model = arguments["model"]
+
+    async def _cb(client):
+        success = await client.set_cpu_model(model)
+        if success:
+            return (
+                f"CPU model set to {model}. Reset required for changes to take effect."
+            )
+        else:
+            return "Failed to set CPU model."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_set_window_size(arguments: Any) -> list:
+    """Handle runtime_set_window_size tool."""
+    width = arguments["width"]
+    height = arguments["height"]
+
+    async def _cb(client):
+        success = await client.set_window_size(width, height)
+        if success:
+            return f"Window size set to {width}x{height}."
+        else:
+            return "Failed to set window size."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_get_window_size(arguments: Any) -> list:
+    """Handle runtime_get_window_size tool."""
+
+    async def _cb(client):
+        info = await client.get_window_size()
+        width = info.get("width", "?")
+        height = info.get("height", "?")
+        return f"Window size: {width}x{height}"
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_set_scaling(arguments: Any) -> list:
+    """Handle runtime_set_scaling tool."""
+    mode = arguments["mode"]
+    mode_names = ["auto", "nearest", "linear", "integer"]
+
+    async def _cb(client):
+        success = await client.set_scaling(mode)
+        if success:
+            mode_index = mode + 1  # -1..2 -> 0..3
+            mode_name = (
+                mode_names[mode_index]
+                if 0 <= mode_index < len(mode_names)
+                else str(mode)
+            )
+            return f"Scaling mode set to {mode_name}."
+        else:
+            return "Failed to set scaling mode."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_get_scaling(arguments: Any) -> list:
+    """Handle runtime_get_scaling tool."""
+
+    async def _cb(client):
+        info = await client.get_scaling()
+        result = "Scaling:\n"
+        for key, value in info.items():
+            result += f"  {key}: {value}\n"
+        return result
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_set_line_mode(arguments: Any) -> list:
+    """Handle runtime_set_line_mode tool."""
+    mode = arguments["mode"]
+    mode_names = ["single", "double", "scanlines"]
+
+    async def _cb(client):
+        success = await client.set_line_mode(mode)
+        if success:
+            mode_name = mode_names[mode] if 0 <= mode < len(mode_names) else str(mode)
+            return f"Line mode set to {mode_name}."
+        else:
+            return "Failed to set line mode."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_get_line_mode(arguments: Any) -> list:
+    """Handle runtime_get_line_mode tool."""
+
+    async def _cb(client):
+        info = await client.get_line_mode()
+        result = "Line mode:\n"
+        for key, value in info.items():
+            result += f"  {key}: {value}\n"
+        return result
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_set_resolution(arguments: Any) -> list:
+    """Handle runtime_set_resolution tool."""
+    mode = arguments["mode"]
+    mode_names = ["lores", "hires", "superhires"]
+
+    async def _cb(client):
+        success = await client.set_resolution(mode)
+        if success:
+            mode_name = mode_names[mode] if 0 <= mode < len(mode_names) else str(mode)
+            return f"Resolution set to {mode_name}."
+        else:
+            return "Failed to set resolution."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_get_resolution(arguments: Any) -> list:
+    """Handle runtime_get_resolution tool."""
+
+    async def _cb(client):
+        result = await client.get_resolution()
+        if result:
+            mode, mode_name = result
+            return f"Resolution: {mode_name} ({mode})"
+        else:
+            return "Failed to get resolution."
+
+    return await _ipc_call(_cb)
+
+
+# Round 5 - Autocrop and WHDLoad
+
+
+async def _handle_runtime_set_autocrop(arguments: Any) -> list:
+    """Handle runtime_set_autocrop tool."""
+    enabled = arguments["enabled"]
+    return await _ipc_bool_call(
+        "set_autocrop",
+        enabled,
+        success_msg=f"Autocrop {'enabled' if enabled else 'disabled'}.",
+        failure_msg="Failed to set autocrop.",
+    )
+
+
+async def _handle_runtime_get_autocrop(arguments: Any) -> list:
+    """Handle runtime_get_autocrop tool."""
+
+    async def _cb(client):
+        result = await client.get_autocrop()
+        if result is not None:
+            return f"Autocrop: {'enabled' if result else 'disabled'}"
+        else:
+            return "Failed to get autocrop status."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_insert_whdload(arguments: Any) -> list:
+    """Handle runtime_insert_whdload tool."""
+    path = arguments["path"]
+    return await _ipc_bool_call(
+        "insert_whdload",
+        path,
+        success_msg=f"WHDLoad game loaded: {path}\nNote: A reset may be required for the game to start.",
+        failure_msg="Failed to load WHDLoad game.",
+    )
+
+
+async def _handle_runtime_eject_whdload(arguments: Any) -> list:
+    """Handle runtime_eject_whdload tool."""
+    return await _ipc_bool_call(
+        "eject_whdload",
+        success_msg="WHDLoad game ejected.",
+        failure_msg="Failed to eject WHDLoad game.",
+    )
+
+
+async def _handle_runtime_get_whdload(arguments: Any) -> list:
+    """Handle runtime_get_whdload tool."""
+
+    async def _cb(client):
+        info = await client.get_whdload()
+        if info:
+            if info.get("loaded") == "0":
+                return "No WHDLoad game loaded."
+            result = "WHDLoad game:\n"
+            for key, value in info.items():
+                if value:  # Only show non-empty values
+                    result += f"  {key}: {value}\n"
+            return result
+        else:
+            return "Failed to get WHDLoad info."
+
+    return await _ipc_call(_cb)
+
+
+# Round 6 - Debugging and Diagnostics
+
+
+async def _handle_runtime_debug_activate(arguments: Any) -> list:
+    """Handle runtime_debug_activate tool."""
+    return await _ipc_bool_call(
+        "debug_activate",
+        success_msg="Debugger activated.",
+        failure_msg="Failed to activate debugger. Amiberry may not be built with debugger support.",
+    )
+
+
+async def _handle_runtime_debug_deactivate(arguments: Any) -> list:
+    """Handle runtime_debug_deactivate tool."""
+    return await _ipc_bool_call(
+        "debug_deactivate",
+        success_msg="Debugger deactivated, emulation resumed.",
+        failure_msg="Failed to deactivate debugger.",
+    )
+
+
+async def _handle_runtime_debug_status(arguments: Any) -> list:
+    """Handle runtime_debug_status tool."""
+
+    async def _cb(client):
+        info = await client.debug_status()
+        if info:
+            result = "Debugger status:\n"
             for key, value in info.items():
                 result += f"  {key}: {value}\n"
-            return [TextContent(type="text", text=result)]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+            return result
+        else:
+            return "Failed to get debugger status."
 
-    # Round 4 runtime control tools - Memory and Window Control
-    elif name == "runtime_set_chip_mem":
-        size_kb = arguments["size_kb"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_chip_mem(size_kb)
-            if success:
-                return [TextContent(type="text", text=f"Chip RAM set to {size_kb} KB. Reset required for changes to take effect.")]
-            else:
-                return [TextContent(type="text", text="Failed to set Chip RAM size.")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+    return await _ipc_call(_cb)
 
-    elif name == "runtime_set_fast_mem":
-        size_kb = arguments["size_kb"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_fast_mem(size_kb)
-            if success:
-                return [TextContent(type="text", text=f"Fast RAM set to {size_kb} KB. Reset required for changes to take effect.")]
-            else:
-                return [TextContent(type="text", text="Failed to set Fast RAM size.")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
-    elif name == "runtime_set_slow_mem":
-        size_kb = arguments["size_kb"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_slow_mem(size_kb)
-            if success:
-                return [TextContent(type="text", text=f"Slow RAM set to {size_kb} KB. Reset required for changes to take effect.")]
-            else:
-                return [TextContent(type="text", text="Failed to set Slow RAM size.")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+async def _handle_runtime_debug_step(arguments: Any) -> list:
+    """Handle runtime_debug_step tool."""
+    count = arguments.get("count", 1)
+    return await _ipc_bool_call(
+        "debug_step",
+        count,
+        success_msg=f"Stepped {count} instruction(s).",
+        failure_msg="Failed to step. Debugger may not be active.",
+    )
 
-    elif name == "runtime_set_z3_mem":
-        size_mb = arguments["size_mb"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_z3_mem(size_mb)
-            if success:
-                return [TextContent(type="text", text=f"Z3 Fast RAM set to {size_mb} MB. Reset required for changes to take effect.")]
-            else:
-                return [TextContent(type="text", text="Failed to set Z3 Fast RAM size.")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
-    elif name == "runtime_get_cpu_model":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            info = await client.get_cpu_model()
-            result = "CPU Model:\n"
+async def _handle_runtime_debug_continue(arguments: Any) -> list:
+    """Handle runtime_debug_continue tool."""
+    return await _ipc_bool_call(
+        "debug_continue",
+        success_msg="Execution continued.",
+        failure_msg="Failed to continue execution.",
+    )
+
+
+async def _handle_runtime_get_cpu_regs(arguments: Any) -> list:
+    """Handle runtime_get_cpu_regs tool."""
+
+    async def _cb(client):
+        info = await client.get_cpu_regs()
+        if info:
+            result = "CPU Registers:\n"
+            # Format nicely: D0-D7 on one section, A0-A7 on another
+            data_regs = [f"  {k}: {v}" for k, v in info.items() if k.startswith("D")]
+            addr_regs = [f"  {k}: {v}" for k, v in info.items() if k.startswith("A")]
+            other_regs = [
+                f"  {k}: {v}"
+                for k, v in info.items()
+                if not k.startswith("D") and not k.startswith("A")
+            ]
+            result += "Data registers:\n" + "\n".join(data_regs) + "\n"
+            result += "Address registers:\n" + "\n".join(addr_regs) + "\n"
+            result += "Other:\n" + "\n".join(other_regs)
+            return result
+        else:
+            return "Failed to get CPU registers."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_get_custom_regs(arguments: Any) -> list:
+    """Handle runtime_get_custom_regs tool."""
+
+    async def _cb(client):
+        info = await client.get_custom_regs()
+        if info:
+            result = "Custom Chip Registers:\n"
             for key, value in info.items():
                 result += f"  {key}: {value}\n"
-            return [TextContent(type="text", text=result)]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+            return result
+        else:
+            return "Failed to get custom registers."
 
-    elif name == "runtime_set_cpu_model":
-        model = arguments["model"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_cpu_model(model)
-            if success:
-                return [TextContent(type="text", text=f"CPU model set to {model}. Reset required for changes to take effect.")]
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_disassemble(arguments: Any) -> list:
+    """Handle runtime_disassemble tool."""
+    address = arguments["address"]
+    count = arguments.get("count", 10)
+
+    async def _cb(client):
+        lines = await client.disassemble(address, count)
+        if lines:
+            result = f"Disassembly at {address}:\n"
+            for line in lines:
+                result += f"  {line}\n"
+            return result
+        else:
+            return "No disassembly returned."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_set_breakpoint(arguments: Any) -> list:
+    """Handle runtime_set_breakpoint tool."""
+    address = arguments["address"]
+    return await _ipc_bool_call(
+        "set_breakpoint",
+        address,
+        success_msg=f"Breakpoint set at {address}.",
+        failure_msg="Failed to set breakpoint. Maximum 20 breakpoints allowed.",
+    )
+
+
+async def _handle_runtime_clear_breakpoint(arguments: Any) -> list:
+    """Handle runtime_clear_breakpoint tool."""
+    address = arguments["address"]
+
+    async def _cb(client):
+        success = await client.clear_breakpoint(address)
+        if success:
+            if address.upper() == "ALL":
+                return "All breakpoints cleared."
             else:
-                return [TextContent(type="text", text="Failed to set CPU model.")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+                return f"Breakpoint at {address} cleared."
+        else:
+            return "Failed to clear breakpoint."
 
-    elif name == "runtime_set_window_size":
-        width = arguments["width"]
-        height = arguments["height"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_window_size(width, height)
-            if success:
-                return [TextContent(type="text", text=f"Window size set to {width}x{height}.")]
-            else:
-                return [TextContent(type="text", text="Failed to set window size.")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+    return await _ipc_call(_cb)
 
-    elif name == "runtime_get_window_size":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            info = await client.get_window_size()
-            width = info.get("width", "?")
-            height = info.get("height", "?")
-            return [TextContent(type="text", text=f"Window size: {width}x{height}")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
-    elif name == "runtime_set_scaling":
-        mode = arguments["mode"]
-        mode_names = ["auto", "nearest", "linear", "integer"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_scaling(mode)
-            if success:
-                mode_index = mode + 1  # -1..2 -> 0..3
-                mode_name = mode_names[mode_index] if 0 <= mode_index < len(mode_names) else str(mode)
-                return [TextContent(type="text", text=f"Scaling mode set to {mode_name}.")]
-            else:
-                return [TextContent(type="text", text="Failed to set scaling mode.")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+async def _handle_runtime_list_breakpoints(arguments: Any) -> list:
+    """Handle runtime_list_breakpoints tool."""
 
-    elif name == "runtime_get_scaling":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            info = await client.get_scaling()
-            result = "Scaling:\n"
+    async def _cb(client):
+        breakpoints = await client.list_breakpoints()
+        if breakpoints:
+            result = "Active breakpoints:\n"
+            for bp in breakpoints:
+                result += f"  {bp}\n"
+            return result
+        else:
+            return "No active breakpoints."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_get_copper_state(arguments: Any) -> list:
+    """Handle runtime_get_copper_state tool."""
+
+    async def _cb(client):
+        info = await client.get_copper_state()
+        if info:
+            result = "Copper State:\n"
             for key, value in info.items():
                 result += f"  {key}: {value}\n"
-            return [TextContent(type="text", text=result)]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+            return result
+        else:
+            return "Failed to get Copper state."
 
-    elif name == "runtime_set_line_mode":
-        mode = arguments["mode"]
-        mode_names = ["single", "double", "scanlines"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_line_mode(mode)
-            if success:
-                mode_name = mode_names[mode] if 0 <= mode < len(mode_names) else str(mode)
-                return [TextContent(type="text", text=f"Line mode set to {mode_name}.")]
-            else:
-                return [TextContent(type="text", text="Failed to set line mode.")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+    return await _ipc_call(_cb)
 
-    elif name == "runtime_get_line_mode":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            info = await client.get_line_mode()
-            result = "Line mode:\n"
+
+async def _handle_runtime_get_blitter_state(arguments: Any) -> list:
+    """Handle runtime_get_blitter_state tool."""
+
+    async def _cb(client):
+        info = await client.get_blitter_state()
+        if info:
+            result = "Blitter State:\n"
             for key, value in info.items():
                 result += f"  {key}: {value}\n"
-            return [TextContent(type="text", text=result)]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+            return result
+        else:
+            return "Failed to get Blitter state."
 
-    elif name == "runtime_set_resolution":
-        mode = arguments["mode"]
-        mode_names = ["lores", "hires", "superhires"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_resolution(mode)
-            if success:
-                mode_name = mode_names[mode] if 0 <= mode < len(mode_names) else str(mode)
-                return [TextContent(type="text", text=f"Resolution set to {mode_name}.")]
-            else:
-                return [TextContent(type="text", text="Failed to set resolution.")]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+    return await _ipc_call(_cb)
 
-    elif name == "runtime_get_resolution":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            result = await client.get_resolution()
-            if result:
-                mode, mode_name = result
-                return [TextContent(type="text", text=f"Resolution: {mode_name} ({mode})")]
-            else:
-                return [TextContent(type="text", text="Failed to get resolution.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
-    # Round 5 - Autocrop and WHDLoad
-    elif name == "runtime_set_autocrop":
-        enabled = arguments["enabled"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_autocrop(enabled)
-            if success:
-                return [TextContent(type="text", text=f"Autocrop {'enabled' if enabled else 'disabled'}.")]
-            else:
-                return [TextContent(type="text", text="Failed to set autocrop.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+async def _handle_runtime_get_drive_state(arguments: Any) -> list:
+    """Handle runtime_get_drive_state tool."""
+    drive = arguments.get("drive")
 
-    elif name == "runtime_get_autocrop":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            result = await client.get_autocrop()
-            if result is not None:
-                return [TextContent(type="text", text=f"Autocrop: {'enabled' if result else 'disabled'}")]
-            else:
-                return [TextContent(type="text", text="Failed to get autocrop status.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+    async def _cb(client):
+        info = await client.get_drive_state(drive)
+        if info:
+            result = f"Drive State{' (DF' + str(drive) + ')' if drive is not None else ''}:\n"
+            for key, value in info.items():
+                result += f"  {key}: {value}\n"
+            return result
+        else:
+            return "Failed to get drive state."
 
-    elif name == "runtime_insert_whdload":
-        path = arguments["path"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.insert_whdload(path)
-            if success:
-                return [TextContent(type="text", text=f"WHDLoad game loaded: {path}\nNote: A reset may be required for the game to start.")]
-            else:
-                return [TextContent(type="text", text="Failed to load WHDLoad game.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+    return await _ipc_call(_cb)
 
-    elif name == "runtime_eject_whdload":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.eject_whdload()
-            if success:
-                return [TextContent(type="text", text="WHDLoad game ejected.")]
-            else:
-                return [TextContent(type="text", text="Failed to eject WHDLoad game.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
-    elif name == "runtime_get_whdload":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            info = await client.get_whdload()
-            if info:
-                if info.get("loaded") == "0":
-                    return [TextContent(type="text", text="No WHDLoad game loaded.")]
-                result = "WHDLoad game:\n"
-                for key, value in info.items():
-                    if value:  # Only show non-empty values
-                        result += f"  {key}: {value}\n"
-                return [TextContent(type="text", text=result)]
-            else:
-                return [TextContent(type="text", text="Failed to get WHDLoad info.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+async def _handle_runtime_get_audio_state(arguments: Any) -> list:
+    """Handle runtime_get_audio_state tool."""
 
-    # Round 6 - Debugging and Diagnostics
-    elif name == "runtime_debug_activate":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.debug_activate()
-            if success:
-                return [TextContent(type="text", text="Debugger activated.")]
-            else:
-                return [TextContent(type="text", text="Failed to activate debugger. Amiberry may not be built with debugger support.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+    async def _cb(client):
+        info = await client.get_audio_state()
+        if info:
+            result = "Audio State:\n"
+            for key, value in info.items():
+                result += f"  {key}: {value}\n"
+            return result
+        else:
+            return "Failed to get audio state."
 
-    elif name == "runtime_debug_deactivate":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.debug_deactivate()
-            if success:
-                return [TextContent(type="text", text="Debugger deactivated, emulation resumed.")]
-            else:
-                return [TextContent(type="text", text="Failed to deactivate debugger.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+    return await _ipc_call(_cb)
 
-    elif name == "runtime_debug_status":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            info = await client.debug_status()
-            if info:
-                result = "Debugger status:\n"
-                for key, value in info.items():
-                    result += f"  {key}: {value}\n"
-                return [TextContent(type="text", text=result)]
-            else:
-                return [TextContent(type="text", text="Failed to get debugger status.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
-    elif name == "runtime_debug_step":
-        count = arguments.get("count", 1)
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.debug_step(count)
-            if success:
-                return [TextContent(type="text", text=f"Stepped {count} instruction(s).")]
-            else:
-                return [TextContent(type="text", text="Failed to step. Debugger may not be active.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+async def _handle_runtime_get_dma_state(arguments: Any) -> list:
+    """Handle runtime_get_dma_state tool."""
 
-    elif name == "runtime_debug_continue":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.debug_continue()
-            if success:
-                return [TextContent(type="text", text="Execution continued.")]
-            else:
-                return [TextContent(type="text", text="Failed to continue execution.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+    async def _cb(client):
+        info = await client.get_dma_state()
+        if info:
+            result = "DMA State:\n"
+            for key, value in info.items():
+                result += f"  {key}: {value}\n"
+            return result
+        else:
+            return "Failed to get DMA state."
 
-    elif name == "runtime_get_cpu_regs":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            info = await client.get_cpu_regs()
-            if info:
-                result = "CPU Registers:\n"
-                # Format nicely: D0-D7 on one section, A0-A7 on another
-                data_regs = [f"  {k}: {v}" for k, v in info.items() if k.startswith("D")]
-                addr_regs = [f"  {k}: {v}" for k, v in info.items() if k.startswith("A")]
-                other_regs = [f"  {k}: {v}" for k, v in info.items() if not k.startswith("D") and not k.startswith("A")]
-                result += "Data registers:\n" + "\n".join(data_regs) + "\n"
-                result += "Address registers:\n" + "\n".join(addr_regs) + "\n"
-                result += "Other:\n" + "\n".join(other_regs)
-                return [TextContent(type="text", text=result)]
-            else:
-                return [TextContent(type="text", text="Failed to get CPU registers.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_get_custom_regs":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            info = await client.get_custom_regs()
-            if info:
-                result = "Custom Chip Registers:\n"
-                for key, value in info.items():
-                    result += f"  {key}: {value}\n"
-                return [TextContent(type="text", text=result)]
-            else:
-                return [TextContent(type="text", text="Failed to get custom registers.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_disassemble":
-        address = arguments["address"]
-        count = arguments.get("count", 10)
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            lines = await client.disassemble(address, count)
-            if lines:
-                result = f"Disassembly at {address}:\n"
-                for line in lines:
-                    result += f"  {line}\n"
-                return [TextContent(type="text", text=result)]
-            else:
-                return [TextContent(type="text", text="No disassembly returned.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_set_breakpoint":
-        address = arguments["address"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.set_breakpoint(address)
-            if success:
-                return [TextContent(type="text", text=f"Breakpoint set at {address}.")]
-            else:
-                return [TextContent(type="text", text="Failed to set breakpoint. Maximum 20 breakpoints allowed.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_clear_breakpoint":
-        address = arguments["address"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.clear_breakpoint(address)
-            if success:
-                if address.upper() == "ALL":
-                    return [TextContent(type="text", text="All breakpoints cleared.")]
-                else:
-                    return [TextContent(type="text", text=f"Breakpoint at {address} cleared.")]
-            else:
-                return [TextContent(type="text", text="Failed to clear breakpoint.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_list_breakpoints":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            breakpoints = await client.list_breakpoints()
-            if breakpoints:
-                result = "Active breakpoints:\n"
-                for bp in breakpoints:
-                    result += f"  {bp}\n"
-                return [TextContent(type="text", text=result)]
-            else:
-                return [TextContent(type="text", text="No active breakpoints.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_get_copper_state":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            info = await client.get_copper_state()
-            if info:
-                result = "Copper State:\n"
-                for key, value in info.items():
-                    result += f"  {key}: {value}\n"
-                return [TextContent(type="text", text=result)]
-            else:
-                return [TextContent(type="text", text="Failed to get Copper state.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_get_blitter_state":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            info = await client.get_blitter_state()
-            if info:
-                result = "Blitter State:\n"
-                for key, value in info.items():
-                    result += f"  {key}: {value}\n"
-                return [TextContent(type="text", text=result)]
-            else:
-                return [TextContent(type="text", text="Failed to get Blitter state.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_get_drive_state":
-        drive = arguments.get("drive")
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            info = await client.get_drive_state(drive)
-            if info:
-                result = f"Drive State{' (DF' + str(drive) + ')' if drive is not None else ''}:\n"
-                for key, value in info.items():
-                    result += f"  {key}: {value}\n"
-                return [TextContent(type="text", text=result)]
-            else:
-                return [TextContent(type="text", text="Failed to get drive state.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_get_audio_state":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            info = await client.get_audio_state()
-            if info:
-                result = "Audio State:\n"
-                for key, value in info.items():
-                    result += f"  {key}: {value}\n"
-                return [TextContent(type="text", text=result)]
-            else:
-                return [TextContent(type="text", text="Failed to get audio state.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    elif name == "runtime_get_dma_state":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            info = await client.get_dma_state()
-            if info:
-                result = "DMA State:\n"
-                for key, value in info.items():
-                    result += f"  {key}: {value}\n"
-                return [TextContent(type="text", text=result)]
-            else:
-                return [TextContent(type="text", text="Failed to get DMA state.")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+    return await _ipc_call(_cb)
 
     # === Process Lifecycle Management ===
 
-    elif name == "check_process_alive":
-        if _amiberry_process is None:
-            return [
-                TextContent(
-                    type="text",
-                    text="No Amiberry process tracked. Launch Amiberry first.",
-                )
-            ]
-        returncode = _amiberry_process.poll()
-        if returncode is None:
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Amiberry is RUNNING (PID: {_amiberry_process.pid})",
-                )
-            ]
-        else:
-            signal_info = ""
-            if returncode < 0:
-                import signal
 
-                try:
-                    sig = signal.Signals(-returncode)
-                    signal_info = f" (killed by signal {sig.name})"
-                except ValueError:
-                    signal_info = f" (killed by signal {-returncode})"
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Amiberry has EXITED with code {returncode}{signal_info}",
-                )
-            ]
+async def _handle_check_process_alive(arguments: Any) -> list:
+    """Handle check_process_alive tool."""
 
-    elif name == "get_process_info":
-        if _amiberry_process is None:
-            return [
-                TextContent(
-                    type="text",
-                    text="No Amiberry process tracked. Launch Amiberry first.",
-                )
-            ]
-        returncode = _amiberry_process.poll()
-        info_parts = [f"PID: {_amiberry_process.pid}"]
+    if _state.process is None:
+        return _text_result("No Amiberry process tracked. Launch Amiberry first.")
+    returncode = _state.process.poll()
+    if returncode is None:
+        return _text_result(f"Amiberry is RUNNING (PID: {_state.process.pid})")
+    else:
+        signal_info = format_signal_info(returncode)
+        return _text_result(f"Amiberry has EXITED with code {returncode}{signal_info}")
 
-        if returncode is None:
-            info_parts.append("Status: RUNNING")
-        else:
-            info_parts.append(f"Status: EXITED")
-            info_parts.append(f"Exit code: {returncode}")
-            if returncode < 0:
-                import signal
 
-                try:
-                    sig = signal.Signals(-returncode)
-                    info_parts.append(f"Signal: {sig.name}")
-                    info_parts.append("CRASH DETECTED: Process was killed by a signal")
-                except ValueError:
-                    info_parts.append(f"Signal: {-returncode}")
-                    info_parts.append("CRASH DETECTED: Process was killed by a signal")
-            elif returncode != 0:
-                info_parts.append("ABNORMAL EXIT: Non-zero exit code")
+async def _handle_get_process_info(arguments: Any) -> list:
+    """Handle get_process_info tool."""
 
-        if _amiberry_launch_cmd:
-            info_parts.append(f"Command: {' '.join(_amiberry_launch_cmd)}")
-        if _amiberry_log_path:
-            info_parts.append(f"Log file: {_amiberry_log_path}")
+    if _state.process is None:
+        return _text_result("No Amiberry process tracked. Launch Amiberry first.")
+    returncode = _state.process.poll()
+    info_parts = [f"PID: {_state.process.pid}"]
 
-        return [TextContent(type="text", text="\n".join(info_parts))]
-
-    elif name == "kill_amiberry":
-        if _amiberry_process is None or _amiberry_process.poll() is not None:
-            return [
-                TextContent(
-                    type="text",
-                    text="No running Amiberry process to kill.",
-                )
-            ]
-        pid = _amiberry_process.pid
-        _amiberry_process.terminate()
-        try:
-            _amiberry_process.wait(timeout=5)
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Amiberry process (PID {pid}) terminated gracefully.",
-                )
-            ]
-        except subprocess.TimeoutExpired:
-            _amiberry_process.kill()
+    if returncode is None:
+        info_parts.append("Status: RUNNING")
+    else:
+        info_parts.append("Status: EXITED")
+        info_parts.append(f"Exit code: {returncode}")
+        if returncode < 0:
             try:
-                _amiberry_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Amiberry process (PID {pid}) force killed (SIGKILL).",
-                )
-            ]
+                sig = signal.Signals(-returncode)
+                info_parts.append(f"Signal: {sig.name}")
+                info_parts.append("CRASH DETECTED: Process was killed by a signal")
+            except ValueError:
+                info_parts.append(f"Signal: {-returncode}")
+                info_parts.append("CRASH DETECTED: Process was killed by a signal")
+        elif returncode != 0:
+            info_parts.append("ABNORMAL EXIT: Non-zero exit code")
 
-    elif name == "wait_for_exit":
-        if _amiberry_process is None:
-            return [
-                TextContent(
-                    type="text",
-                    text="No Amiberry process tracked. Launch Amiberry first.",
-                )
-            ]
-        returncode = _amiberry_process.poll()
-        if returncode is not None:
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Amiberry already exited with code {returncode}.",
-                )
-            ]
-        timeout = arguments.get("timeout", 30)
-        try:
-            returncode = _amiberry_process.wait(timeout=timeout)
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Amiberry exited with code {returncode}.",
-                )
-            ]
-        except subprocess.TimeoutExpired:
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Timeout after {timeout}s. Amiberry still running (PID {_amiberry_process.pid}).",
-                )
-            ]
+    if _state.launch_cmd:
+        info_parts.append(f"Command: {' '.join(_state.launch_cmd)}")
+    if _state.log_path:
+        info_parts.append(f"Log file: {_state.log_path}")
 
-    elif name == "restart_amiberry":
-        if _amiberry_launch_cmd is None:
-            return [
-                TextContent(
-                    type="text",
-                    text="No previous launch command stored. Use a launch tool first.",
-                )
-            ]
-        # Kill existing process if running
-        if _amiberry_process is not None and _amiberry_process.poll() is None:
-            _amiberry_process.terminate()
-            try:
-                _amiberry_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                _amiberry_process.kill()
-                try:
-                    _amiberry_process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    pass
+    return _text_result("\n".join(info_parts))
 
-        # Re-launch with stored command
-        cmd = _amiberry_launch_cmd
-        try:
-            if _amiberry_log_path:
-                log_file = open(_amiberry_log_path, "w")
-                _amiberry_process = subprocess.Popen(
-                    cmd,
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,
-                )
-            else:
-                _amiberry_process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Amiberry restarted (PID: {_amiberry_process.pid})\nCommand: {' '.join(cmd)}",
-                )
-            ]
-        except Exception as e:
-            return [
-                TextContent(type="text", text=f"Error restarting Amiberry: {str(e)}")
-            ]
+
+async def _handle_kill_amiberry(arguments: Any) -> list:
+    """Handle kill_amiberry tool."""
+
+    if _state.process is None or _state.process.poll() is not None:
+        return _text_result("No running Amiberry process to kill.")
+    pid = _state.process.pid
+    await asyncio.to_thread(terminate_process, _state.process)
+    return _text_result(f"Amiberry process (PID {pid}) terminated.")
+
+
+async def _handle_wait_for_exit(arguments: Any) -> list:
+    """Handle wait_for_exit tool."""
+
+    if _state.process is None:
+        return _text_result("No Amiberry process tracked. Launch Amiberry first.")
+    returncode = _state.process.poll()
+    if returncode is not None:
+        return _text_result(f"Amiberry already exited with code {returncode}.")
+    timeout = arguments.get("timeout", 30)
+    try:
+        returncode = await asyncio.to_thread(_state.process.wait, timeout=timeout)
+        return _text_result(f"Amiberry exited with code {returncode}.")
+    except subprocess.TimeoutExpired:
+        return _text_result(
+            f"Timeout after {timeout}s. Amiberry still running (PID {_state.process.pid})."
+        )
+
+
+async def _handle_restart_amiberry(arguments: Any) -> list:
+    """Handle restart_amiberry tool."""
+
+    if _state.launch_cmd is None:
+        return _text_result(
+            "No previous launch command stored. Use a launch tool first."
+        )
+    # Kill existing process if running
+    if _state.process is not None and _state.process.poll() is None:
+        await asyncio.to_thread(terminate_process, _state.process)
+
+    # Re-launch with stored command
+    cmd = _state.launch_cmd
+    _state.close_log_handle()
+    try:
+        _state.process, _state.log_file_handle = launch_process(
+            cmd, log_path=_state.log_path
+        )
+        return _text_result(
+            f"Amiberry restarted (PID: {_state.process.pid})\nCommand: {' '.join(cmd)}"
+        )
+    except Exception as e:
+        return _text_result(f"Error restarting Amiberry: {str(e)}")
 
     # === Missing IPC Tool Wrappers ===
 
-    elif name == "runtime_read_memory":
-        address_str = arguments["address"]
-        width = arguments["width"]
-        try:
-            address = int(address_str, 0)  # Handles both hex (0x...) and decimal
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            value = await client.read_memory(address, width)
-            if value is not None:
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"Memory at 0x{address:08X} ({width} byte{'s' if width > 1 else ''}): 0x{value:0{width*2}X} ({value})",
-                    )
-                ]
-            else:
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"Failed to read memory at {address_str}.",
-                    )
-                ]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid address: {str(e)}")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
-    elif name == "runtime_write_memory":
-        address_str = arguments["address"]
-        width = arguments["width"]
-        value = arguments["value"]
-        try:
-            address = int(address_str, 0)
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.write_memory(address, width, value)
-            if success:
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"Wrote 0x{value:0{width*2}X} ({value}) to 0x{address:08X} ({width} byte{'s' if width > 1 else ''}).",
-                    )
-                ]
-            else:
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"Failed to write memory at {address_str}.",
-                    )
-                ]
-        except ValueError as e:
-            return [TextContent(type="text", text=f"Invalid argument: {str(e)}")]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+async def _handle_runtime_read_memory(arguments: Any) -> list:
+    """Handle runtime_read_memory tool."""
+    address_str = arguments["address"]
+    width = arguments["width"]
+    try:
+        address = int(address_str, 0)  # Handles both hex (0x...) and decimal
+        client = _get_ipc_client()
+        value = await client.read_memory(address, width)
+        if value is not None:
+            return _text_result(
+                f"Memory at 0x{address:08X} ({width} byte{'s' if width > 1 else ''}): 0x{value:0{width * 2}X} ({value})"
+            )
+        else:
+            return _text_result(f"Failed to read memory at {address_str}.")
+    except ValueError as e:
+        return _text_result(f"Invalid address: {str(e)}")
+    except IPCConnectionError as e:
+        return _text_result(f"Connection error: {str(e)}")
+    except Exception as e:
+        return _text_result(f"Error: {str(e)}")
 
-    elif name == "runtime_load_config":
-        config_path = arguments["config_path"]
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.load_config(config_path)
-            if success:
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"Configuration loaded: {config_path}",
-                    )
-                ]
-            else:
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"Failed to load configuration: {config_path}",
-                    )
-                ]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
-    elif name == "runtime_debug_step_over":
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.debug_step_over()
-            if success:
-                return [TextContent(type="text", text="Stepped over subroutine.")]
-            else:
-                return [
-                    TextContent(
-                        type="text",
-                        text="Failed to step over. Is the debugger active?",
-                    )
-                ]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+async def _handle_runtime_write_memory(arguments: Any) -> list:
+    """Handle runtime_write_memory tool."""
+    address_str = arguments["address"]
+    width = arguments["width"]
+    value = arguments["value"]
+    try:
+        address = int(address_str, 0)
+        client = _get_ipc_client()
+        success = await client.write_memory(address, width, value)
+        if success:
+            return _text_result(
+                f"Wrote 0x{value:0{width * 2}X} ({value}) to 0x{address:08X} ({width} byte{'s' if width > 1 else ''})."
+            )
+        else:
+            return _text_result(f"Failed to write memory at {address_str}.")
+    except ValueError as e:
+        return _text_result(f"Invalid argument: {str(e)}")
+    except IPCConnectionError as e:
+        return _text_result(f"Connection error: {str(e)}")
+    except Exception as e:
+        return _text_result(f"Error: {str(e)}")
+
+
+async def _handle_runtime_load_config(arguments: Any) -> list:
+    """Handle runtime_load_config tool."""
+    config_path = arguments["config_path"]
+    return await _ipc_bool_call(
+        "load_config",
+        config_path,
+        success_msg=f"Configuration loaded: {config_path}",
+        failure_msg=f"Failed to load configuration: {config_path}",
+    )
+
+
+async def _handle_runtime_debug_step_over(arguments: Any) -> list:
+    """Handle runtime_debug_step_over tool."""
+    return await _ipc_bool_call(
+        "debug_step_over",
+        success_msg="Stepped over subroutine.",
+        failure_msg="Failed to step over. Is the debugger active?",
+    )
 
     # === Screenshot with Image Data ===
 
-    elif name == "runtime_screenshot_view":
-        import base64
 
-        filename = arguments.get("filename")
-        if not filename:
-            from .config import SCREENSHOT_DIR
+async def _handle_runtime_screenshot_view(arguments: Any) -> list:
+    """Handle runtime_screenshot_view tool."""
+    filename = arguments.get("filename")
+    if not filename:
+        SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = str(SCREENSHOT_DIR / f"debug_{timestamp}.png")
 
-            SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = str(SCREENSHOT_DIR / f"debug_{timestamp}.png")
+    try:
+        client = _get_ipc_client()
+        success = await client.screenshot(filename)
+        if success:
+            screenshot_path = Path(filename)
+            if screenshot_path.exists():
+                image_data = await asyncio.to_thread(screenshot_path.read_bytes)
+                b64_data = base64.b64encode(image_data).decode("utf-8")
+                mime_type = (
+                    "image/png" if filename.lower().endswith(".png") else "image/bmp"
+                )
 
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            success = await client.screenshot(filename)
-            if success:
-                screenshot_path = Path(filename)
-                if screenshot_path.exists():
-                    image_data = screenshot_path.read_bytes()
-                    b64_data = base64.b64encode(image_data).decode("utf-8")
-                    mime_type = (
-                        "image/png" if filename.lower().endswith(".png") else "image/bmp"
-                    )
-
-                    if _HAS_IMAGE_CONTENT:
-                        return [
-                            TextContent(
-                                type="text",
-                                text=f"Screenshot saved to: {filename}",
-                            ),
-                            ImageContent(
-                                type="image",
-                                data=b64_data,
-                                mimeType=mime_type,
-                            ),
-                        ]
-                    else:
-                        return [
-                            TextContent(
-                                type="text",
-                                text=f"Screenshot saved to: {filename}\nUse the Read tool to view this image file.",
-                            )
-                        ]
-                else:
+                if _HAS_IMAGE_CONTENT:
                     return [
                         TextContent(
                             type="text",
-                            text=f"Screenshot command succeeded but file not found at: {filename}",
-                        )
+                            text=f"Screenshot saved to: {filename}",
+                        ),
+                        ImageContent(
+                            type="image",
+                            data=b64_data,
+                            mimeType=mime_type,
+                        ),
                     ]
-            else:
-                return [
-                    TextContent(type="text", text="Failed to take screenshot.")
-                ]
-        except IPCConnectionError as e:
-            return [TextContent(type="text", text=f"Connection error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    # === Log Tailing and Crash Detection ===
-
-    elif name == "tail_log":
-        log_name = arguments["log_name"]
-        if not log_name.endswith(".log"):
-            log_name += ".log"
-        log_path = LOG_DIR / log_name
-
-        if not log_path.exists():
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Error: Log file not found: {log_name}\nAvailable logs in: {LOG_DIR}",
-                )
-            ]
-
-        last_pos = _last_log_read_position.get(log_name, 0)
-        try:
-            with open(log_path, "r", errors="replace") as f:
-                f.seek(last_pos)
-                new_content = f.read()
-                new_pos = f.tell()
-
-            _last_log_read_position[log_name] = new_pos
-
-            if new_content:
-                line_count = new_content.count("\n")
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"New log output ({line_count} lines):\n\n{new_content}",
-                    )
-                ]
-            else:
-                return [
-                    TextContent(
-                        type="text",
-                        text="No new log output since last read.",
-                    )
-                ]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error reading log: {str(e)}")]
-
-    elif name == "wait_for_log_pattern":
-        import re
-
-        log_name = arguments["log_name"]
-        pattern = arguments["pattern"]
-        timeout = arguments.get("timeout", 30)
-
-        if not log_name.endswith(".log"):
-            log_name += ".log"
-        log_path = LOG_DIR / log_name
-
-        try:
-            compiled_pattern = re.compile(pattern)
-        except re.error as e:
-            return [
-                TextContent(type="text", text=f"Invalid regex pattern: {str(e)}")
-            ]
-
-        start_time = asyncio.get_event_loop().time()
-        last_pos = _last_log_read_position.get(log_name, 0)
-
-        while True:
-            elapsed = asyncio.get_event_loop().time() - start_time
-            if elapsed >= timeout:
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"Timeout after {timeout}s. Pattern '{pattern}' not found in {log_name}.",
-                    )
-                ]
-
-            if log_path.exists():
-                try:
-                    with open(log_path, "r", errors="replace") as f:
-                        f.seek(last_pos)
-                        new_content = f.read()
-                        new_pos = f.tell()
-
-                    if new_content:
-                        for line in new_content.splitlines():
-                            if compiled_pattern.search(line):
-                                _last_log_read_position[log_name] = new_pos
-                                return [
-                                    TextContent(
-                                        type="text",
-                                        text=f"Pattern '{pattern}' found after {elapsed:.1f}s:\n{line}",
-                                    )
-                                ]
-                        last_pos = new_pos
-                except Exception:
-                    pass
-
-            await asyncio.sleep(0.5)
-
-    elif name == "get_crash_info":
-        result_parts = []
-
-        # Check process state
-        if _amiberry_process is not None:
-            returncode = _amiberry_process.poll()
-            if returncode is None:
-                result_parts.append(
-                    f"Process: RUNNING (PID {_amiberry_process.pid})"
-                )
-            else:
-                if returncode < 0:
-                    import signal
-
-                    try:
-                        sig = signal.Signals(-returncode)
-                        result_parts.append(
-                            f"CRASH DETECTED: Process killed by signal {sig.name} (code {returncode})"
-                        )
-                    except ValueError:
-                        result_parts.append(
-                            f"CRASH DETECTED: Process killed by signal {-returncode}"
-                        )
-                elif returncode != 0:
-                    result_parts.append(
-                        f"ABNORMAL EXIT: Process exited with code {returncode}"
-                    )
                 else:
-                    result_parts.append("Process: Exited normally (code 0)")
-        else:
-            result_parts.append(
-                "Process: Not tracked (launched externally or not yet launched)"
-            )
-
-        # Scan logs for crash patterns
-        log_name = arguments.get("log_name")
-        crash_patterns = [
-            "Segmentation fault",
-            "SIGSEGV",
-            "SIGABRT",
-            "Aborted",
-            "core dumped",
-            "assertion failed",
-            "FATAL",
-            "Bus error",
-            "SIGBUS",
-            "double free",
-            "heap-buffer-overflow",
-            "stack-buffer-overflow",
-            "AddressSanitizer",
-            "undefined behavior",
-        ]
-
-        log_files_to_scan: list[Path] = []
-        if log_name:
-            if not log_name.endswith(".log"):
-                log_name += ".log"
-            log_files_to_scan = [LOG_DIR / log_name]
-        elif _amiberry_log_path:
-            log_files_to_scan = [_amiberry_log_path]
-        elif LOG_DIR.exists():
-            log_files_to_scan = sorted(
-                LOG_DIR.glob("*.log"),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )[:1]
-
-        for lp in log_files_to_scan:
-            if lp.exists():
-                try:
-                    content = lp.read_text(errors="replace")
-                    found_crashes = []
-                    for i, line in enumerate(content.splitlines()):
-                        for cp in crash_patterns:
-                            if cp.lower() in line.lower():
-                                found_crashes.append(f"  Line {i + 1}: {line.strip()}")
-                                break
-
-                    if found_crashes:
-                        result_parts.append(
-                            f"\nCrash indicators in {lp.name}:"
-                        )
-                        result_parts.extend(found_crashes[:20])
-                        if len(found_crashes) > 20:
-                            result_parts.append(
-                                f"  ... and {len(found_crashes) - 20} more"
-                            )
-                    else:
-                        result_parts.append(
-                            f"\nNo crash indicators found in {lp.name}"
-                        )
-                except Exception as e:
-                    result_parts.append(f"\nError reading {lp.name}: {str(e)}")
-
-        if not log_files_to_scan:
-            result_parts.append("\nNo log files found to scan.")
-
-        return [TextContent(type="text", text="\n".join(result_parts))]
-
-    # === Workflow Tools ===
-
-    elif name == "health_check":
-        results = []
-
-        # 1. Process check
-        if _amiberry_process is not None:
-            rc = _amiberry_process.poll()
-            if rc is None:
-                results.append(f"Process: RUNNING (PID {_amiberry_process.pid})")
-            else:
-                results.append(f"Process: EXITED (code {rc})")
-        else:
-            results.append("Process: NOT TRACKED")
-
-        # 2. IPC check
-        try:
-            client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-            pong = await client.ping()
-            if pong:
-                results.append("IPC Ping: OK")
-
-                # 3. Get status
-                status = await client.get_status()
-                if status:
-                    results.append(f"Paused: {status.get('Paused', '?')}")
-                    results.append(f"Config: {status.get('Config', '?')}")
-                    for key in ["Floppy0", "Floppy1", "Floppy2", "Floppy3"]:
-                        val = status.get(key)
-                        if val:
-                            results.append(f"{key}: {val}")
-                else:
-                    results.append("Status: Failed to query")
-
-                # 4. FPS
-                fps_info = await client.get_fps()
-                if fps_info:
-                    results.append(
-                        f"FPS: {fps_info.get('fps', '?')} (idle: {fps_info.get('idle', '?')}%)"
+                    return _text_result(
+                        f"Screenshot saved to: {filename}\nUse the Read tool to view this image file."
                     )
             else:
-                results.append("IPC Ping: FAILED (socket exists but not responding)")
-        except IPCConnectionError:
-            results.append("IPC: NOT CONNECTED (socket not found or connection refused)")
-        except Exception as e:
-            results.append(f"IPC: ERROR ({str(e)})")
-
-        return [
-            TextContent(
-                type="text",
-                text="Health Check:\n" + "\n".join(f"  {r}" for r in results),
-            )
-        ]
-
-    elif name == "launch_and_wait_for_ipc":
-        # Kill existing process if running
-        if _amiberry_process is not None and _amiberry_process.poll() is None:
-            _amiberry_process.terminate()
-            try:
-                _amiberry_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                _amiberry_process.kill()
-                try:
-                    _amiberry_process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    pass
-
-        # Build command
-        config = arguments.get("config")
-        model = arguments.get("model")
-        disk_image = arguments.get("disk_image")
-        lha_file = arguments.get("lha_file")
-        autostart = arguments.get("autostart", True)
-        timeout = arguments.get("timeout", 30)
-
-        cmd = [EMULATOR_BINARY, "--log"]
-
-        if model:
-            cmd.extend(["--model", model])
-        elif config:
-            config_path = _find_config_path(config)
-            if not config_path:
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"Error: Configuration '{config}' not found",
-                    )
-                ]
-            cmd.extend(["-f", str(config_path)])
-
-        if disk_image:
-            cmd.extend(["-0", disk_image])
-
-        if lha_file:
-            lha_path = Path(lha_file)
-            if not lha_path.exists():
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"Error: LHA file not found: {lha_file}",
-                    )
-                ]
-            cmd.append(str(lha_path))
-
-        if autostart:
-            cmd.append("-G")
-
-        # Launch with logging
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_name = f"amiberry_{timestamp}.log"
-        log_path = LOG_DIR / log_name
-
-        try:
-            log_file = open(log_path, "w")
-            _amiberry_process = subprocess.Popen(
-                cmd,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-            _amiberry_launch_cmd = cmd
-            _amiberry_log_path = log_path
-        except Exception as e:
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Error launching Amiberry: {str(e)}",
+                return _text_result(
+                    f"Screenshot command succeeded but file not found at: {filename}"
                 )
-            ]
+        else:
+            return _text_result("Failed to take screenshot.")
+    except IPCConnectionError as e:
+        return _text_result(f"Connection error: {str(e)}")
+    except Exception as e:
+        return _text_result(f"Error: {str(e)}")
 
-        # Wait for IPC socket to become available
-        start_time = asyncio.get_event_loop().time()
-        ipc_ready = False
 
-        while True:
-            elapsed = asyncio.get_event_loop().time() - start_time
-            if elapsed >= timeout:
-                break
+# === Log Tailing and Crash Detection ===
 
-            # Check if process died
-            if _amiberry_process.poll() is not None:
-                rc = _amiberry_process.returncode
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"Amiberry exited before IPC became available (exit code: {rc}).\nLog file: {log_path}\nCommand: {' '.join(cmd)}",
-                    )
-                ]
 
+async def _handle_tail_log(arguments: Any) -> list:
+    """Handle tail_log tool."""
+
+    log_name = arguments["log_name"]
+    try:
+        log_path = normalize_log_path(log_name)
+    except ValueError:
+        return _text_result(f"Error: Invalid log name '{log_name}'")
+
+    if not log_path.exists():
+        return _text_result(
+            f"Error: Log file not found: {log_name}\nAvailable logs in: {LOG_DIR}"
+        )
+
+    last_pos = _state.log_read_positions.get(log_name, 0)
+    try:
+
+        def _read_from_pos():
+            with open(log_path, errors="replace") as f:
+                file_size = f.seek(0, 2)  # Get file size
+                pos = last_pos if last_pos <= file_size else 0
+                f.seek(pos)
+                content = f.read()
+                return content, f.tell()
+
+        new_content, new_pos = await asyncio.to_thread(_read_from_pos)
+        _state.log_read_positions[log_name] = new_pos
+
+        if new_content:
+            line_count = new_content.count("\n")
+            return _text_result(
+                f"New log output ({line_count} lines):\n\n{new_content}"
+            )
+        else:
+            return _text_result("No new log output since last read.")
+    except Exception as e:
+        return _text_result(f"Error reading log: {str(e)}")
+
+
+async def _handle_wait_for_log_pattern(arguments: Any) -> list:
+    """Handle wait_for_log_pattern tool."""
+    log_name = arguments["log_name"]
+    pattern = arguments["pattern"]
+    timeout = arguments.get("timeout", 30)
+    try:
+        log_path = normalize_log_path(log_name)
+    except ValueError:
+        return _text_result(f"Error: Invalid log name '{log_name}'")
+
+    try:
+        compiled_pattern = re.compile(pattern)
+    except re.error as e:
+        return _text_result(f"Invalid regex pattern: {str(e)}")
+
+    start_time = asyncio.get_running_loop().time()
+    last_pos = _state.log_read_positions.get(log_name, 0)
+
+    while True:
+        elapsed = asyncio.get_running_loop().time() - start_time
+        if elapsed >= timeout:
+            _state.log_read_positions[log_name] = last_pos
+            return _text_result(
+                f"Timeout after {timeout}s. Pattern '{pattern}' not found in {log_name}."
+            )
+
+        if log_path.exists():
             try:
-                client = AmiberryIPCClient(prefer_dbus=False, instance=_active_instance)
-                pong = await client.ping()
-                if pong:
-                    ipc_ready = True
-                    break
+
+                def _read_and_match(_pos=last_pos):
+                    with open(log_path, errors="replace") as f:
+                        f.seek(_pos)
+                        content = f.read()
+                        new_p = f.tell()
+                    if content:
+                        for ln in content.splitlines():
+                            if compiled_pattern.search(ln):
+                                return ln, new_p
+                    return None, new_p
+
+                match_line, new_pos = await asyncio.to_thread(_read_and_match)
+
+                if match_line is not None:
+                    _state.log_read_positions[log_name] = new_pos
+                    return _text_result(
+                        f"Pattern '{pattern}' found after {elapsed:.1f}s:\n{match_line}"
+                    )
+                last_pos = new_pos
             except Exception:
                 pass
 
-            await asyncio.sleep(0.5)
+        await asyncio.sleep(0.5)
 
-        if ipc_ready:
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Amiberry launched and IPC ready!\n  PID: {_amiberry_process.pid}\n  Log: {log_path}\n  Command: {' '.join(cmd)}\n  IPC connected after {elapsed:.1f}s",
-                )
-            ]
+
+async def _handle_get_crash_info(arguments: Any) -> list:
+    """Handle get_crash_info tool."""
+
+    result_parts = []
+
+    # Check process state
+    if _state.process is not None:
+        returncode = _state.process.poll()
+        if returncode is None:
+            result_parts.append(f"Process: RUNNING (PID {_state.process.pid})")
         else:
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Amiberry launched but IPC not responding after {timeout}s.\n  PID: {_amiberry_process.pid}\n  Log: {log_path}\n  Process still running: {_amiberry_process.poll() is None}",
+            if returncode < 0:
+                try:
+                    sig = signal.Signals(-returncode)
+                    result_parts.append(
+                        f"CRASH DETECTED: Process killed by signal {sig.name} (code {returncode})"
+                    )
+                except ValueError:
+                    result_parts.append(
+                        f"CRASH DETECTED: Process killed by signal {-returncode}"
+                    )
+            elif returncode != 0:
+                result_parts.append(
+                    f"ABNORMAL EXIT: Process exited with code {returncode}"
                 )
-            ]
+            else:
+                result_parts.append("Process: Exited normally (code 0)")
+    else:
+        result_parts.append(
+            "Process: Not tracked (launched externally or not yet launched)"
+        )
 
-    return [TextContent(type="text", text=f"Unknown tool: {name}")]
+    # Scan logs for crash patterns
+    log_name = arguments.get("log_name")
+    crash_patterns = [
+        "Segmentation fault",
+        "SIGSEGV",
+        "SIGABRT",
+        "Aborted",
+        "core dumped",
+        "assertion failed",
+        "FATAL",
+        "Bus error",
+        "SIGBUS",
+        "double free",
+        "heap-buffer-overflow",
+        "stack-buffer-overflow",
+        "AddressSanitizer",
+        "undefined behavior",
+    ]
+
+    log_files_to_scan: list[Path] = []
+    if log_name:
+        try:
+            log_files_to_scan = [normalize_log_path(log_name)]
+        except ValueError:
+            return _text_result(f"Error: Invalid log name '{log_name}'")
+    elif _state.log_path:
+        log_files_to_scan = [_state.log_path]
+    elif LOG_DIR.exists():
+
+        def _find_latest_log():
+            logs = []
+            for p in LOG_DIR.glob("*.log"):
+                try:
+                    logs.append((p, p.stat().st_mtime))
+                except OSError:
+                    continue
+            logs.sort(key=lambda x: x[1], reverse=True)
+            return [p for p, _ in logs[:1]]
+
+        log_files_to_scan = await asyncio.to_thread(_find_latest_log)
+
+    for lp in log_files_to_scan:
+        if lp.exists():
+            try:
+                content = await asyncio.to_thread(lp.read_text, errors="replace")
+                found_crashes = []
+                for i, line in enumerate(content.splitlines()):
+                    for cp in crash_patterns:
+                        if cp.lower() in line.lower():
+                            found_crashes.append(f"  Line {i + 1}: {line.strip()}")
+                            break
+
+                if found_crashes:
+                    result_parts.append(f"\nCrash indicators in {lp.name}:")
+                    result_parts.extend(found_crashes[:20])
+                    if len(found_crashes) > 20:
+                        result_parts.append(f"  ... and {len(found_crashes) - 20} more")
+                else:
+                    result_parts.append(f"\nNo crash indicators found in {lp.name}")
+            except Exception as e:
+                result_parts.append(f"\nError reading {lp.name}: {str(e)}")
+
+    if not log_files_to_scan:
+        result_parts.append("\nNo log files found to scan.")
+
+    return _text_result("\n".join(result_parts))
+
+    # === Workflow Tools ===
+
+
+async def _handle_health_check(arguments: Any) -> list:
+    """Handle health_check tool."""
+
+    results = []
+
+    # 1. Process check
+    if _state.process is not None:
+        rc = _state.process.poll()
+        if rc is None:
+            results.append(f"Process: RUNNING (PID {_state.process.pid})")
+        else:
+            results.append(f"Process: EXITED (code {rc})")
+    else:
+        results.append("Process: NOT TRACKED")
+
+    # 2. IPC check
+    try:
+        client = _get_ipc_client()
+        pong = await client.ping()
+        if pong:
+            results.append("IPC Ping: OK")
+
+            # 3. Get status
+            status = await client.get_status()
+            if status:
+                results.append(f"Paused: {status.get('Paused', '?')}")
+                results.append(f"Config: {status.get('Config', '?')}")
+                for key in ["Floppy0", "Floppy1", "Floppy2", "Floppy3"]:
+                    val = status.get(key)
+                    if val:
+                        results.append(f"{key}: {val}")
+            else:
+                results.append("Status: Failed to query")
+
+            # 4. FPS
+            fps_info = await client.get_fps()
+            if fps_info:
+                results.append(
+                    f"FPS: {fps_info.get('fps', '?')} (idle: {fps_info.get('idle', '?')}%)"
+                )
+        else:
+            results.append("IPC Ping: FAILED (socket exists but not responding)")
+    except IPCConnectionError:
+        results.append("IPC: NOT CONNECTED (socket not found or connection refused)")
+    except Exception as e:
+        results.append(f"IPC: ERROR ({str(e)})")
+
+    return _text_result("Health Check:\n" + "\n".join(f"  {r}" for r in results))
+
+
+async def _handle_launch_and_wait_for_ipc(arguments: Any) -> list:
+    """Handle launch_and_wait_for_ipc tool."""
+
+    # Kill existing process if running
+    if _state.process is not None and _state.process.poll() is None:
+        await asyncio.to_thread(terminate_process, _state.process)
+
+    # Build command
+    config = arguments.get("config")
+    model = arguments.get("model")
+    disk_image = arguments.get("disk_image")
+    lha_file = arguments.get("lha_file")
+    autostart = arguments.get("autostart", True)
+    timeout = arguments.get("timeout", 30)
+
+    if not model and not config and not lha_file:
+        return _text_result(
+            "Error: Either 'model', 'config', or 'lha_file' must be specified"
+        )
+
+    # Resolve config path if specified
+    config_path = None
+    if config:
+        config_path = _find_config_path(config)
+        if not config_path:
+            return _text_result(f"Error: Configuration '{config}' not found")
+
+    # Validate LHA file
+    if lha_file:
+        lha_path = Path(lha_file)
+        if not lha_path.exists():
+            return _text_result(f"Error: LHA file not found: {lha_file}")
+
+    cmd = build_launch_command(
+        model=model,
+        config_path=config_path,
+        disk_image=disk_image,
+        lha_file=lha_file,
+        autostart=autostart,
+        with_logging=True,
+    )
+
+    # Launch with logging
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_name = f"amiberry_{timestamp}.log"
+    log_path = LOG_DIR / log_name
+
+    _state.close_log_handle()
+    try:
+        _state.process, _state.log_file_handle = launch_process(cmd, log_path=log_path)
+        _state.launch_cmd = cmd
+        _state.log_path = log_path
+    except Exception as e:
+        _state.close_log_handle()
+        return _text_result(f"Error launching Amiberry: {str(e)}")
+
+    # Wait for IPC socket to become available
+    start_time = asyncio.get_running_loop().time()
+    ipc_ready = False
+
+    while True:
+        elapsed = asyncio.get_running_loop().time() - start_time
+        if elapsed >= timeout:
+            break
+
+        # Check if process died
+        if _state.process.poll() is not None:
+            rc = _state.process.returncode
+            return _text_result(
+                f"Amiberry exited before IPC became available (exit code: {rc}).\nLog file: {log_path}\nCommand: {' '.join(cmd)}"
+            )
+
+        try:
+            client = _get_ipc_client()
+            pong = await client.ping()
+            if pong:
+                ipc_ready = True
+                break
+        except Exception:
+            pass
+
+        await asyncio.sleep(0.5)
+
+    if ipc_ready:
+        return _text_result(
+            f"Amiberry launched and IPC ready!\n  PID: {_state.process.pid}\n  Log: {log_path}\n  Command: {' '.join(cmd)}\n  IPC connected after {elapsed:.1f}s"
+        )
+    else:
+        return _text_result(
+            f"Amiberry launched but IPC not responding after {timeout}s.\n  PID: {_state.process.pid}\n  Log: {log_path}\n  Process still running: {_state.process.poll() is None}"
+        )
+
+
+# Tool dispatch dictionary
+_TOOL_DISPATCH: dict[str, Any] = {
+    "get_platform_info": _handle_get_platform_info,
+    "list_configs": _handle_list_configs,
+    "get_config_content": _handle_get_config_content,
+    "list_disk_images": _handle_list_disk_images,
+    "launch_amiberry": _handle_launch_amiberry,
+    "list_savestates": _handle_list_savestates,
+    "launch_with_logging": _handle_launch_with_logging,
+    "parse_config": _handle_parse_config,
+    "modify_config": _handle_modify_config,
+    "create_config": _handle_create_config,
+    "launch_whdload": _handle_launch_whdload,
+    "launch_cd": _handle_launch_cd,
+    "set_disk_swapper": _handle_set_disk_swapper,
+    "list_cd_images": _handle_list_cd_images,
+    "get_log_content": _handle_get_log_content,
+    "list_logs": _handle_list_logs,
+    "inspect_savestate": _handle_inspect_savestate,
+    "list_roms": _handle_list_roms,
+    "identify_rom": _handle_identify_rom,
+    "get_amiberry_version": _handle_get_amiberry_version,
+    "pause_emulation": _handle_pause_emulation,
+    "resume_emulation": _handle_resume_emulation,
+    "reset_emulation": _handle_reset_emulation,
+    "runtime_screenshot": _handle_runtime_screenshot,
+    "runtime_save_state": _handle_runtime_save_state,
+    "runtime_load_state": _handle_runtime_load_state,
+    "runtime_insert_floppy": _handle_runtime_insert_floppy,
+    "runtime_insert_cd": _handle_runtime_insert_cd,
+    "get_runtime_status": _handle_get_runtime_status,
+    "runtime_get_config": _handle_runtime_get_config,
+    "runtime_set_config": _handle_runtime_set_config,
+    "check_ipc_connection": _handle_check_ipc_connection,
+    "runtime_eject_floppy": _handle_runtime_eject_floppy,
+    "runtime_eject_cd": _handle_runtime_eject_cd,
+    "runtime_list_floppies": _handle_runtime_list_floppies,
+    "runtime_list_configs": _handle_runtime_list_configs,
+    "runtime_set_volume": _handle_runtime_set_volume,
+    "runtime_get_volume": _handle_runtime_get_volume,
+    "runtime_mute": _handle_runtime_mute,
+    "runtime_unmute": _handle_runtime_unmute,
+    "runtime_toggle_fullscreen": _handle_runtime_toggle_fullscreen,
+    "runtime_set_warp": _handle_runtime_set_warp,
+    "runtime_get_warp": _handle_runtime_get_warp,
+    "runtime_get_version": _handle_runtime_get_version,
+    "runtime_frame_advance": _handle_runtime_frame_advance,
+    "runtime_send_mouse": _handle_runtime_send_mouse,
+    "runtime_set_mouse_speed": _handle_runtime_set_mouse_speed,
+    "runtime_ping": _handle_runtime_ping,
+    "set_active_instance": _handle_set_active_instance,
+    "get_active_instance": _handle_get_active_instance,
+    "runtime_quicksave": _handle_runtime_quicksave,
+    "runtime_quickload": _handle_runtime_quickload,
+    "runtime_get_joyport_mode": _handle_runtime_get_joyport_mode,
+    "runtime_set_joyport_mode": _handle_runtime_set_joyport_mode,
+    "runtime_get_autofire": _handle_runtime_get_autofire,
+    "runtime_set_autofire": _handle_runtime_set_autofire,
+    "runtime_get_led_status": _handle_runtime_get_led_status,
+    "runtime_list_harddrives": _handle_runtime_list_harddrives,
+    "runtime_set_display_mode": _handle_runtime_set_display_mode,
+    "runtime_get_display_mode": _handle_runtime_get_display_mode,
+    "runtime_set_ntsc": _handle_runtime_set_ntsc,
+    "runtime_get_ntsc": _handle_runtime_get_ntsc,
+    "runtime_set_sound_mode": _handle_runtime_set_sound_mode,
+    "runtime_get_sound_mode": _handle_runtime_get_sound_mode,
+    "runtime_toggle_mouse_grab": _handle_runtime_toggle_mouse_grab,
+    "runtime_get_mouse_speed": _handle_runtime_get_mouse_speed,
+    "runtime_set_cpu_speed": _handle_runtime_set_cpu_speed,
+    "runtime_get_cpu_speed": _handle_runtime_get_cpu_speed,
+    "runtime_toggle_rtg": _handle_runtime_toggle_rtg,
+    "runtime_set_floppy_speed": _handle_runtime_set_floppy_speed,
+    "runtime_get_floppy_speed": _handle_runtime_get_floppy_speed,
+    "runtime_disk_write_protect": _handle_runtime_disk_write_protect,
+    "runtime_get_disk_write_protect": _handle_runtime_get_disk_write_protect,
+    "runtime_toggle_status_line": _handle_runtime_toggle_status_line,
+    "runtime_set_chipset": _handle_runtime_set_chipset,
+    "runtime_get_chipset": _handle_runtime_get_chipset,
+    "runtime_get_memory_config": _handle_runtime_get_memory_config,
+    "runtime_get_fps": _handle_runtime_get_fps,
+    "runtime_set_chip_mem": _handle_runtime_set_chip_mem,
+    "runtime_set_fast_mem": _handle_runtime_set_fast_mem,
+    "runtime_set_slow_mem": _handle_runtime_set_slow_mem,
+    "runtime_set_z3_mem": _handle_runtime_set_z3_mem,
+    "runtime_get_cpu_model": _handle_runtime_get_cpu_model,
+    "runtime_set_cpu_model": _handle_runtime_set_cpu_model,
+    "runtime_set_window_size": _handle_runtime_set_window_size,
+    "runtime_get_window_size": _handle_runtime_get_window_size,
+    "runtime_set_scaling": _handle_runtime_set_scaling,
+    "runtime_get_scaling": _handle_runtime_get_scaling,
+    "runtime_set_line_mode": _handle_runtime_set_line_mode,
+    "runtime_get_line_mode": _handle_runtime_get_line_mode,
+    "runtime_set_resolution": _handle_runtime_set_resolution,
+    "runtime_get_resolution": _handle_runtime_get_resolution,
+    "runtime_set_autocrop": _handle_runtime_set_autocrop,
+    "runtime_get_autocrop": _handle_runtime_get_autocrop,
+    "runtime_insert_whdload": _handle_runtime_insert_whdload,
+    "runtime_eject_whdload": _handle_runtime_eject_whdload,
+    "runtime_get_whdload": _handle_runtime_get_whdload,
+    "runtime_debug_activate": _handle_runtime_debug_activate,
+    "runtime_debug_deactivate": _handle_runtime_debug_deactivate,
+    "runtime_debug_status": _handle_runtime_debug_status,
+    "runtime_debug_step": _handle_runtime_debug_step,
+    "runtime_debug_continue": _handle_runtime_debug_continue,
+    "runtime_get_cpu_regs": _handle_runtime_get_cpu_regs,
+    "runtime_get_custom_regs": _handle_runtime_get_custom_regs,
+    "runtime_disassemble": _handle_runtime_disassemble,
+    "runtime_set_breakpoint": _handle_runtime_set_breakpoint,
+    "runtime_clear_breakpoint": _handle_runtime_clear_breakpoint,
+    "runtime_list_breakpoints": _handle_runtime_list_breakpoints,
+    "runtime_get_copper_state": _handle_runtime_get_copper_state,
+    "runtime_get_blitter_state": _handle_runtime_get_blitter_state,
+    "runtime_get_drive_state": _handle_runtime_get_drive_state,
+    "runtime_get_audio_state": _handle_runtime_get_audio_state,
+    "runtime_get_dma_state": _handle_runtime_get_dma_state,
+    "check_process_alive": _handle_check_process_alive,
+    "get_process_info": _handle_get_process_info,
+    "kill_amiberry": _handle_kill_amiberry,
+    "wait_for_exit": _handle_wait_for_exit,
+    "restart_amiberry": _handle_restart_amiberry,
+    "runtime_read_memory": _handle_runtime_read_memory,
+    "runtime_write_memory": _handle_runtime_write_memory,
+    "runtime_load_config": _handle_runtime_load_config,
+    "runtime_debug_step_over": _handle_runtime_debug_step_over,
+    "runtime_screenshot_view": _handle_runtime_screenshot_view,
+    "tail_log": _handle_tail_log,
+    "wait_for_log_pattern": _handle_wait_for_log_pattern,
+    "get_crash_info": _handle_get_crash_info,
+    "health_check": _handle_health_check,
+    "launch_and_wait_for_ipc": _handle_launch_and_wait_for_ipc,
+}
+
+
+@app.call_tool()
+async def call_tool(name: str, arguments: Any) -> list:
+    """Handle tool execution via dispatch dict."""
+    handler = _TOOL_DISPATCH.get(name)
+    if handler is not None:
+        return await handler(arguments)
+    return _text_result(f"Unknown tool: {name}")
 
 
 async def main():

@@ -3,17 +3,16 @@
 Unit tests for the uae_config module.
 """
 
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from amiberry_mcp.uae_config import (
-    parse_uae_config,
-    write_uae_config,
-    modify_uae_config,
     create_config_from_template,
     get_config_summary,
+    modify_uae_config,
+    parse_uae_config,
+    write_uae_config,
 )
 
 
@@ -34,10 +33,7 @@ class TestParseUaeConfig:
         """Test that comments are ignored."""
         config_file = tmp_path / "test.uae"
         config_file.write_text(
-            "; This is a comment\n"
-            "cpu_model=68020\n"
-            "# Another comment\n"
-            "chipset=aga\n"
+            "; This is a comment\ncpu_model=68020\n# Another comment\nchipset=aga\n"
         )
 
         config = parse_uae_config(config_file)
@@ -202,7 +198,7 @@ class TestGetConfigSummary:
 
         summary = get_config_summary(config)
 
-        assert summary["cpu"]["model"] == "6868020"  # Prepends 68
+        assert summary["cpu"]["model"] == "68020"
         assert summary["cpu"]["speed"] == "max"
 
     def test_summary_memory_info(self):
@@ -212,7 +208,7 @@ class TestGetConfigSummary:
         summary = get_config_summary(config)
 
         assert summary["memory"]["chip_kb"] == 2048  # 4 * 512
-        assert summary["memory"]["fast_kb"] == 8388608  # 8192 * 1024
+        assert summary["memory"]["fast_kb"] == 8192  # Already in KB
 
     def test_summary_floppy_info(self):
         """Test floppy info in summary."""

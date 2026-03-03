@@ -26,9 +26,10 @@ def parse_uae_config(path: Path) -> dict[str, str]:
 
     config: dict[str, str] = {}
 
+    line_num = 0
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
-            for line_num, line in enumerate(f, 1):
+            for line_num, line in enumerate(f, 1):  # noqa: B007
                 line = line.strip()
 
                 # Skip empty lines and comments
@@ -121,7 +122,9 @@ def write_uae_config(path: Path, config: dict[str, str]) -> None:
                 f.write("\n")
 
 
-def modify_uae_config(path: Path, modifications: dict[str, str | None]) -> dict[str, str]:
+def modify_uae_config(
+    path: Path, modifications: dict[str, str | None]
+) -> dict[str, str]:
     """
     Modify specific options in an existing .uae configuration file.
 
@@ -177,7 +180,9 @@ def create_config_from_template(
     }
 
     if template not in templates:
-        raise ValueError(f"Unknown template: {template}. Available: {list(templates.keys())}")
+        raise ValueError(
+            f"Unknown template: {template}. Available: {list(templates.keys())}"
+        )
 
     config = templates[template].copy()
 
@@ -204,14 +209,22 @@ def get_config_summary(config: dict[str, str]) -> dict[str, Any]:
     cpu_model = config.get("cpu_model", "68000")
     cpu_speed = config.get("cpu_speed", "real")
     summary["cpu"] = {
-        "model": f"68{cpu_model}" if cpu_model.isdigit() else cpu_model,
+        "model": (
+            cpu_model if cpu_model.startswith("68") else f"68{cpu_model.zfill(3)}"
+        ),
         "speed": cpu_speed,
         "24bit": config.get("cpu_24bit_addressing", "false") == "true",
     }
 
     # Memory
-    chip_size = int(config.get("chipmem_size", "1")) * 512  # In KB
-    fast_size = int(config.get("fastmem_size", "0")) * 1024  # In KB
+    try:
+        chip_size = int(config.get("chipmem_size", "1")) * 512  # In KB
+    except (ValueError, TypeError):
+        chip_size = 512
+    try:
+        fast_size = int(config.get("fastmem_size", "0"))  # Already in KB
+    except (ValueError, TypeError):
+        fast_size = 0
     summary["memory"] = {
         "chip_kb": chip_size,
         "fast_kb": fast_size,
@@ -231,14 +244,10 @@ def get_config_summary(config: dict[str, str]) -> dict[str, Any]:
 
     # Hard drives
     hardfiles = []
-    idx = 0
-    while f"hardfile2" in config or f"uaehf{idx}" in config:
-        hf = config.get(f"hardfile2") or config.get(f"uaehf{idx}")
+    for idx in range(11):
+        hf = config.get(f"hardfile2_{idx}") or config.get(f"uaehf{idx}")
         if hf:
             hardfiles.append(hf)
-        idx += 1
-        if idx > 10:  # Safety limit
-            break
     summary["hardfiles"] = hardfiles
 
     # ROM
@@ -255,6 +264,7 @@ def get_config_summary(config: dict[str, str]) -> dict[str, Any]:
 
 
 # Built-in configuration templates
+
 
 def _get_a500_template() -> dict[str, str]:
     """Return A500 (OCS, 512KB chip + 512KB slow) template."""

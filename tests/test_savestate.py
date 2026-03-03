@@ -4,19 +4,18 @@ Unit tests for the savestate module.
 """
 
 import struct
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from amiberry_mcp.savestate import (
     ASF_MAGIC,
-    inspect_savestate,
-    get_savestate_summary,
-    list_savestate_chunks,
-    _read_u32_be,
-    _read_u16_be,
     _read_string,
+    _read_u16_be,
+    _read_u32_be,
+    get_savestate_summary,
+    inspect_savestate,
+    list_savestate_chunks,
 )
 
 
@@ -31,7 +30,7 @@ class TestHelperFunctions:
         data = b"\x12\x34\x56\x78"
         assert _read_u32_be(data, 0) == 0x12345678
 
-        data = b"\xFF\xFF\xFF\xFF"
+        data = b"\xff\xff\xff\xff"
         assert _read_u32_be(data, 0) == 0xFFFFFFFF
 
     def test_read_u16_be(self):
@@ -42,7 +41,7 @@ class TestHelperFunctions:
         data = b"\x12\x34"
         assert _read_u16_be(data, 0) == 0x1234
 
-        data = b"\xFF\xFF"
+        data = b"\xff\xff"
         assert _read_u16_be(data, 0) == 0xFFFF
 
     def test_read_string(self):
