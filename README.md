@@ -12,7 +12,7 @@ An MCP (Model Context Protocol) server for controlling Amiberry, the Amiga emula
 - Launch emulator with specific models (A500, A500+, A600, A1200, A4000, CD32, CDTV)
 - HTTP API for voice assistants (Siri, Google Assistant) and automation
 
-### Runtime Control (NEW)
+### Runtime Control
 - **Pause/Resume**: Control running emulation via IPC
 - **Save/Load State**: Save and restore states while running
 - **Disk Swapping**: Insert floppy/CD images into running emulation
@@ -57,9 +57,10 @@ amiberry-mcp-server/
 ├── src/
 │   └── amiberry_mcp/
 │       ├── __init__.py
-│       ├── config.py          # Shared configuration
-│       ├── server.py          # MCP server (48 tools)
-│       ├── http_server.py     # HTTP API server
+│       ├── config.py          # Platform detection and paths
+│       ├── common.py          # Shared helpers (launch, scan, validation)
+│       ├── server.py          # MCP server (80+ tools)
+│       ├── http_server.py     # HTTP API server (FastAPI)
 │       ├── ipc_client.py      # IPC client for runtime control
 │       ├── uae_config.py      # Config file parser/generator
 │       ├── savestate.py       # Savestate metadata parser
@@ -71,9 +72,11 @@ amiberry-mcp-server/
 │   ├── uninstall.sh           # Uninstaller
 │   └── test_http_api.sh       # HTTP API tests
 ├── tests/
-│   ├── test_server.py         # Server unit tests
-│   ├── test_mcp_connection.py
-│   └── test_uae_config.py     # Config parser tests
+│   ├── test_server.py         # Server integration tests
+│   ├── test_mcp_connection.py # MCP protocol tests
+│   ├── test_uae_config.py     # Config parser tests
+│   ├── test_savestate.py      # Savestate parser tests
+│   └── test_rom_manager.py    # ROM manager tests
 ├── docs/
 │   ├── HTTP_API_GUIDE.md      # HTTP API documentation
 │   └── QUICKSTART_HTTP_API.md
@@ -1036,9 +1039,11 @@ source venv/bin/activate
 pip install -e ".[all]"
 
 # Run tests
-pytest tests/
-python tests/test_server.py
-python tests/test_mcp_connection.py
+pytest tests/ -v
+
+# Lint and format
+ruff check src/ tests/
+ruff format src/ tests/
 ```
 
 ## Troubleshooting

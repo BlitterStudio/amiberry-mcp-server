@@ -163,6 +163,48 @@ rest_command:
 | `/roms/identify` | POST | Identify ROM |
 | `/version` | GET | Amiberry version |
 
+### Runtime Control Endpoints (requires IPC)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/runtime/status` | GET | Emulation status |
+| `/runtime/pause` | POST | Pause emulation |
+| `/runtime/resume` | POST | Resume emulation |
+| `/runtime/reset` | POST | Reset (soft/hard) |
+| `/runtime/quit` | POST | Quit Amiberry |
+| `/runtime/insert-floppy` | POST | Insert floppy disk |
+| `/runtime/eject-floppy` | POST | Eject floppy |
+| `/runtime/screenshot` | POST | Take screenshot |
+| `/runtime/quicksave` | POST | Quick save (slot 0-9) |
+| `/runtime/quickload` | POST | Quick load (slot 0-9) |
+| `/runtime/volume` | GET/POST | Get/set volume |
+| `/runtime/warp` | GET/POST | Get/set warp mode |
+| `/runtime/display-mode` | GET/POST | Get/set display mode |
+| `/runtime/key` | POST | Send keyboard input |
+| `/runtime/mouse` | POST | Send mouse input |
+| `/runtime/ping` | GET | Test IPC connection |
+| `/runtime/active-instance` | GET/POST | Get/set active instance |
+
+### Process Lifecycle Endpoints
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/process/alive` | GET | Check if process is running |
+| `/process/info` | GET | Detailed process info |
+| `/process/kill` | POST | Force kill process |
+| `/process/restart` | POST | Kill and re-launch |
+| `/process/crash-info` | POST | Detect crashes |
+| `/health` | GET | Comprehensive health check |
+| `/launch-and-wait` | POST | Launch and wait for IPC ready |
+
+### Log & Debug Endpoints
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/logs/tail` | POST | Incremental log tailing |
+| `/logs/wait-for-pattern` | POST | Wait for regex in logs |
+| `/runtime/screenshot-view` | POST | Screenshot as base64 |
+| `/runtime/debug/activate` | POST | Activate debugger |
+| `/runtime/debug/step` | POST | Step one instruction |
+| `/runtime/cpu/regs` | GET | CPU register values |
+
 ## Files
 
 - `src/amiberry_mcp/http_server.py` - FastAPI HTTP server

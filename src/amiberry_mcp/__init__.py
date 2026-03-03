@@ -4,16 +4,16 @@ __version__ = "1.0.0"
 
 from .ipc_client import (
     AmiberryIPCClient,
-    IPCError,
-    ConnectionError,
     CommandError,
+    IPCConnectionError,
+    IPCError,
     send_ipc_command,
 )
 
 __all__ = [
     "AmiberryIPCClient",
     "IPCError",
-    "ConnectionError",
+    "IPCConnectionError",
     "CommandError",
     "send_ipc_command",
 ]

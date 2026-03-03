@@ -7,9 +7,10 @@ import os
 import platform
 from pathlib import Path
 
-# Platform detection
-IS_MACOS = platform.system() == "Darwin"
-IS_LINUX = platform.system() == "Linux"
+# Platform detection - cache the result to avoid repeated system calls
+_PLATFORM = platform.system()
+IS_MACOS = _PLATFORM == "Darwin"
+IS_LINUX = _PLATFORM == "Linux"
 
 if IS_MACOS:
     EMULATOR_BINARY = "/Applications/Amiberry.app/Contents/MacOS/Amiberry"
@@ -40,27 +41,28 @@ elif IS_LINUX:
         AMIBERRY_HOME / "lha",
     ]
 else:
-    raise RuntimeError(f"Unsupported platform: {platform.system()}")
+    raise RuntimeError(f"Unsupported platform: {_PLATFORM}")
 
 # Supported file extensions
 FLOPPY_EXTENSIONS = [".adf", ".adz", ".dms"]
 HARDFILE_EXTENSIONS = [".hdf", ".hdz"]
 LHA_EXTENSIONS = [".lha"]
 CD_EXTENSIONS = [".iso", ".cue", ".chd", ".bin", ".nrg"]
-ALL_DISK_EXTENSIONS = FLOPPY_EXTENSIONS + HARDFILE_EXTENSIONS + LHA_EXTENSIONS
 
 # Supported Amiga models for quick-launch
 SUPPORTED_MODELS = ["A500", "A1200", "CD32"]
-ALL_MODELS = ["A500", "A500P", "A600", "A1200", "A4000", "CD32", "CDTV"]
 
 # Log directory for captured output
 LOG_DIR = AMIBERRY_HOME / "logs"
+
+# ROM directory
+ROM_DIR = AMIBERRY_HOME / "Kickstarts" if IS_MACOS else AMIBERRY_HOME / "kickstarts"
 
 
 def get_platform_info() -> dict:
     """Return platform and path information as a dictionary."""
     info = {
-        "platform": platform.system(),
+        "platform": _PLATFORM,
         "emulator_binary": str(EMULATOR_BINARY),
         "amiberry_home": str(AMIBERRY_HOME),
         "config_dir": str(CONFIG_DIR),
@@ -75,8 +77,21 @@ def get_platform_info() -> dict:
     return info
 
 
+_dirs_ensured = False
+
+
 def ensure_directories_exist() -> None:
     """Create necessary directories if they don't exist."""
-    directories = [CONFIG_DIR, SAVESTATE_DIR, SCREENSHOT_DIR] + DISK_IMAGE_DIRS
+    global _dirs_ensured
+    if _dirs_ensured:
+        return
+    directories = [
+        CONFIG_DIR,
+        SAVESTATE_DIR,
+        SCREENSHOT_DIR,
+        LOG_DIR,
+        ROM_DIR,
+    ] + DISK_IMAGE_DIRS
     for directory in directories:
         directory.mkdir(parents=True, exist_ok=True)
+    _dirs_ensured = True

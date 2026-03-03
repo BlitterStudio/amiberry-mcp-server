@@ -119,7 +119,7 @@ The API server provides these endpoints:
 - `POST /runtime/mouse` - Send mouse input
 - `POST /runtime/mouse-speed` - Set mouse sensitivity
 - `GET /runtime/mouse-speed` - Get current mouse sensitivity
-- `POST /runtime/toggle-mouse-grab` - Toggle mouse capture/grab
+- `POST /runtime/mouse-grab` - Toggle mouse capture/grab
 
 **Floppy Control**
 - `GET /runtime/floppy-speed` - Get current floppy speed
@@ -128,8 +128,8 @@ The API server provides these endpoints:
 - `POST /runtime/disk-write-protect` - Set disk write protection for drive
 
 **Display Control (additional)**
-- `POST /runtime/toggle-rtg` - Toggle between RTG and chipset display
-- `POST /runtime/toggle-status-line` - Cycle status line (off/chipset/rtg/both)
+- `POST /runtime/rtg` - Toggle between RTG and chipset display
+- `POST /runtime/status-line` - Cycle status line (off/chipset/rtg/both)
 - `GET /runtime/fps` - Get current frame rate and idle percentage
 
 **Hardware/Chipset Control**
@@ -138,6 +138,54 @@ The API server provides these endpoints:
 - `GET /runtime/cpu-speed` - Get current CPU speed setting
 - `POST /runtime/cpu-speed` - Set CPU speed (-1=max, 0=cycle-exact, >0=%)
 - `GET /runtime/memory-config` - Get all memory sizes (chip, fast, bogo, z3, rtg)
+
+**Memory Management**
+- `POST /runtime/chip-mem` - Set chip memory size
+- `POST /runtime/fast-mem` - Set fast memory size
+- `POST /runtime/slow-mem` - Set slow (bogo) memory size
+- `POST /runtime/z3-mem` - Set Zorro III memory size
+
+**CPU Model**
+- `GET /runtime/cpu-model` - Get current CPU model
+- `POST /runtime/cpu-model` - Set CPU model (68000, 68010, 68020, 68030, 68040, 68060)
+
+**Window & Display Settings**
+- `GET /runtime/window-size` - Get current window size
+- `POST /runtime/window-size` - Set window size
+- `GET /runtime/scaling` - Get current scaling mode
+- `POST /runtime/scaling` - Set scaling mode
+- `GET /runtime/line-mode` - Get current line mode
+- `POST /runtime/line-mode` - Set line mode
+- `GET /runtime/resolution` - Get current resolution
+- `POST /runtime/resolution` - Set resolution
+- `GET /runtime/autocrop` - Get autocrop status
+- `POST /runtime/autocrop` - Enable/disable autocrop
+
+**WHDLoad Runtime Control**
+- `GET /runtime/whdload` - Get current WHDLoad settings
+- `POST /runtime/whdload` - Set WHDLoad custom fields
+- `DELETE /runtime/whdload` - Clear WHDLoad custom fields
+
+**Debugger**
+- `POST /runtime/debug/activate` - Activate debugger
+- `POST /runtime/debug/deactivate` - Deactivate debugger
+- `GET /runtime/debug/status` - Get debugger status
+- `POST /runtime/debug/step` - Step one instruction
+- `POST /runtime/debug/step-over` - Step over subroutine calls
+- `POST /runtime/debug/continue` - Continue execution
+- `GET /runtime/cpu/regs` - Get CPU register values
+- `GET /runtime/custom/regs` - Get custom chipset register values
+- `POST /runtime/disassemble` - Disassemble memory at address
+- `GET /runtime/breakpoints` - List breakpoints
+- `POST /runtime/breakpoints` - Set breakpoint
+- `DELETE /runtime/breakpoints` - Delete breakpoint
+
+**Hardware State**
+- `GET /runtime/copper/state` - Get Copper state
+- `GET /runtime/blitter/state` - Get Blitter state
+- `GET /runtime/drive/state` - Get floppy drive state
+- `GET /runtime/audio/state` - Get audio channel state
+- `GET /runtime/dma/state` - Get DMA channel state
 
 **Utility**
 - `GET /runtime/version` - Get Amiberry version info
@@ -492,7 +540,6 @@ rest_command:
     content_type: application/json
     payload: '{"port": {{ port }}, "mode": {{ mode }}}'
 
-  # Round 3 - Floppy, Display, Hardware controls
   amiberry_floppy_speed:
     url: http://localhost:8080/runtime/floppy-speed
     method: POST
@@ -505,16 +552,16 @@ rest_command:
     content_type: application/json
     payload: '{"drive": {{ drive }}, "protected": {{ protected }}}'
 
-  amiberry_toggle_rtg:
-    url: http://localhost:8080/runtime/toggle-rtg
+  amiberry_rtg:
+    url: http://localhost:8080/runtime/rtg
     method: POST
 
-  amiberry_toggle_status_line:
-    url: http://localhost:8080/runtime/toggle-status-line
+  amiberry_status_line:
+    url: http://localhost:8080/runtime/status-line
     method: POST
 
-  amiberry_toggle_mouse_grab:
-    url: http://localhost:8080/runtime/toggle-mouse-grab
+  amiberry_mouse_grab:
+    url: http://localhost:8080/runtime/mouse-grab
     method: POST
 
   amiberry_chipset:
@@ -978,21 +1025,21 @@ curl -X POST http://localhost:8080/runtime/disk-write-protect \
   -d '{"drive": 0, "protected": true}'
 
 # Toggle RTG display (switch between RTG and chipset)
-curl -X POST http://localhost:8080/runtime/toggle-rtg
+curl -X POST http://localhost:8080/runtime/rtg
 
 # Toggle RTG on specific monitor
-curl -X POST http://localhost:8080/runtime/toggle-rtg \
+curl -X POST http://localhost:8080/runtime/rtg \
   -H "Content-Type: application/json" \
   -d '{"monitor_id": 0}'
 
 # Toggle status line (cycles: off -> chipset -> rtg -> both -> off)
-curl -X POST http://localhost:8080/runtime/toggle-status-line
+curl -X POST http://localhost:8080/runtime/status-line
 
 # Get current FPS and idle percentage
 curl http://localhost:8080/runtime/fps
 
 # Toggle mouse grab/capture
-curl -X POST http://localhost:8080/runtime/toggle-mouse-grab
+curl -X POST http://localhost:8080/runtime/mouse-grab
 
 # Get current mouse speed
 curl http://localhost:8080/runtime/mouse-speed
@@ -1181,8 +1228,6 @@ response = requests.get(f'{BASE_URL}/runtime/harddrives')
 for hd in response.json().get('harddrives', []):
     print(f"  {hd}")
 
-# --- Round 3: Floppy, Display, Hardware controls ---
-
 # Floppy speed control
 response = requests.get(f'{BASE_URL}/runtime/floppy-speed')
 print(f"Floppy speed: {response.json().get('speed')}")
@@ -1194,8 +1239,8 @@ print(f"Drive 0 protected: {response.json().get('protected')}")
 requests.post(f'{BASE_URL}/runtime/disk-write-protect', json={"drive": 0, "protected": True})
 
 # RTG and status line
-requests.post(f'{BASE_URL}/runtime/toggle-rtg')
-requests.post(f'{BASE_URL}/runtime/toggle-status-line')
+requests.post(f'{BASE_URL}/runtime/rtg')
+requests.post(f'{BASE_URL}/runtime/status-line')
 
 # FPS monitoring
 response = requests.get(f'{BASE_URL}/runtime/fps')
@@ -1203,7 +1248,7 @@ fps = response.json()
 print(f"FPS: {fps.get('fps')}, Idle: {fps.get('idle')}%")
 
 # Mouse grab
-requests.post(f'{BASE_URL}/runtime/toggle-mouse-grab')
+requests.post(f'{BASE_URL}/runtime/mouse-grab')
 response = requests.get(f'{BASE_URL}/runtime/mouse-speed')
 print(f"Mouse speed: {response.json().get('speed')}")
 
@@ -1430,16 +1475,16 @@ case "$1" in
     fi
     ;;
   "togglertg")
-    curl -s -X POST $BASE_URL/runtime/toggle-rtg
+    curl -s -X POST $BASE_URL/runtime/rtg
     ;;
   "togglestatusline")
-    curl -s -X POST $BASE_URL/runtime/toggle-status-line
+    curl -s -X POST $BASE_URL/runtime/status-line
     ;;
   "fps")
     curl -s $BASE_URL/runtime/fps | jq .
     ;;
   "mousegrab")
-    curl -s -X POST $BASE_URL/runtime/toggle-mouse-grab
+    curl -s -X POST $BASE_URL/runtime/mouse-grab
     ;;
   "chipset")
     if [ -z "$2" ]; then
@@ -1538,7 +1583,7 @@ The API currently has no authentication. For security:
 
 By default, the server binds to `0.0.0.0` (all interfaces). To restrict to localhost only:
 
-Edit `amiberry_http_server.py`:
+Edit `src/amiberry_mcp/http_server.py`:
 ```python
 uvicorn.run(app, host="127.0.0.1", port=8080)  # localhost only
 ```
