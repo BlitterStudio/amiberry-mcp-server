@@ -101,7 +101,7 @@ cd amiberry-mcp-server
 The installer will:
 1. Create a Python virtual environment
 2. Install dependencies
-3. Configure Claude Desktop automatically
+3. Configure Claude Desktop, Claude Code, and Gemini (Antigravity) automatically
 
 ### Manual Installation
 
@@ -146,7 +146,7 @@ Then restart Claude Desktop.
 
 ## Verification
 
-After installation, restart Claude Desktop. You should see a hammer icon in the input area indicating MCP tools are available.
+After installation, restart your AI assistant (Claude Desktop, Claude Code, or Gemini). You should see the MCP tools become available.
 
 Try asking Claude:
 - "What Amiberry configurations do I have?"
