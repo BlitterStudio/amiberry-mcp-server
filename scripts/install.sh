@@ -154,6 +154,88 @@ END
 fi
 
 echo ""
+
+# Configure Claude Code
+CLAUDE_CODE_CONFIG="$HOME/.claude.json"
+if [ -f "$CLAUDE_CODE_CONFIG" ] || command -v claude &> /dev/null; then
+    echo "Configuring Claude Code..."
+    if [ ! -f "$CLAUDE_CODE_CONFIG" ]; then
+        echo "{}" > "$CLAUDE_CODE_CONFIG"
+    fi
+    
+    python3 << END
+import json
+import sys
+
+config_file = "$CLAUDE_CODE_CONFIG"
+project_dir = "$PROJECT_DIR"
+
+try:
+    with open(config_file, 'r') as f:
+        try:
+            config = json.load(f)
+        except json.JSONDecodeError:
+            config = {}
+            
+    if 'mcpServers' not in config:
+        config['mcpServers'] = {}
+
+    config['mcpServers']['amiberry'] = {
+        'command': f'{project_dir}/venv/bin/python',
+        'args': ['-m', 'amiberry_mcp.server']
+    }
+
+    with open(config_file, 'w') as f:
+        json.dump(config, f, indent=2)
+
+    print('Created/Updated Claude Code configuration')
+except Exception as e:
+    print(f'Error updating config: {e}')
+END
+fi
+
+# Configure Gemini (Antigravity)
+GEMINI_DIR="$HOME/.gemini/antigravity"
+GEMINI_CONFIG="$GEMINI_DIR/mcp_config.json"
+if [ -d "$GEMINI_DIR" ]; then
+    echo ""
+    echo "Configuring Gemini (Antigravity)..."
+    if [ ! -f "$GEMINI_CONFIG" ]; then
+        echo "{}" > "$GEMINI_CONFIG"
+    fi
+    
+    python3 << END
+import json
+import sys
+
+config_file = "$GEMINI_CONFIG"
+project_dir = "$PROJECT_DIR"
+
+try:
+    with open(config_file, 'r') as f:
+        try:
+            config = json.load(f)
+        except json.JSONDecodeError:
+            config = {}
+            
+    if 'mcpServers' not in config:
+        config['mcpServers'] = {}
+
+    config['mcpServers']['amiberry'] = {
+        'command': f'{project_dir}/venv/bin/python',
+        'args': ['-m', 'amiberry_mcp.server']
+    }
+
+    with open(config_file, 'w') as f:
+        json.dump(config, f, indent=2)
+
+    print('Created/Updated Gemini MCP configuration')
+except Exception as e:
+    print(f'Error updating config: {e}')
+END
+fi
+
+echo ""
 echo "=================================="
 echo "Installation Complete!"
 echo "=================================="
