@@ -90,6 +90,75 @@ else
     echo "Claude Desktop config not found, skipping..."
 fi
 
+# Remove from Claude Code config
+CLAUDE_CODE_CONFIG="$HOME/.claude.json"
+if [ -f "$CLAUDE_CODE_CONFIG" ]; then
+    echo "Updating Claude Code configuration..."
+    
+    python3 << END
+import json
+import sys
+
+config_file = "$CLAUDE_CODE_CONFIG"
+
+try:
+    with open(config_file, 'r') as f:
+        try:
+            config = json.load(f)
+        except json.JSONDecodeError:
+            config = {}
+
+    if 'mcpServers' in config and 'amiberry' in config['mcpServers']:
+        del config['mcpServers']['amiberry']
+
+        with open(config_file, 'w') as f:
+            json.dump(config, f, indent=2)
+
+        print('Removed amiberry from Claude Code configuration')
+    else:
+        print('Amiberry entry not found in Claude Code config')
+except Exception as e:
+    print(f'Error updating config: {e}')
+END
+fi
+
+# Remove from Gemini config
+GEMINI_CONFIG="$HOME/.gemini/antigravity/mcp_config.json"
+if [ -f "$GEMINI_CONFIG" ]; then
+    echo "Updating Gemini (Antigravity) configuration..."
+    
+    python3 << END
+import json
+import sys
+
+config_file = "$GEMINI_CONFIG"
+
+try:
+    with open(config_file, 'r') as f:
+        try:
+            config = json.load(f)
+        except json.JSONDecodeError:
+            config = {}
+
+    if 'mcpServers' in config and 'amiberry' in config['mcpServers']:
+        del config['mcpServers']['amiberry']
+
+        # Clean up empty mcpServers
+        if not config['mcpServers']:
+            del config['mcpServers']
+
+        with open(config_file, 'w') as f:
+            json.dump(config, f, indent=2)
+
+        print('Removed amiberry from Gemini configuration')
+    else:
+        print('Amiberry entry not found in Gemini config')
+except Exception as e:
+    print(f'Error updating config: {e}')
+END
+fi
+
+
 # Remove LaunchAgent (macOS)
 if [[ "$OSTYPE" == "darwin"* ]]; then
     PLIST_PATH="$HOME/Library/LaunchAgents/com.amiberry.httpapi.plist"
