@@ -157,7 +157,7 @@ Try asking Claude:
 
 ### macOS
 ```
-~/Amiberry/
+~/Library/Application Support/Amiberry/
 ├── Configurations/    # .uae config files
 ├── Floppies/         # .adf, .adz, .dms files
 ├── Harddrives/       # .hdf, .hdz files
@@ -1068,7 +1068,7 @@ tail -f ~/Library/Logs/Claude/mcp*.log
 ### View captured Amiberry logs
 ```bash
 # macOS
-ls ~/Amiberry/logs/
+ls ~/Library/Application\ Support/Amiberry/logs/
 
 # Linux
 ls ~/Amiberry/logs/
