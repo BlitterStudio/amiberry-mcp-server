@@ -128,6 +128,9 @@ def modify_uae_config(
     """
     Modify specific options in an existing .uae configuration file.
 
+    Preserves the original file structure, comments, and ordering.
+    Only the changed/removed lines are touched; new keys are appended.
+
     Args:
         path: Path to the existing .uae configuration file
         modifications: Dictionary of options to modify.
@@ -139,18 +142,45 @@ def modify_uae_config(
     Raises:
         FileNotFoundError: If the config file doesn't exist
     """
-    config = parse_uae_config(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Configuration file not found: {path}")
 
-    for key, value in modifications.items():
-        if value is None:
-            # Remove the option
-            config.pop(key, None)
-        else:
-            # Add or update the option
-            config[key] = value
+    # Track which modifications have been applied
+    remaining = dict(modifications)
+    new_lines: list[str] = []
 
-    write_uae_config(path, config)
-    return config
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            stripped = line.rstrip("\n\r")
+            bare = stripped.strip()
+
+            # Preserve blank lines, comments, and non key=value lines
+            if not bare or bare.startswith(";") or bare.startswith("#") or "=" not in bare:
+                new_lines.append(stripped)
+                continue
+
+            key, _, _ = bare.partition("=")
+            key = key.strip()
+
+            if key in remaining:
+                value = remaining.pop(key)
+                if value is None:
+                    # Remove this line entirely
+                    continue
+                else:
+                    new_lines.append(f"{key}={value}")
+            else:
+                new_lines.append(stripped)
+
+    # Append any brand-new keys that weren't in the original file
+    for key, value in remaining.items():
+        if value is not None:
+            new_lines.append(f"{key}={value}")
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(new_lines) + "\n")
+
+    return parse_uae_config(path)
 
 
 def create_config_from_template(

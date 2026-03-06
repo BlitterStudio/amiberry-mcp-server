@@ -189,6 +189,89 @@ class TestCreateConfigFromTemplate:
             create_config_from_template(config_file, "InvalidModel")
 
 
+class TestModifyPreservesStructure:
+    """Tests for Fix #7: modify_uae_config preserves file structure."""
+
+    def test_preserves_comments(self, tmp_path: Path):
+        """Comments should be preserved after modification."""
+        config_file = tmp_path / "test.uae"
+        config_file.write_text(
+            "; CPU Settings\ncpu_model=68000\n; Chipset\nchipset=ocs\n"
+        )
+
+        modify_uae_config(config_file, {"cpu_model": "68020"})
+
+        content = config_file.read_text()
+        assert "; CPU Settings" in content
+        assert "; Chipset" in content
+
+    def test_preserves_blank_lines(self, tmp_path: Path):
+        """Blank lines should be preserved after modification."""
+        config_file = tmp_path / "test.uae"
+        config_file.write_text(
+            "cpu_model=68000\n\nchipset=ocs\n\nsound_output=exact\n"
+        )
+
+        modify_uae_config(config_file, {"chipset": "aga"})
+
+        content = config_file.read_text()
+        lines = content.split("\n")
+        # Blank lines should still be present
+        assert "" in lines
+
+    def test_preserves_key_ordering(self, tmp_path: Path):
+        """Keys should remain in their original order."""
+        config_file = tmp_path / "test.uae"
+        config_file.write_text(
+            "chipset=ocs\ncpu_model=68000\nsound_output=exact\n"
+        )
+
+        modify_uae_config(config_file, {"cpu_model": "68020"})
+
+        content = config_file.read_text()
+        lines = [l for l in content.strip().split("\n") if l and "=" in l]
+        keys = [l.split("=")[0] for l in lines]
+        assert keys == ["chipset", "cpu_model", "sound_output"]
+
+    def test_new_keys_appended_at_end(self, tmp_path: Path):
+        """New keys should be appended at the end of the file."""
+        config_file = tmp_path / "test.uae"
+        config_file.write_text("cpu_model=68000\nchipset=ocs\n")
+
+        modify_uae_config(config_file, {"new_key": "new_value"})
+
+        content = config_file.read_text()
+        lines = [l for l in content.strip().split("\n") if l and "=" in l]
+        assert lines[-1] == "new_key=new_value"
+
+    def test_removed_keys_leave_no_trace(self, tmp_path: Path):
+        """Removed keys (None value) should be completely gone."""
+        config_file = tmp_path / "test.uae"
+        config_file.write_text(
+            "; Settings\ncpu_model=68000\nchipset=ocs\nsound=exact\n"
+        )
+
+        result = modify_uae_config(config_file, {"chipset": None})
+
+        content = config_file.read_text()
+        assert "chipset" not in content
+        assert "cpu_model=68000" in content
+        assert "sound=exact" in content
+        assert "chipset" not in result
+
+    def test_preserves_hash_comments(self, tmp_path: Path):
+        """Hash-style comments should also be preserved."""
+        config_file = tmp_path / "test.uae"
+        config_file.write_text(
+            "# Hash comment\ncpu_model=68000\n"
+        )
+
+        modify_uae_config(config_file, {"cpu_model": "68020"})
+
+        content = config_file.read_text()
+        assert "# Hash comment" in content
+
+
 class TestGetConfigSummary:
     """Tests for get_config_summary function."""
 

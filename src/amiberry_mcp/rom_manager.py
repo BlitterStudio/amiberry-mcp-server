@@ -184,6 +184,10 @@ KNOWN_ROMS = {
 ROM_EXTENSIONS = [".rom", ".bin", ".a500", ".a600", ".a1200", ".a4000"]
 
 
+# Maximum ROM file size to read (16MB - well above any real Amiga ROM)
+_MAX_ROM_SIZE = 16 * 1024 * 1024
+
+
 def calculate_rom_crc32(path: Path) -> str:
     """
     Calculate the CRC32 checksum of a ROM file.
@@ -193,7 +197,12 @@ def calculate_rom_crc32(path: Path) -> str:
 
     Returns:
         CRC32 checksum as uppercase hex string
+
+    Raises:
+        ValueError: If the file exceeds the maximum allowed size
     """
+    if path.stat().st_size > _MAX_ROM_SIZE:
+        raise ValueError(f"ROM file too large ({path.stat().st_size} bytes, max {_MAX_ROM_SIZE})")
     data = path.read_bytes()
     crc = zlib.crc32(data) & 0xFFFFFFFF
     return f"{crc:08X}"
@@ -208,7 +217,12 @@ def calculate_rom_md5(path: Path) -> str:
 
     Returns:
         MD5 hash as lowercase hex string
+
+    Raises:
+        ValueError: If the file exceeds the maximum allowed size
     """
+    if path.stat().st_size > _MAX_ROM_SIZE:
+        raise ValueError(f"ROM file too large ({path.stat().st_size} bytes, max {_MAX_ROM_SIZE})")
     data = path.read_bytes()
     return hashlib.md5(data, usedforsecurity=False).hexdigest()
 
@@ -225,6 +239,10 @@ def identify_rom(path: Path) -> dict[str, Any]:
     """
     if not path.exists():
         raise FileNotFoundError(f"ROM file not found: {path}")
+
+    file_size = path.stat().st_size
+    if file_size > _MAX_ROM_SIZE:
+        raise ValueError(f"ROM file too large ({file_size} bytes, max {_MAX_ROM_SIZE})")
 
     data = path.read_bytes()
     file_size = len(data)
