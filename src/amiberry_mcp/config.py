@@ -14,7 +14,7 @@ IS_LINUX = _PLATFORM == "Linux"
 
 if IS_MACOS:
     EMULATOR_BINARY = "/Applications/Amiberry.app/Contents/MacOS/Amiberry"
-    AMIBERRY_HOME = Path.home() / "Amiberry"
+    AMIBERRY_HOME = Path.home() / "Library" / "Application Support" / "Amiberry"
     CONFIG_DIR = AMIBERRY_HOME / "Configurations"
     SYSTEM_CONFIG_DIR = None  # macOS doesn't have separate system configs
     SAVESTATE_DIR = AMIBERRY_HOME / "Savestates"
