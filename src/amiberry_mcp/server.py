@@ -117,6 +117,24 @@ def _text_result(msg: str) -> list[TextContent]:
     return [TextContent(type="text", text=msg)]
 
 
+def _launch_and_store(
+    cmd: list[str],
+    log_path: Path | None = None,
+) -> subprocess.Popen:
+    """Launch Amiberry, store state, and return the process.
+
+    Centralizes the close-log → launch → store-state pattern used by
+    all launch handlers.
+    """
+    _state.close_log_handle()
+    proc, log_handle = launch_process(cmd, log_path=log_path)
+    _state.process = proc
+    _state.launch_cmd = cmd
+    _state.log_path = log_path
+    _state.log_file_handle = log_handle
+    return proc
+
+
 async def _ipc_bool_call(
     method_name: str,
     *args: Any,
@@ -2002,11 +2020,7 @@ async def _handle_launch_amiberry(arguments: Any) -> list:
     )
 
     try:
-        # Launch in background
-        _state.close_log_handle()
-        _state.process, _ = launch_process(cmd)
-        _state.launch_cmd = cmd
-        _state.log_path = None
+        proc = _launch_and_store(cmd)
 
         if model:
             result = f"Launched Amiberry with model: {model}"
@@ -2017,7 +2031,7 @@ async def _handle_launch_amiberry(arguments: Any) -> list:
         else:
             result = "Launched Amiberry"
 
-        result += f"\n  PID: {_state.process.pid}"
+        result += f"\n  PID: {proc.pid}"
 
         if "disk_image" in arguments and arguments["disk_image"]:
             result += f"\n  Disk in DF0: {Path(arguments['disk_image']).name}"
@@ -2116,14 +2130,11 @@ async def _handle_launch_with_logging(arguments: Any) -> list:
         with_logging=True,
     )
 
-    _state.close_log_handle()
     try:
-        _state.process, _state.log_file_handle = launch_process(cmd, log_path=log_path)
-        _state.launch_cmd = cmd
-        _state.log_path = log_path
+        proc = _launch_and_store(cmd, log_path=log_path)
 
         result = "Launched Amiberry with logging enabled\n"
-        result += f"PID: {_state.process.pid}\n"
+        result += f"PID: {proc.pid}\n"
         result += f"Log file: {log_path}\n"
         result += f"Command: {' '.join(cmd)}"
 
@@ -2257,16 +2268,10 @@ async def _handle_launch_whdload(arguments: Any) -> list:
         if not lha_path.exists():
             return _text_result(f"Error: LHA file not found: {exact_path}")
     elif search_term:
-        # Search for the LHA file
+        # Search for the LHA file using scan_disk_images for consistency
         def _scan_lha_files():
-            results = []
-            for directory in DISK_IMAGE_DIRS:
-                if directory.exists():
-                    for pattern in ["**/*.lha", "**/*.LHA"]:
-                        for lha in directory.glob(pattern):
-                            if search_term in lha.name.lower():
-                                results.append(lha)
-            return results
+            images = scan_disk_images(DISK_IMAGE_DIRS, "lha", search_term)
+            return [Path(img["path"]) for img in images]
 
         lha_files = await asyncio.to_thread(_scan_lha_files)
 
@@ -2297,13 +2302,10 @@ async def _handle_launch_whdload(arguments: Any) -> list:
     )
 
     try:
-        _state.close_log_handle()
-        _state.process, _ = launch_process(cmd)
-        _state.launch_cmd = cmd
-        _state.log_path = None
+        proc = _launch_and_store(cmd)
 
         return _text_result(
-            f"Launched WHDLoad game: {lha_path.name}\nModel: {model}\nPID: {_state.process.pid}"
+            f"Launched WHDLoad game: {lha_path.name}\nModel: {model}\nPID: {proc.pid}"
         )
     except Exception as e:
         return _text_result(f"Error launching WHDLoad game: {str(e)}")
@@ -2323,23 +2325,13 @@ async def _handle_launch_cd(arguments: Any) -> list:
         if not cd_path.exists():
             return _text_result(f"Error: CD image not found: {cd_image}")
     elif search_term:
-        # Search for CD images
+        # Search for CD images using scan_disk_images for consistency
         def _scan_cd_files():
-            results = []
             search_dirs = DISK_IMAGE_DIRS + [AMIBERRY_HOME / "CD"]
             if IS_MACOS:
                 search_dirs.append(AMIBERRY_HOME / "CDs")
-
-            for directory in search_dirs:
-                if directory.exists():
-                    for ext in CD_EXTENSIONS:
-                        for pattern in [f"**/*{ext}", f"**/*{ext.upper()}"]:
-                            for cd in directory.glob(pattern):
-                                if search_term in cd.name.lower():
-                                    results.append(cd)
-
-            # Remove duplicates
-            return list(set(results))
+            images = scan_disk_images(search_dirs, "cd", search_term)
+            return [Path(img["path"]) for img in images]
 
         cd_files = await asyncio.to_thread(_scan_cd_files)
 
@@ -2370,13 +2362,10 @@ async def _handle_launch_cd(arguments: Any) -> list:
     )
 
     try:
-        _state.close_log_handle()
-        _state.process, _ = launch_process(cmd)
-        _state.launch_cmd = cmd
-        _state.log_path = None
+        proc = _launch_and_store(cmd)
 
         return _text_result(
-            f"Launched CD image: {cd_path.name}\nModel: {model}\nPID: {_state.process.pid}"
+            f"Launched CD image: {cd_path.name}\nModel: {model}\nPID: {proc.pid}"
         )
     except Exception as e:
         return _text_result(f"Error launching CD image: {str(e)}")
@@ -2420,13 +2409,10 @@ async def _handle_set_disk_swapper(arguments: Any) -> list:
     )
 
     try:
-        _state.close_log_handle()
-        _state.process, _ = launch_process(cmd)
-        _state.launch_cmd = cmd
-        _state.log_path = None
+        proc = _launch_and_store(cmd)
 
         result = f"Launched with disk swapper ({len(verified_paths)} disks):\n"
-        result += f"  PID: {_state.process.pid}\n"
+        result += f"  PID: {proc.pid}\n"
         for i, path in enumerate(verified_paths):
             result += f"  Disk {i + 1}: {Path(path).name}\n"
 
@@ -2910,11 +2896,12 @@ async def _handle_runtime_set_warp(arguments: Any) -> list:
 
     async def _cb(client):
         success = await client.set_warp(enabled)
-        status = "enabled" if enabled else "disabled"
         if success:
+            status = "enabled" if enabled else "disabled"
             return f"Warp mode {status}."
         else:
-            return f"Failed to {status[:-1]} warp mode."
+            action = "enable" if enabled else "disable"
+            return f"Failed to {action} warp mode."
 
     return await _ipc_call(_cb)
 
@@ -4033,7 +4020,8 @@ async def _handle_restart_amiberry(arguments: Any) -> list:
     except Exception as e:
         return _text_result(f"Error restarting Amiberry: {str(e)}")
 
-    # === Missing IPC Tool Wrappers ===
+
+# === Missing IPC Tool Wrappers ===
 
 
 async def _handle_runtime_read_memory(arguments: Any) -> list:
@@ -4100,7 +4088,8 @@ async def _handle_runtime_debug_step_over(arguments: Any) -> list:
         failure_msg="Failed to step over. Is the debugger active?",
     )
 
-    # === Screenshot with Image Data ===
+
+# === Screenshot with Image Data ===
 
 
 async def _handle_runtime_screenshot_view(arguments: Any) -> list:
@@ -4356,7 +4345,8 @@ async def _handle_get_crash_info(arguments: Any) -> list:
 
     return _text_result("\n".join(result_parts))
 
-    # === Workflow Tools ===
+
+# === Workflow Tools ===
 
 
 async def _handle_health_check(arguments: Any) -> list:
@@ -4457,11 +4447,8 @@ async def _handle_launch_and_wait_for_ipc(arguments: Any) -> list:
     log_name = f"amiberry_{timestamp}.log"
     log_path = LOG_DIR / log_name
 
-    _state.close_log_handle()
     try:
-        _state.process, _state.log_file_handle = launch_process(cmd, log_path=log_path)
-        _state.launch_cmd = cmd
-        _state.log_path = log_path
+        _launch_and_store(cmd, log_path=log_path)
     except Exception as e:
         _state.close_log_handle()
         return _text_result(f"Error launching Amiberry: {str(e)}")

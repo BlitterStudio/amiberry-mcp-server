@@ -16,6 +16,10 @@ _STRUCT_U32_BE = struct.Struct(">I")
 _STRUCT_U16_BE = struct.Struct(">H")
 
 
+# Maximum savestate file size to read (256MB - generous limit for any Amiga config)
+_MAX_SAVESTATE_SIZE = 256 * 1024 * 1024
+
+
 def _read_u32_be(data: bytes, offset: int) -> int:
     """Read a big-endian 32-bit unsigned integer."""
     return _STRUCT_U32_BE.unpack_from(data, offset)[0]
@@ -95,6 +99,12 @@ def inspect_savestate(path: Path) -> dict[str, Any]:
     """
     if not path.exists():
         raise FileNotFoundError(f"Savestate file not found: {path}")
+
+    file_size = path.stat().st_size
+    if file_size > _MAX_SAVESTATE_SIZE:
+        raise ValueError(
+            f"Savestate file too large ({file_size} bytes, max {_MAX_SAVESTATE_SIZE})"
+        )
 
     data = path.read_bytes()
     header_meta, offset = _parse_header(data)
@@ -289,6 +299,12 @@ def list_savestate_chunks(path: Path) -> list[dict[str, Any]]:
     """
     if not path.exists():
         raise FileNotFoundError(f"Savestate file not found: {path}")
+
+    file_size = path.stat().st_size
+    if file_size > _MAX_SAVESTATE_SIZE:
+        raise ValueError(
+            f"Savestate file too large ({file_size} bytes, max {_MAX_SAVESTATE_SIZE})"
+        )
 
     data = path.read_bytes()
     _, offset = _parse_header(data)

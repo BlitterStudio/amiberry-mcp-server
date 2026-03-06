@@ -273,6 +273,36 @@ class TestGetSavestateSummary:
         assert "Level 5 - Boss fight" in summary
 
 
+class TestSavestateFileSizeCap:
+    """Tests for Fix #9: Savestate file size cap."""
+
+    def test_inspect_rejects_oversized_file(self, tmp_path):
+        """inspect_savestate should reject files larger than 256MB."""
+        from amiberry_mcp.savestate import _MAX_SAVESTATE_SIZE
+
+        path = tmp_path / "huge.uss"
+        with open(path, "wb") as f:
+            f.write(ASF_MAGIC)
+            f.seek(_MAX_SAVESTATE_SIZE + 1)
+            f.write(b"\x00")
+
+        with pytest.raises(ValueError, match="too large"):
+            inspect_savestate(path)
+
+    def test_list_chunks_rejects_oversized_file(self, tmp_path):
+        """list_savestate_chunks should reject files larger than 256MB."""
+        from amiberry_mcp.savestate import _MAX_SAVESTATE_SIZE
+
+        path = tmp_path / "huge.uss"
+        with open(path, "wb") as f:
+            f.write(ASF_MAGIC)
+            f.seek(_MAX_SAVESTATE_SIZE + 1)
+            f.write(b"\x00")
+
+        with pytest.raises(ValueError, match="too large"):
+            list_savestate_chunks(path)
+
+
 class TestListSavestateChunks:
     """Tests for the list_savestate_chunks function."""
 

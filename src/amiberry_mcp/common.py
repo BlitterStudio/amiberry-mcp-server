@@ -51,12 +51,14 @@ def classify_image_type(suffix: str) -> str:
     suffix_lower = suffix.lower()
     if suffix_lower in FLOPPY_EXTENSIONS:
         return "floppy"
+    elif suffix_lower in HARDFILE_EXTENSIONS:
+        return "hardfile"
     elif suffix_lower in LHA_EXTENSIONS:
         return "lha"
     elif suffix_lower in CD_EXTENSIONS:
         return "cd"
     else:
-        return "hardfile"
+        return "unknown"
 
 
 def get_extensions_for_type(image_type: str) -> list[str]:
@@ -161,11 +163,17 @@ def terminate_process(proc: subprocess.Popen, timeout: float = 5.0) -> None:
     Sends SIGTERM, waits up to `timeout` seconds, then sends SIGKILL
     if the process is still alive.
     """
-    proc.terminate()
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        return  # Process already exited
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            return  # Process exited between terminate and kill
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:

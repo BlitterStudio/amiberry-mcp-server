@@ -174,7 +174,12 @@ class AmiberryIPCClient:
             )
 
         # Build message: COMMAND\tARG1\tARG2...\n
-        parts = [command.upper()] + list(args)
+        # Sanitize arguments to prevent protocol injection via tab/newline
+        sanitized_args = [
+            str(a).replace("\t", "").replace("\n", "").replace("\r", "")
+            for a in args
+        ]
+        parts = [command.upper()] + sanitized_args
         message = "\t".join(parts) + "\n"
 
         writer = None
@@ -188,11 +193,16 @@ class AmiberryIPCClient:
             writer.write(message.encode("utf-8"))
             await writer.drain()
 
-            # Read response
-            response = await asyncio.wait_for(reader.readline(), timeout=timeout)
+            # Read response (limit to 1MB to prevent memory exhaustion)
+            _MAX_RESPONSE_SIZE = 1024 * 1024
+            response = await asyncio.wait_for(
+                reader.readline(), timeout=timeout
+            )
+            if len(response) > _MAX_RESPONSE_SIZE:
+                response = response[:_MAX_RESPONSE_SIZE]
 
             # Parse response
-            response_str = response.decode("utf-8").strip()
+            response_str = response.decode("utf-8").rstrip("\n\r")
             if not response_str:
                 return False, ["Empty response"]
 

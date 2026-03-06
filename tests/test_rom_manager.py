@@ -338,6 +338,59 @@ class TestKnownRomsDatabase:
         assert "3.1" in versions
 
 
+class TestRomFileSizeCap:
+    """Tests for Fix #9: ROM file size cap."""
+
+    def test_crc32_rejects_oversized_file(self, tmp_path):
+        """CRC32 calculation should reject files larger than 16MB."""
+        from amiberry_mcp.rom_manager import _MAX_ROM_SIZE
+
+        test_file = tmp_path / "huge.rom"
+        with open(test_file, "wb") as f:
+            f.seek(_MAX_ROM_SIZE + 1)
+            f.write(b"\x00")
+
+        with pytest.raises(ValueError, match="too large"):
+            calculate_rom_crc32(test_file)
+
+    def test_md5_rejects_oversized_file(self, tmp_path):
+        """MD5 calculation should reject files larger than 16MB."""
+        from amiberry_mcp.rom_manager import _MAX_ROM_SIZE
+
+        test_file = tmp_path / "huge.rom"
+        with open(test_file, "wb") as f:
+            f.seek(_MAX_ROM_SIZE + 1)
+            f.write(b"\x00")
+
+        with pytest.raises(ValueError, match="too large"):
+            calculate_rom_md5(test_file)
+
+    def test_identify_rejects_oversized_file(self, tmp_path):
+        """ROM identification should reject files larger than 16MB."""
+        from amiberry_mcp.rom_manager import _MAX_ROM_SIZE
+
+        test_file = tmp_path / "huge.rom"
+        with open(test_file, "wb") as f:
+            f.seek(_MAX_ROM_SIZE + 1)
+            f.write(b"\x00")
+
+        with pytest.raises(ValueError, match="too large"):
+            identify_rom(test_file)
+
+    def test_normal_rom_accepted(self, tmp_path):
+        """Normal-sized ROM files should work fine."""
+        test_file = tmp_path / "normal.rom"
+        test_file.write_bytes(b"A" * 524288)  # 512KB - typical Kickstart
+
+        crc = calculate_rom_crc32(test_file)
+        md5 = calculate_rom_md5(test_file)
+        info = identify_rom(test_file)
+
+        assert len(crc) == 8
+        assert len(md5) == 32
+        assert info["size"] == 524288
+
+
 class TestRomExtensions:
     """Tests for ROM file extensions."""
 

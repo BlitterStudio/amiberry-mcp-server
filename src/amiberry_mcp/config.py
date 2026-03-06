@@ -28,8 +28,8 @@ elif IS_LINUX:
     EMULATOR_BINARY = "amiberry"  # Assumes it's in PATH
     AMIBERRY_HOME = Path.home() / "Amiberry"
 
-    # XDG_CONFIG_HOME defaults to ~/.config if not set
-    XDG_CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    # XDG_CONFIG_HOME defaults to ~/.config if not set or empty
+    XDG_CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
 
     CONFIG_DIR = AMIBERRY_HOME / "conf"  # User configs
     SYSTEM_CONFIG_DIR = XDG_CONFIG_HOME / "amiberry"  # System configs
@@ -68,6 +68,8 @@ def get_platform_info() -> dict:
         "config_dir": str(CONFIG_DIR),
         "savestate_dir": str(SAVESTATE_DIR),
         "screenshot_dir": str(SCREENSHOT_DIR),
+        "log_dir": str(LOG_DIR),
+        "rom_dir": str(ROM_DIR),
         "disk_image_dirs": [str(d) for d in DISK_IMAGE_DIRS],
     }
 
@@ -81,7 +83,11 @@ _dirs_ensured = False
 
 
 def ensure_directories_exist() -> None:
-    """Create necessary directories if they don't exist."""
+    """Create necessary directories if they don't exist.
+
+    Logs warnings for directories that cannot be created (e.g. permission denied)
+    but does not raise, so the server can still start.
+    """
     global _dirs_ensured
     if _dirs_ensured:
         return
@@ -93,5 +99,9 @@ def ensure_directories_exist() -> None:
         ROM_DIR,
     ] + DISK_IMAGE_DIRS
     for directory in directories:
-        directory.mkdir(parents=True, exist_ok=True)
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # Permission denied or read-only filesystem — not fatal
+            pass
     _dirs_ensured = True

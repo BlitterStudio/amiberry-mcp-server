@@ -12,6 +12,7 @@ This server exposes REST API endpoints for automation tools including:
 import asyncio
 import base64
 import datetime
+import os
 import platform
 import re
 import signal
@@ -27,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .common import (
+    _is_path_within,
     build_launch_command,
     detect_amiberry_version,
     format_log_timestamp,
@@ -137,11 +139,16 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Enable CORS for local development
+# Enable CORS for local clients (Siri Shortcuts, Home Assistant, etc.)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=[
+        "http://localhost",
+        "http://localhost:*",
+        "http://127.0.0.1",
+        "http://127.0.0.1:*",
+    ],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -263,7 +270,7 @@ def _validate_range(value: int, min_val: int, max_val: int, name: str) -> None:
 
 
 # Platform process name constant
-_PGREP_ARGS = ["-f", "Amiberry"] if IS_MACOS else ["amiberry"]
+_PGREP_ARGS = ["-f", "Amiberry.app/Contents/MacOS/Amiberry"] if IS_MACOS else ["amiberry"]
 
 # Mode map constants
 _AUTOFIRE_MODES = {0: "off", 1: "normal", 2: "toggle", 3: "always", 4: "toggle_noaf"}
@@ -508,7 +515,12 @@ def _is_amiberry_running() -> bool:
 
 
 def _stop_amiberry() -> bool:
-    """Stop all running Amiberry instances."""
+    """Stop the running Amiberry instance, preferring tracked process."""
+    # First try the tracked process if available
+    if _state.process is not None and _state.process.poll() is None:
+        terminate_process(_state.process)
+        return True
+    # Fall back to pkill for externally started instances
     try:
         subprocess.run(["pkill"] + _PGREP_ARGS, check=False)
         return True
@@ -1020,18 +1032,10 @@ async def launch_cd(request: LaunchCDRequest):
             search_dirs.append(AMIBERRY_HOME / "CDs")
 
         def _scan_cd_files() -> list[Path]:
-            cd_results = []
-            for directory in search_dirs:
-                if directory.exists():
-                    for ext in CD_EXTENSIONS:
-                        for pattern in [f"**/*{ext}", f"**/*{ext.upper()}"]:
-                            for cd in directory.glob(pattern):
-                                if search_lower in cd.name.lower():
-                                    cd_results.append(cd)
-            return cd_results
+            images = scan_disk_images(search_dirs, "cd", request.search_term)
+            return [Path(img["path"]) for img in images]
 
         cd_files = await asyncio.to_thread(_scan_cd_files)
-        cd_files = list(set(cd_files))
 
         if not cd_files:
             raise HTTPException(
@@ -1191,13 +1195,13 @@ async def get_log_content(log_name: str, tail_lines: int | None = None):
 @app.get("/savestates/{savestate_name}/inspect")
 async def inspect_savestate_endpoint(savestate_name: str):
     """Inspect a savestate file and extract metadata."""
-    # Handle both full path and just filename
-    if "/" in savestate_name or "\\" in savestate_name:
-        path = Path(savestate_name)
-    else:
-        if not savestate_name.endswith(".uss"):
-            savestate_name += ".uss"
-        path = SAVESTATE_DIR / savestate_name
+    if not savestate_name.endswith(".uss"):
+        savestate_name += ".uss"
+    path = (SAVESTATE_DIR / savestate_name).resolve()
+
+    # Prevent path traversal
+    if not _is_path_within(path, SAVESTATE_DIR):
+        raise HTTPException(status_code=400, detail="Invalid savestate name")
 
     if not path.exists():
         raise HTTPException(
@@ -1224,10 +1228,15 @@ async def inspect_savestate_endpoint(savestate_name: str):
 @app.get("/roms", response_model=list[RomInfo])
 async def list_roms(directory: str | None = None):
     """List and identify ROM files in the ROMs directory."""
+    rom_dir = ROM_DIR
     if directory:
-        rom_dir = Path(directory)
-    else:
-        rom_dir = ROM_DIR
+        candidate = Path(directory).resolve()
+        if not _is_path_within(candidate, AMIBERRY_HOME):
+            raise HTTPException(
+                status_code=400,
+                detail="ROM directory must be within the Amiberry home directory",
+            )
+        rom_dir = candidate
 
     if not rom_dir.exists():
         return []
@@ -1244,7 +1253,14 @@ async def list_roms(directory: str | None = None):
 @app.get("/roms/identify")
 async def identify_rom_endpoint(rom_path: str):
     """Identify a specific ROM file by its checksum."""
-    path = Path(rom_path)
+    path = Path(rom_path).resolve()
+
+    # Prevent path traversal — ROM must be within Amiberry home
+    if not _is_path_within(path, AMIBERRY_HOME):
+        raise HTTPException(
+            status_code=400,
+            detail="ROM path must be within the Amiberry home directory",
+        )
 
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"ROM file not found: {rom_path}")
@@ -3667,13 +3683,16 @@ def main():
     """Main entry point for the HTTP API server."""
     ensure_directories_exist()
 
-    print("Starting Amiberry HTTP API Server on http://localhost:8080")
+    host = os.environ.get("AMIBERRY_HTTP_HOST", "127.0.0.1")
+    port = int(os.environ.get("AMIBERRY_HTTP_PORT", "8080"))
+
+    print(f"Starting Amiberry HTTP API Server on http://{host}:{port}")
     print(f"Platform: {platform.system()}")
     print(f"Config directory: {CONFIG_DIR}")
-    print("\nAPI Documentation: http://localhost:8080/docs")
+    print(f"\nAPI Documentation: http://{host}:{port}/docs")
     print("Integration Guide: docs/HTTP_API_GUIDE.md")
 
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":
