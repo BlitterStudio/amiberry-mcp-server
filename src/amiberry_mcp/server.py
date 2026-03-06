@@ -4118,10 +4118,20 @@ async def _handle_runtime_screenshot_view(arguments: Any) -> list:
             screenshot_path = Path(filename)
             if screenshot_path.exists():
                 image_data = await asyncio.to_thread(screenshot_path.read_bytes)
+
+                # Detect format from magic bytes
+                # Claude API only accepts: image/jpeg, image/png, image/gif, image/webp
+                if image_data[:2] in (b'\xff\xd8',):
+                    mime_type = "image/jpeg"
+                elif image_data[:4] == b'GIF8':
+                    mime_type = "image/gif"
+                elif image_data[:4] == b'RIFF' and image_data[8:12] == b'WEBP':
+                    mime_type = "image/webp"
+                else:
+                    # Amiberry saves PNG format - default to image/png
+                    mime_type = "image/png"
+
                 b64_data = base64.b64encode(image_data).decode("utf-8")
-                mime_type = (
-                    "image/png" if filename.lower().endswith(".png") else "image/bmp"
-                )
 
                 if _HAS_IMAGE_CONTENT:
                     return [
