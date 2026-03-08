@@ -115,7 +115,8 @@ The API server provides these endpoints:
 - `GET /runtime/configs` - List available config files
 
 **Input Control**
-- `POST /runtime/key` - Send keyboard input
+- `POST /runtime/key` - Send keyboard input (keycode + state)
+- `POST /runtime/type` - Type a string of text character by character
 - `POST /runtime/mouse` - Send mouse input
 - `POST /runtime/mouse-speed` - Set mouse sensitivity
 - `GET /runtime/mouse-speed` - Get current mouse sensitivity
@@ -959,6 +960,11 @@ curl -X POST http://localhost:8080/runtime/mouse-speed \
 curl -X POST http://localhost:8080/runtime/key \
   -H "Content-Type: application/json" \
   -d '{"keycode": 69, "state": 1}'
+
+# Type text into emulation (types 'dir' then presses Return)
+curl -X POST http://localhost:8080/runtime/type \
+  -H "Content-Type: application/json" \
+  -d '{"text": "dir\n", "delay_ms": 50}'
 
 # Quick save/load (slots 0-9)
 curl -X POST http://localhost:8080/runtime/quicksave \

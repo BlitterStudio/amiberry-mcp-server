@@ -345,6 +345,10 @@ class RuntimeSendKeyRequest(BaseModel):
     state: int
 
 
+class RuntimeTypeTextRequest(BaseModel):
+    text: str
+    delay_ms: int = 50
+
 # Round 2 request models
 class RuntimeQuickSaveRequest(BaseModel):
     slot: int = 0
@@ -1809,6 +1813,29 @@ async def runtime_send_key(request: RuntimeSendKeyRequest):
         )
 
 
+@app.post("/runtime/type")
+async def runtime_type_text(request: RuntimeTypeTextRequest):
+    """
+    Type a string of text into the emulation character by character.
+    Handles uppercase (via Shift) and common symbols.
+    Requires Amiberry to be running with IPC enabled.
+    """
+    if not request.text:
+        raise HTTPException(status_code=400, detail="Text must not be empty")
+    if not 10 <= request.delay_ms <= 1000:
+        raise HTTPException(
+            status_code=400, detail="delay_ms must be between 10 and 1000"
+        )
+
+    delay = request.delay_ms / 1000.0
+    async with _ipc_context() as client:
+        typed, skipped = await client.type_text(request.text, delay=delay)
+        return _ipc_success_or_raise(
+            typed > 0,
+            f"Typed {typed} character(s)",
+            "Failed to type text (no characters typed)",
+            data={"typed": typed, "skipped": skipped},
+        )
 @app.post("/runtime/mouse")
 async def runtime_send_mouse(request: RuntimeSendMouseRequest):
     """
