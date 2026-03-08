@@ -392,7 +392,7 @@ Try asking Claude:
 | Tool | Description |
 |------|-------------|
 | `send_key` | Send keyboard input by key name (e.g. 'space', 'return', 'f1') or scancode, with press/release/press-and-release |
-| `type_text` | Type a string of text into the emulation (handles shift for uppercase/symbols) |
+| `send_text` | Send a string of text into the emulation (handles shift for uppercase/symbols) |
 | `send_mouse` | Send mouse movement and buttons |
 | `set_mouse_speed` | Set mouse sensitivity (10-200) |
 #### Utility

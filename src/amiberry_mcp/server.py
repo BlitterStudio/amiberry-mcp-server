@@ -913,8 +913,8 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="runtime_type_text",
-            description="Type a string of text into the running emulation by sending key events for each character. Handles uppercase (via Shift), symbols, and common whitespace (space, newline as Return, tab). Use this for entering commands like 'dir' or filenames. For special keys like F1 or Return, use runtime_send_key instead. Requires Amiberry to be running with IPC enabled.",
+            name="runtime_send_text",
+            description="Send a string of text into the running emulation by sending key events for each character. Handles uppercase (via Shift), symbols, and common whitespace (space, newline as Return, tab). Use this for entering commands like 'dir' or filenames. For special keys like F1 or Return, use runtime_send_key instead. Requires Amiberry to be running with IPC enabled.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -3044,14 +3044,14 @@ async def _handle_runtime_send_key(arguments: Any) -> list:
     return await _ipc_call(_cb)
 
 
-async def _handle_runtime_type_text(arguments: Any) -> list:
-    """Handle runtime_type_text tool."""
+async def _handle_runtime_send_text(arguments: Any) -> list:
+    """Handle runtime_send_text tool."""
     text = arguments["text"]
     delay_ms = arguments.get("delay_ms", 50)
     delay = delay_ms / 1000.0
 
     async def _cb(client):
-        typed, skipped = await client.type_text(text, delay=delay)
+        typed, skipped = await client.send_text(text, delay=delay)
         preview = text[:40] + ("..." if len(text) > 40 else "")
         preview = preview.replace("\n", "\\n").replace("\t", "\\t")
         msg = f"Typed {typed} character(s) from '{preview}'."
@@ -4629,7 +4629,7 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "runtime_send_mouse": _handle_runtime_send_mouse,
     "runtime_set_mouse_speed": _handle_runtime_set_mouse_speed,
     "runtime_send_key": _handle_runtime_send_key,
-    "runtime_type_text": _handle_runtime_type_text,
+    "runtime_send_text": _handle_runtime_send_text,
     "runtime_ping": _handle_runtime_ping,
     "set_active_instance": _handle_set_active_instance,
     "get_active_instance": _handle_get_active_instance,
