@@ -23,13 +23,15 @@ class TestEnsureDirectoriesExist:
 
         new_dir = tmp_path / "test_configs"
 
-        with patch.object(cfg, "_dirs_ensured", False), \
-             patch.object(cfg, "CONFIG_DIR", new_dir), \
-             patch.object(cfg, "SAVESTATE_DIR", tmp_path / "saves"), \
-             patch.object(cfg, "SCREENSHOT_DIR", tmp_path / "screenshots"), \
-             patch.object(cfg, "LOG_DIR", tmp_path / "logs"), \
-             patch.object(cfg, "ROM_DIR", tmp_path / "roms"), \
-             patch.object(cfg, "DISK_IMAGE_DIRS", [tmp_path / "floppies"]):
+        with (
+            patch.object(cfg, "_dirs_ensured", False),
+            patch.object(cfg, "CONFIG_DIR", new_dir),
+            patch.object(cfg, "SAVESTATE_DIR", tmp_path / "saves"),
+            patch.object(cfg, "SCREENSHOT_DIR", tmp_path / "screenshots"),
+            patch.object(cfg, "LOG_DIR", tmp_path / "logs"),
+            patch.object(cfg, "ROM_DIR", tmp_path / "roms"),
+            patch.object(cfg, "DISK_IMAGE_DIRS", [tmp_path / "floppies"]),
+        ):
             cfg.ensure_directories_exist()
 
         assert new_dir.exists()
@@ -38,13 +40,15 @@ class TestEnsureDirectoriesExist:
         """Permission errors should be silently ignored."""
         from amiberry_mcp import config as cfg
 
-        with patch.object(cfg, "_dirs_ensured", False), \
-             patch.object(cfg, "CONFIG_DIR", Path("/root/no_permission")), \
-             patch.object(cfg, "SAVESTATE_DIR", tmp_path / "saves"), \
-             patch.object(cfg, "SCREENSHOT_DIR", tmp_path / "screenshots"), \
-             patch.object(cfg, "LOG_DIR", tmp_path / "logs"), \
-             patch.object(cfg, "ROM_DIR", tmp_path / "roms"), \
-             patch.object(cfg, "DISK_IMAGE_DIRS", []):
+        with (
+            patch.object(cfg, "_dirs_ensured", False),
+            patch.object(cfg, "CONFIG_DIR", Path("/root/no_permission")),
+            patch.object(cfg, "SAVESTATE_DIR", tmp_path / "saves"),
+            patch.object(cfg, "SCREENSHOT_DIR", tmp_path / "screenshots"),
+            patch.object(cfg, "LOG_DIR", tmp_path / "logs"),
+            patch.object(cfg, "ROM_DIR", tmp_path / "roms"),
+            patch.object(cfg, "DISK_IMAGE_DIRS", []),
+        ):
             # Should not raise even if one dir fails
             cfg.ensure_directories_exist()
 
@@ -52,13 +56,15 @@ class TestEnsureDirectoriesExist:
         """Calling multiple times should be safe."""
         from amiberry_mcp import config as cfg
 
-        with patch.object(cfg, "_dirs_ensured", False), \
-             patch.object(cfg, "CONFIG_DIR", tmp_path / "configs"), \
-             patch.object(cfg, "SAVESTATE_DIR", tmp_path / "saves"), \
-             patch.object(cfg, "SCREENSHOT_DIR", tmp_path / "screenshots"), \
-             patch.object(cfg, "LOG_DIR", tmp_path / "logs"), \
-             patch.object(cfg, "ROM_DIR", tmp_path / "roms"), \
-             patch.object(cfg, "DISK_IMAGE_DIRS", []):
+        with (
+            patch.object(cfg, "_dirs_ensured", False),
+            patch.object(cfg, "CONFIG_DIR", tmp_path / "configs"),
+            patch.object(cfg, "SAVESTATE_DIR", tmp_path / "saves"),
+            patch.object(cfg, "SCREENSHOT_DIR", tmp_path / "screenshots"),
+            patch.object(cfg, "LOG_DIR", tmp_path / "logs"),
+            patch.object(cfg, "ROM_DIR", tmp_path / "roms"),
+            patch.object(cfg, "DISK_IMAGE_DIRS", []),
+        ):
             cfg.ensure_directories_exist()
             # _dirs_ensured is now True; second call should be a no-op
             cfg.ensure_directories_exist()
@@ -69,7 +75,6 @@ class TestXDGConfigHome:
 
     def test_empty_string_falls_back_to_default(self):
         """Empty XDG_CONFIG_HOME should fall back to ~/.config."""
-        import importlib
         import amiberry_mcp.config as cfg
 
         if not cfg.IS_LINUX:
@@ -78,17 +83,23 @@ class TestXDGConfigHome:
         with patch.dict("os.environ", {"XDG_CONFIG_HOME": ""}):
             # Re-evaluate the expression
             import os
-            result = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+
+            result = Path(
+                os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
+            )
 
         assert result == Path.home() / ".config"
 
     def test_set_value_is_used(self):
         """Non-empty XDG_CONFIG_HOME should be used as-is."""
         import os
+
         result = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
 
         with patch.dict("os.environ", {"XDG_CONFIG_HOME": "/custom/config"}):
-            result = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+            result = Path(
+                os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
+            )
 
         assert result == Path("/custom/config")
 
@@ -100,7 +111,9 @@ class TestXDGConfigHome:
         env.pop("XDG_CONFIG_HOME", None)
 
         with patch.dict("os.environ", env, clear=True):
-            result = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+            result = Path(
+                os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
+            )
 
         assert result == Path.home() / ".config"
 
@@ -133,9 +146,15 @@ class TestGetPlatformInfo:
         info = get_platform_info()
 
         required = [
-            "platform", "emulator_binary", "amiberry_home",
-            "config_dir", "savestate_dir", "screenshot_dir",
-            "log_dir", "rom_dir", "disk_image_dirs",
+            "platform",
+            "emulator_binary",
+            "amiberry_home",
+            "config_dir",
+            "savestate_dir",
+            "screenshot_dir",
+            "log_dir",
+            "rom_dir",
+            "disk_image_dirs",
         ]
         for field in required:
             assert field in info, f"Missing field: {field}"

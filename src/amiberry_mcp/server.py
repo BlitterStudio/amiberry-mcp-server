@@ -11,7 +11,7 @@ import json
 import re
 import signal
 import subprocess
-from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -20,10 +20,11 @@ from mcp.server import Server
 from mcp.types import TextContent, Tool
 
 try:
-    from mcp.types import ImageContent
+    from mcp.types import ImageContent as _ImageContent
 
     _HAS_IMAGE_CONTENT = True
 except ImportError:
+    _ImageContent = None
     _HAS_IMAGE_CONTENT = False
 
 from .common import (
@@ -31,7 +32,6 @@ from .common import (
     detect_amiberry_version,
     format_log_timestamp,
     format_signal_info,
-    launch_process,
     normalize_log_path,
     scan_disk_images,
     terminate_process,
@@ -41,7 +41,6 @@ from .common import (
 )
 from .config import (
     AMIBERRY_HOME,
-    CD_EXTENSIONS,
     CONFIG_DIR,
     DISK_IMAGE_DIRS,
     IS_LINUX,
@@ -55,7 +54,6 @@ from .config import (
     get_platform_info,
 )
 from .ipc_client import (
-    AmiberryIPCClient,
     IPCConnectionError,
     resolve_key_name,
 )
@@ -68,6 +66,7 @@ from .savestate import (
     get_savestate_summary,
     inspect_savestate,
 )
+from .shared_state import get_ipc_client, get_state, launch_and_store
 from .uae_config import (
     create_config_from_template,
     get_config_summary,
@@ -75,65 +74,14 @@ from .uae_config import (
     parse_uae_config,
 )
 
-
-@dataclass
-class _ProcessState:
-    process: subprocess.Popen | None = None
-    launch_cmd: list[str] | None = None
-    log_path: Path | None = None
-    log_file_handle: Any | None = None
-    log_read_positions: dict[str, int] = field(default_factory=dict)
-    active_instance: int | None = None
-    ipc_client_cache: tuple[int | None, AmiberryIPCClient] | None = None
-
-    def close_log_handle(self) -> None:
-        """Close the log file handle if open."""
-        if self.log_file_handle is not None:
-            try:
-                self.log_file_handle.close()
-            except OSError:
-                pass
-            self.log_file_handle = None
-
-
-_state = _ProcessState()
+_state = get_state()
 
 app = Server("amiberry-emulator")
-
-
-def _get_ipc_client() -> AmiberryIPCClient:
-    """Get an IPC client for the active instance, reusing cached clients."""
-    if (
-        _state.ipc_client_cache is not None
-        and _state.ipc_client_cache[0] == _state.active_instance
-    ):
-        return _state.ipc_client_cache[1]
-    client = AmiberryIPCClient(prefer_dbus=False, instance=_state.active_instance)
-    _state.ipc_client_cache = (_state.active_instance, client)
-    return client
 
 
 def _text_result(msg: str) -> list[TextContent]:
     """Wrap a string in the MCP TextContent return format."""
     return [TextContent(type="text", text=msg)]
-
-
-def _launch_and_store(
-    cmd: list[str],
-    log_path: Path | None = None,
-) -> subprocess.Popen:
-    """Launch Amiberry, store state, and return the process.
-
-    Centralizes the close-log → launch → store-state pattern used by
-    all launch handlers.
-    """
-    _state.close_log_handle()
-    proc, log_handle = launch_process(cmd, log_path=log_path)
-    _state.process = proc
-    _state.launch_cmd = cmd
-    _state.log_path = log_path
-    _state.log_file_handle = log_handle
-    return proc
 
 
 async def _ipc_bool_call(
@@ -163,7 +111,7 @@ async def _ipc_call(
     The callback receives the IPC client and should return a string result.
     """
     try:
-        client = _get_ipc_client()
+        client = get_ipc_client()
         result = await callback(client)
         return _text_result(result)
     except IPCConnectionError as e:
@@ -172,6 +120,275 @@ async def _ipc_call(
         return _text_result(f"Invalid argument: {str(e)}")
     except Exception as e:
         return _text_result(f"Error: {str(e)}")
+
+
+_NO_ARG_BOOL_HANDLERS: dict[str, tuple[str, str, str]] = {
+    "pause_emulation": ("pause", "Emulation paused.", "Failed to pause emulation."),
+    "resume_emulation": ("resume", "Emulation resumed.", "Failed to resume emulation."),
+    "runtime_eject_cd": ("eject_cd", "CD ejected.", "Failed to eject CD."),
+    "runtime_mute": ("mute", "Audio muted.", "Failed to mute audio."),
+    "runtime_unmute": ("unmute", "Audio unmuted.", "Failed to unmute audio."),
+    "runtime_toggle_fullscreen": (
+        "toggle_fullscreen",
+        "Fullscreen mode toggled.",
+        "Failed to toggle fullscreen.",
+    ),
+    "runtime_toggle_mouse_grab": (
+        "toggle_mouse_grab",
+        "Mouse grab toggled.",
+        "Failed to toggle mouse grab.",
+    ),
+    "runtime_ping": (
+        "ping",
+        "PONG - Amiberry IPC connection is working.",
+        "Ping failed - no response from Amiberry.",
+    ),
+    "runtime_eject_whdload": (
+        "eject_whdload",
+        "WHDLoad game ejected.",
+        "Failed to eject WHDLoad game.",
+    ),
+    "runtime_debug_activate": (
+        "debug_activate",
+        "Debugger activated.",
+        "Failed to activate debugger. Amiberry may not be built with debugger support.",
+    ),
+    "runtime_debug_deactivate": (
+        "debug_deactivate",
+        "Debugger deactivated, emulation resumed.",
+        "Failed to deactivate debugger.",
+    ),
+    "runtime_debug_continue": (
+        "debug_continue",
+        "Execution continued.",
+        "Failed to continue execution.",
+    ),
+    "runtime_debug_step_over": (
+        "debug_step_over",
+        "Stepped over subroutine.",
+        "Failed to step over. Is the debugger active?",
+    ),
+}
+
+_ARG_BOOL_HANDLERS: dict[str, tuple[str, tuple[str, ...], dict[str, Any], str, str]] = {
+    "runtime_screenshot": (
+        "screenshot",
+        ("filename",),
+        {},
+        "Screenshot saved to: {filename}",
+        "Failed to take screenshot.",
+    ),
+    "runtime_save_state": (
+        "save_state",
+        ("state_file", "config_file"),
+        {},
+        "State saved:\n  State: {state_file}\n  Config: {config_file}",
+        "Failed to save state.",
+    ),
+    "runtime_load_state": (
+        "load_state",
+        ("state_file",),
+        {},
+        "Loading state: {state_file}",
+        "Failed to load state.",
+    ),
+    "runtime_insert_floppy": (
+        "insert_floppy",
+        ("drive", "image_path"),
+        {},
+        "Inserted {image_name} into DF{drive}:",
+        "Failed to insert disk into DF{drive}:.",
+    ),
+    "runtime_insert_cd": (
+        "insert_cd",
+        ("image_path",),
+        {},
+        "Inserted CD: {image_name}",
+        "Failed to insert CD.",
+    ),
+    "runtime_set_config": (
+        "set_config",
+        ("option", "value"),
+        {},
+        "Set {option} = {value}",
+        "Failed to set {option}. Unknown option or invalid value.",
+    ),
+    "runtime_eject_floppy": (
+        "eject_floppy",
+        ("drive",),
+        {},
+        "Ejected disk from DF{drive}:",
+        "Failed to eject disk from DF{drive}:.",
+    ),
+    "runtime_set_volume": (
+        "set_volume",
+        ("volume",),
+        {},
+        "Volume set to {volume}%",
+        "Failed to set volume.",
+    ),
+    "runtime_frame_advance": (
+        "frame_advance",
+        ("frames",),
+        {"frames": 1},
+        "Advanced {frames} frame(s).",
+        "Failed to advance frames. Is emulation paused?",
+    ),
+    "runtime_send_mouse": (
+        "send_mouse",
+        ("dx", "dy", "buttons"),
+        {"buttons": 0},
+        "Mouse input sent: dx={dx}, dy={dy}, buttons={buttons}",
+        "Failed to send mouse input.",
+    ),
+    "runtime_set_mouse_speed": (
+        "set_mouse_speed",
+        ("speed",),
+        {},
+        "Mouse speed set to {speed}.",
+        "Failed to set mouse speed.",
+    ),
+    "runtime_quicksave": (
+        "quicksave",
+        ("slot",),
+        {"slot": 0},
+        "Quick saved to slot {slot}.",
+        "Failed to quick save to slot {slot}.",
+    ),
+    "runtime_quickload": (
+        "quickload",
+        ("slot",),
+        {"slot": 0},
+        "Quick loading from slot {slot}.",
+        "Failed to quick load from slot {slot}.",
+    ),
+    "runtime_set_joyport_mode": (
+        "set_joyport_mode",
+        ("port", "mode"),
+        {},
+        "Port {port} mode set to {mode}.",
+        "Failed to set port {port} mode.",
+    ),
+    "runtime_set_autofire": (
+        "set_autofire",
+        ("port", "mode"),
+        {},
+        "Port {port} autofire set to {mode}.",
+        "Failed to set port {port} autofire.",
+    ),
+    "runtime_set_cpu_speed": (
+        "set_cpu_speed",
+        ("speed",),
+        {},
+        "CPU speed set to {speed}.",
+        "Failed to set CPU speed.",
+    ),
+    "runtime_set_autocrop": (
+        "set_autocrop",
+        ("enabled",),
+        {},
+        "Autocrop {enabled_state}.",
+        "Failed to set autocrop.",
+    ),
+    "runtime_insert_whdload": (
+        "insert_whdload",
+        ("path",),
+        {},
+        "WHDLoad game loaded: {path}\nNote: A reset may be required for the game to start.",
+        "Failed to load WHDLoad game.",
+    ),
+    "runtime_debug_step": (
+        "debug_step",
+        ("count",),
+        {"count": 1},
+        "Stepped {count} instruction(s).",
+        "Failed to step. Debugger may not be active.",
+    ),
+    "runtime_set_breakpoint": (
+        "set_breakpoint",
+        ("address",),
+        {},
+        "Breakpoint set at {address}.",
+        "Failed to set breakpoint. Maximum 20 breakpoints allowed.",
+    ),
+    "runtime_load_config": (
+        "load_config",
+        ("config_path",),
+        {},
+        "Configuration loaded: {config_path}",
+        "Failed to load configuration: {config_path}",
+    ),
+}
+
+_SIMPLE_QUERY_HANDLERS: dict[str, tuple[str, str, str]] = {
+    "runtime_get_volume": (
+        "get_volume",
+        "Current volume: {value}%",
+        "Failed to get volume.",
+    ),
+    "runtime_get_mouse_speed": (
+        "get_mouse_speed",
+        "Mouse speed: {value}",
+        "Failed to get mouse speed.",
+    ),
+    "runtime_get_autocrop": (
+        "get_autocrop",
+        "Autocrop: {enabled_state}",
+        "Failed to get autocrop status.",
+    ),
+}
+
+
+async def _handle_no_arg_bool(tool_name: str, arguments: Any) -> list:
+    method, success, failure = _NO_ARG_BOOL_HANDLERS[tool_name]
+    return await _ipc_bool_call(method, success_msg=success, failure_msg=failure)
+
+
+async def _handle_arg_bool(tool_name: str, arguments: Any) -> list:
+    method, arg_names, defaults, success_tmpl, failure_tmpl = _ARG_BOOL_HANDLERS[
+        tool_name
+    ]
+    args = arguments or {}
+    values: dict[str, Any] = {}
+    for key in arg_names:
+        if key in defaults:
+            values[key] = args.get(key, defaults[key])
+        else:
+            values[key] = args[key]
+
+    format_values = dict(values)
+    if "image_path" in format_values:
+        format_values["image_name"] = Path(str(format_values["image_path"])).name
+    if "enabled" in format_values:
+        format_values["enabled_state"] = (
+            "enabled" if format_values["enabled"] else "disabled"
+        )
+
+    success = success_tmpl.format(**format_values)
+    failure = failure_tmpl.format(**format_values)
+    ipc_args = [values[key] for key in arg_names]
+    return await _ipc_bool_call(
+        method,
+        *ipc_args,
+        success_msg=success,
+        failure_msg=failure,
+    )
+
+
+async def _handle_simple_query(tool_name: str, arguments: Any) -> list:
+    method_name, success_tmpl, failure_msg = _SIMPLE_QUERY_HANDLERS[tool_name]
+
+    async def _cb(client):
+        method = getattr(client, method_name)
+        value = await method()
+        if value is None:
+            return failure_msg
+
+        if method_name == "get_autocrop":
+            return success_tmpl.format(enabled_state="enabled" if value else "disabled")
+        return success_tmpl.format(value=value)
+
+    return await _ipc_call(_cb)
 
 
 _TOOLS_CACHE: list[Tool] | None = None
@@ -1999,6 +2216,8 @@ async def _handle_get_config_content(arguments: Any) -> list:
     try:
         content = await asyncio.to_thread(config_path.read_text)
         return _text_result(f"Configuration: {config_name}\n\n{content}")
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        return _text_result(f"Error reading config: {str(e)}")
     except Exception as e:
         return _text_result(f"Error reading config: {str(e)}")
 
@@ -2048,7 +2267,7 @@ async def _handle_launch_amiberry(arguments: Any) -> list:
     # Validate LHA file
     if lha_file:
         lha_path = Path(lha_file)
-        if not lha_path.exists():
+        if not await asyncio.to_thread(lha_path.exists):
             return _text_result(f"Error: LHA file not found: {lha_file}")
 
     cmd = build_launch_command(
@@ -2060,7 +2279,7 @@ async def _handle_launch_amiberry(arguments: Any) -> list:
     )
 
     try:
-        proc = _launch_and_store(cmd)
+        proc = launch_and_store(cmd)
 
         if model:
             result = f"Launched Amiberry with model: {model}"
@@ -2080,6 +2299,8 @@ async def _handle_launch_amiberry(arguments: Any) -> list:
             result += f"\n  LHA: {Path(lha_file).name}"
 
         return _text_result(result)
+    except (FileNotFoundError, PermissionError, OSError, ValueError) as e:
+        return _text_result(f"Error launching Amiberry: {str(e)}")
     except Exception as e:
         return _text_result(f"Error launching Amiberry: {str(e)}")
 
@@ -2136,7 +2357,7 @@ async def _handle_launch_with_logging(arguments: Any) -> list:
         )
 
     # Create log directory if needed
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(LOG_DIR.mkdir, parents=True, exist_ok=True)
 
     # Generate log filename
     log_name = arguments.get("log_name")
@@ -2158,7 +2379,7 @@ async def _handle_launch_with_logging(arguments: Any) -> list:
     # Validate LHA file
     if lha_file:
         lha_path = Path(lha_file)
-        if not lha_path.exists():
+        if not await asyncio.to_thread(lha_path.exists):
             return _text_result(f"Error: LHA file not found: {lha_file}")
 
     cmd = build_launch_command(
@@ -2171,7 +2392,7 @@ async def _handle_launch_with_logging(arguments: Any) -> list:
     )
 
     try:
-        proc = _launch_and_store(cmd, log_path=log_path)
+        proc = launch_and_store(cmd, log_path=log_path)
 
         result = "Launched Amiberry with logging enabled\n"
         result += f"PID: {proc.pid}\n"
@@ -2179,6 +2400,9 @@ async def _handle_launch_with_logging(arguments: Any) -> list:
         result += f"Command: {' '.join(cmd)}"
 
         return _text_result(result)
+    except (FileNotFoundError, PermissionError, OSError, ValueError) as e:
+        _state.close_log_handle()
+        return _text_result(f"Error launching Amiberry: {str(e)}")
     except Exception as e:
         _state.close_log_handle()
         return _text_result(f"Error launching Amiberry: {str(e)}")
@@ -2225,6 +2449,8 @@ async def _handle_parse_config(arguments: Any) -> list:
             result += json.dumps(config, indent=2)
 
         return _text_result(result)
+    except (FileNotFoundError, ValueError, OSError) as e:
+        return _text_result(f"Error parsing config: {str(e)}")
     except Exception as e:
         return _text_result(f"Error parsing config: {str(e)}")
 
@@ -2250,6 +2476,8 @@ async def _handle_modify_config(arguments: Any) -> list:
                 result += f"  - {key} = {value}\n"
 
         return _text_result(result)
+    except (FileNotFoundError, ValueError, OSError) as e:
+        return _text_result(f"Error modifying config: {str(e)}")
     except Exception as e:
         return _text_result(f"Error modifying config: {str(e)}")
 
@@ -2267,13 +2495,13 @@ async def _handle_create_config(arguments: Any) -> list:
     if not config_path.is_relative_to(CONFIG_DIR.resolve()):
         return _text_result(f"Error: Invalid config name '{config_name}'")
 
-    if config_path.exists():
+    if await asyncio.to_thread(config_path.exists):
         return _text_result(
             f"Error: Configuration '{config_name}' already exists. Use modify_config to update it."
         )
 
     try:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(CONFIG_DIR.mkdir, parents=True, exist_ok=True)
         await asyncio.to_thread(
             lambda: create_config_from_template(config_path, template, overrides)
         )
@@ -2290,6 +2518,8 @@ async def _handle_create_config(arguments: Any) -> list:
         return _text_result(result)
     except ValueError as e:
         return _text_result(f"Error: {str(e)}")
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        return _text_result(f"Error creating config: {str(e)}")
     except Exception as e:
         return _text_result(f"Error creating config: {str(e)}")
 
@@ -2305,7 +2535,7 @@ async def _handle_launch_whdload(arguments: Any) -> list:
 
     if exact_path:
         lha_path = Path(exact_path)
-        if not lha_path.exists():
+        if not await asyncio.to_thread(lha_path.exists):
             return _text_result(f"Error: LHA file not found: {exact_path}")
     elif search_term:
         # Search for the LHA file using scan_disk_images for consistency
@@ -2342,11 +2572,13 @@ async def _handle_launch_whdload(arguments: Any) -> list:
     )
 
     try:
-        proc = _launch_and_store(cmd)
+        proc = launch_and_store(cmd)
 
         return _text_result(
             f"Launched WHDLoad game: {lha_path.name}\nModel: {model}\nPID: {proc.pid}"
         )
+    except (FileNotFoundError, PermissionError, OSError, ValueError) as e:
+        return _text_result(f"Error launching WHDLoad game: {str(e)}")
     except Exception as e:
         return _text_result(f"Error launching WHDLoad game: {str(e)}")
 
@@ -2362,7 +2594,7 @@ async def _handle_launch_cd(arguments: Any) -> list:
 
     if cd_image:
         cd_path = Path(cd_image)
-        if not cd_path.exists():
+        if not await asyncio.to_thread(cd_path.exists):
             return _text_result(f"Error: CD image not found: {cd_image}")
     elif search_term:
         # Search for CD images using scan_disk_images for consistency
@@ -2402,11 +2634,13 @@ async def _handle_launch_cd(arguments: Any) -> list:
     )
 
     try:
-        proc = _launch_and_store(cmd)
+        proc = launch_and_store(cmd)
 
         return _text_result(
             f"Launched CD image: {cd_path.name}\nModel: {model}\nPID: {proc.pid}"
         )
+    except (FileNotFoundError, PermissionError, OSError, ValueError) as e:
+        return _text_result(f"Error launching CD image: {str(e)}")
     except Exception as e:
         return _text_result(f"Error launching CD image: {str(e)}")
 
@@ -2426,7 +2660,7 @@ async def _handle_set_disk_swapper(arguments: Any) -> list:
     verified_paths = []
     for img in disk_images:
         img_path = Path(img)
-        if not img_path.exists():
+        if not await asyncio.to_thread(img_path.exists):
             return _text_result(f"Error: Disk image not found: {img}")
         verified_paths.append(str(img_path))
 
@@ -2449,7 +2683,7 @@ async def _handle_set_disk_swapper(arguments: Any) -> list:
     )
 
     try:
-        proc = _launch_and_store(cmd)
+        proc = launch_and_store(cmd)
 
         result = f"Launched with disk swapper ({len(verified_paths)} disks):\n"
         result += f"  PID: {proc.pid}\n"
@@ -2457,6 +2691,8 @@ async def _handle_set_disk_swapper(arguments: Any) -> list:
             result += f"  Disk {i + 1}: {Path(path).name}\n"
 
         return _text_result(result)
+    except (FileNotFoundError, PermissionError, OSError, ValueError) as e:
+        return _text_result(f"Error launching with disk swapper: {str(e)}")
     except Exception as e:
         return _text_result(f"Error launching with disk swapper: {str(e)}")
 
@@ -2493,7 +2729,7 @@ async def _handle_get_log_content(arguments: Any) -> list:
     except ValueError:
         return _text_result(f"Error: Invalid log name '{log_name}'")
 
-    if not log_path.exists():
+    if not await asyncio.to_thread(log_path.exists):
         return _text_result(f"Error: Log file not found: {log_name}")
 
     try:
@@ -2509,6 +2745,8 @@ async def _handle_get_log_content(arguments: Any) -> list:
             result = f"Log file: {log_name}\n\n{content}"
 
         return _text_result(result)
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        return _text_result(f"Error reading log: {str(e)}")
     except Exception as e:
         return _text_result(f"Error reading log: {str(e)}")
 
@@ -2565,7 +2803,7 @@ async def _handle_inspect_savestate(arguments: Any) -> list:
     if not path.is_absolute():
         path = SAVESTATE_DIR / savestate_path
 
-    if not path.exists():
+    if not await asyncio.to_thread(path.exists):
         return _text_result(f"Error: Savestate not found: {savestate_path}")
 
     try:
@@ -2578,6 +2816,8 @@ async def _handle_inspect_savestate(arguments: Any) -> list:
         return _text_result(result)
     except ValueError as e:
         return _text_result(f"Error: {str(e)}")
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        return _text_result(f"Error inspecting savestate: {str(e)}")
     except Exception as e:
         return _text_result(f"Error inspecting savestate: {str(e)}")
 
@@ -2591,7 +2831,7 @@ async def _handle_list_roms(arguments: Any) -> list:
     else:
         rom_dir = ROM_DIR
 
-    if not rom_dir.exists():
+    if not await asyncio.to_thread(rom_dir.exists):
         return _text_result(
             f"ROM directory not found: {rom_dir}\n\nCreate this directory and add your Kickstart ROMs."
         )
@@ -2619,6 +2859,8 @@ async def _handle_list_roms(arguments: Any) -> list:
                 result += f"  CRC32: {rom['crc32']}\n"
 
         return _text_result(result)
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        return _text_result(f"Error scanning ROMs: {str(e)}")
     except Exception as e:
         return _text_result(f"Error scanning ROMs: {str(e)}")
 
@@ -2628,7 +2870,7 @@ async def _handle_identify_rom(arguments: Any) -> list:
     rom_path = arguments["rom_path"]
     path = Path(rom_path)
 
-    if not path.exists():
+    if not await asyncio.to_thread(path.exists):
         return _text_result(f"Error: ROM file not found: {rom_path}")
 
     try:
@@ -2636,6 +2878,8 @@ async def _handle_identify_rom(arguments: Any) -> list:
         summary = get_rom_summary(rom_info)
 
         return _text_result(summary)
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        return _text_result(f"Error identifying ROM: {str(e)}")
     except Exception as e:
         return _text_result(f"Error identifying ROM: {str(e)}")
 
@@ -2663,24 +2907,6 @@ async def _handle_get_amiberry_version(arguments: Any) -> list:
 # Runtime control tools (IPC)
 
 
-async def _handle_pause_emulation(arguments: Any) -> list:
-    """Handle pause_emulation tool."""
-    return await _ipc_bool_call(
-        "pause",
-        success_msg="Emulation paused.",
-        failure_msg="Failed to pause emulation.",
-    )
-
-
-async def _handle_resume_emulation(arguments: Any) -> list:
-    """Handle resume_emulation tool."""
-    return await _ipc_bool_call(
-        "resume",
-        success_msg="Emulation resumed.",
-        failure_msg="Failed to resume emulation.",
-    )
-
-
 async def _handle_reset_emulation(arguments: Any) -> list:
     """Handle reset_emulation tool."""
     hard = arguments.get("hard", False)
@@ -2694,65 +2920,6 @@ async def _handle_reset_emulation(arguments: Any) -> list:
             return f"Failed to perform {reset_type} reset."
 
     return await _ipc_call(_cb)
-
-
-async def _handle_runtime_screenshot(arguments: Any) -> list:
-    """Handle runtime_screenshot tool."""
-    filename = arguments["filename"]
-    return await _ipc_bool_call(
-        "screenshot",
-        filename,
-        success_msg=f"Screenshot saved to: {filename}",
-        failure_msg="Failed to take screenshot.",
-    )
-
-
-async def _handle_runtime_save_state(arguments: Any) -> list:
-    """Handle runtime_save_state tool."""
-    state_file = arguments["state_file"]
-    config_file = arguments["config_file"]
-    return await _ipc_bool_call(
-        "save_state",
-        state_file,
-        config_file,
-        success_msg=f"State saved:\n  State: {state_file}\n  Config: {config_file}",
-        failure_msg="Failed to save state.",
-    )
-
-
-async def _handle_runtime_load_state(arguments: Any) -> list:
-    """Handle runtime_load_state tool."""
-    state_file = arguments["state_file"]
-    return await _ipc_bool_call(
-        "load_state",
-        state_file,
-        success_msg=f"Loading state: {state_file}",
-        failure_msg="Failed to load state.",
-    )
-
-
-async def _handle_runtime_insert_floppy(arguments: Any) -> list:
-    """Handle runtime_insert_floppy tool."""
-    drive = arguments["drive"]
-    image_path = arguments["image_path"]
-    return await _ipc_bool_call(
-        "insert_floppy",
-        drive,
-        image_path,
-        success_msg=f"Inserted {Path(image_path).name} into DF{drive}:",
-        failure_msg=f"Failed to insert disk into DF{drive}:.",
-    )
-
-
-async def _handle_runtime_insert_cd(arguments: Any) -> list:
-    """Handle runtime_insert_cd tool."""
-    image_path = arguments["image_path"]
-    return await _ipc_bool_call(
-        "insert_cd",
-        image_path,
-        success_msg=f"Inserted CD: {Path(image_path).name}",
-        failure_msg="Failed to insert CD.",
-    )
 
 
 async def _handle_get_runtime_status(arguments: Any) -> list:
@@ -2790,23 +2957,10 @@ async def _handle_runtime_get_config(arguments: Any) -> list:
     return await _ipc_call(_cb)
 
 
-async def _handle_runtime_set_config(arguments: Any) -> list:
-    """Handle runtime_set_config tool."""
-    option = arguments["option"]
-    value = arguments["value"]
-    return await _ipc_bool_call(
-        "set_config",
-        option,
-        value,
-        success_msg=f"Set {option} = {value}",
-        failure_msg=f"Failed to set {option}. Unknown option or invalid value.",
-    )
-
-
 async def _handle_check_ipc_connection(arguments: Any) -> list:
     """Handle check_ipc_connection tool."""
     try:
-        client = _get_ipc_client()
+        client = get_ipc_client()
 
         result = "Amiberry IPC Connection Check:\n\n"
         result += f"  Transport: {client.transport}\n"
@@ -2818,6 +2972,10 @@ async def _handle_check_ipc_connection(arguments: Any) -> list:
                 status = await client.get_status()
                 result += "  Connection: OK\n"
                 result += f"  Emulation paused: {status.get('Paused', 'Unknown')}\n"
+            except IPCConnectionError as e:
+                result += f"  Connection: Failed ({str(e)})\n"
+            except OSError as e:
+                result += f"  Connection: Failed ({str(e)})\n"
             except Exception as e:
                 result += f"  Connection: Failed ({str(e)})\n"
         else:
@@ -2825,29 +2983,15 @@ async def _handle_check_ipc_connection(arguments: Any) -> list:
             result += "\nAmiberry may not be running, or was not built with USE_IPC_SOCKET=ON."
 
         return _text_result(result)
+    except IPCConnectionError as e:
+        return _text_result(f"Error checking IPC: {str(e)}")
+    except OSError as e:
+        return _text_result(f"Error checking IPC: {str(e)}")
     except Exception as e:
         return _text_result(f"Error checking IPC: {str(e)}")
 
 
 # New runtime control tools
-
-
-async def _handle_runtime_eject_floppy(arguments: Any) -> list:
-    """Handle runtime_eject_floppy tool."""
-    drive = arguments["drive"]
-    return await _ipc_bool_call(
-        "eject_floppy",
-        drive,
-        success_msg=f"Ejected disk from DF{drive}:",
-        failure_msg=f"Failed to eject disk from DF{drive}:.",
-    )
-
-
-async def _handle_runtime_eject_cd(arguments: Any) -> list:
-    """Handle runtime_eject_cd tool."""
-    return await _ipc_bool_call(
-        "eject_cd", success_msg="CD ejected.", failure_msg="Failed to eject CD."
-    )
 
 
 async def _handle_runtime_list_floppies(arguments: Any) -> list:
@@ -2881,53 +3025,6 @@ async def _handle_runtime_list_configs(arguments: Any) -> list:
         return result
 
     return await _ipc_call(_cb)
-
-
-async def _handle_runtime_set_volume(arguments: Any) -> list:
-    """Handle runtime_set_volume tool."""
-    volume = arguments["volume"]
-    return await _ipc_bool_call(
-        "set_volume",
-        volume,
-        success_msg=f"Volume set to {volume}%",
-        failure_msg="Failed to set volume.",
-    )
-
-
-async def _handle_runtime_get_volume(arguments: Any) -> list:
-    """Handle runtime_get_volume tool."""
-
-    async def _cb(client):
-        volume = await client.get_volume()
-        if volume is not None:
-            return f"Current volume: {volume}%"
-        else:
-            return "Failed to get volume."
-
-    return await _ipc_call(_cb)
-
-
-async def _handle_runtime_mute(arguments: Any) -> list:
-    """Handle runtime_mute tool."""
-    return await _ipc_bool_call(
-        "mute", success_msg="Audio muted.", failure_msg="Failed to mute audio."
-    )
-
-
-async def _handle_runtime_unmute(arguments: Any) -> list:
-    """Handle runtime_unmute tool."""
-    return await _ipc_bool_call(
-        "unmute", success_msg="Audio unmuted.", failure_msg="Failed to unmute audio."
-    )
-
-
-async def _handle_runtime_toggle_fullscreen(arguments: Any) -> list:
-    """Handle runtime_toggle_fullscreen tool."""
-    return await _ipc_bool_call(
-        "toggle_fullscreen",
-        success_msg="Fullscreen mode toggled.",
-        failure_msg="Failed to toggle fullscreen.",
-    )
 
 
 async def _handle_runtime_set_warp(arguments: Any) -> list:
@@ -2975,42 +3072,6 @@ async def _handle_runtime_get_version(arguments: Any) -> list:
     return await _ipc_call(_cb)
 
 
-async def _handle_runtime_frame_advance(arguments: Any) -> list:
-    """Handle runtime_frame_advance tool."""
-    frames = arguments.get("frames", 1)
-    return await _ipc_bool_call(
-        "frame_advance",
-        frames,
-        success_msg=f"Advanced {frames} frame(s).",
-        failure_msg="Failed to advance frames. Is emulation paused?",
-    )
-
-
-async def _handle_runtime_send_mouse(arguments: Any) -> list:
-    """Handle runtime_send_mouse tool."""
-    dx = arguments["dx"]
-    dy = arguments["dy"]
-    buttons = arguments.get("buttons", 0)
-    return await _ipc_bool_call(
-        "send_mouse",
-        dx,
-        dy,
-        buttons,
-        success_msg=f"Mouse input sent: dx={dx}, dy={dy}, buttons={buttons}",
-        failure_msg="Failed to send mouse input.",
-    )
-
-
-async def _handle_runtime_set_mouse_speed(arguments: Any) -> list:
-    """Handle runtime_set_mouse_speed tool."""
-    speed = arguments["speed"]
-    return await _ipc_bool_call(
-        "set_mouse_speed",
-        speed,
-        success_msg=f"Mouse speed set to {speed}.",
-        failure_msg="Failed to set mouse speed.",
-    )
-
 async def _handle_runtime_send_key(arguments: Any) -> list:
     """Handle runtime_send_key tool."""
     key = arguments["key"]
@@ -3031,7 +3092,6 @@ async def _handle_runtime_send_key(arguments: Any) -> list:
         else:  # press_and_release
             success = await client.send_key(keycode, True)
             if success:
-                import asyncio
                 await asyncio.sleep(0.05)
                 success = await client.send_key(keycode, False)
             action = "pressed and released"
@@ -3061,14 +3121,6 @@ async def _handle_runtime_send_text(arguments: Any) -> list:
 
     return await _ipc_call(_cb)
 
-async def _handle_runtime_ping(arguments: Any) -> list:
-    """Handle runtime_ping tool."""
-    return await _ipc_bool_call(
-        "ping",
-        success_msg="PONG - Amiberry IPC connection is working.",
-        failure_msg="Ping failed - no response from Amiberry.",
-    )
-
 
 async def _handle_set_active_instance(arguments: Any) -> list:
     """Handle set_active_instance tool."""
@@ -3094,28 +3146,6 @@ async def _handle_get_active_instance(arguments: Any) -> list:
 # Round 2 runtime control tools
 
 
-async def _handle_runtime_quicksave(arguments: Any) -> list:
-    """Handle runtime_quicksave tool."""
-    slot = arguments.get("slot", 0)
-    return await _ipc_bool_call(
-        "quicksave",
-        slot,
-        success_msg=f"Quick saved to slot {slot}.",
-        failure_msg=f"Failed to quick save to slot {slot}.",
-    )
-
-
-async def _handle_runtime_quickload(arguments: Any) -> list:
-    """Handle runtime_quickload tool."""
-    slot = arguments.get("slot", 0)
-    return await _ipc_bool_call(
-        "quickload",
-        slot,
-        success_msg=f"Quick loading from slot {slot}.",
-        failure_msg=f"Failed to quick load from slot {slot}.",
-    )
-
-
 async def _handle_runtime_get_joyport_mode(arguments: Any) -> list:
     """Handle runtime_get_joyport_mode tool."""
     port = arguments["port"]
@@ -3129,19 +3159,6 @@ async def _handle_runtime_get_joyport_mode(arguments: Any) -> list:
             return f"Failed to get port {port} mode."
 
     return await _ipc_call(_cb)
-
-
-async def _handle_runtime_set_joyport_mode(arguments: Any) -> list:
-    """Handle runtime_set_joyport_mode tool."""
-    port = arguments["port"]
-    mode = arguments["mode"]
-    return await _ipc_bool_call(
-        "set_joyport_mode",
-        port,
-        mode,
-        success_msg=f"Port {port} mode set to {mode}.",
-        failure_msg=f"Failed to set port {port} mode.",
-    )
 
 
 async def _handle_runtime_get_autofire(arguments: Any) -> list:
@@ -3164,19 +3181,6 @@ async def _handle_runtime_get_autofire(arguments: Any) -> list:
             return f"Failed to get port {port} autofire mode."
 
     return await _ipc_call(_cb)
-
-
-async def _handle_runtime_set_autofire(arguments: Any) -> list:
-    """Handle runtime_set_autofire tool."""
-    port = arguments["port"]
-    mode = arguments["mode"]
-    return await _ipc_bool_call(
-        "set_autofire",
-        port,
-        mode,
-        success_msg=f"Port {port} autofire set to {mode}.",
-        failure_msg=f"Failed to set port {port} autofire.",
-    )
 
 
 async def _handle_runtime_get_led_status(arguments: Any) -> list:
@@ -3302,39 +3306,6 @@ async def _handle_runtime_get_sound_mode(arguments: Any) -> list:
 
 
 # Round 3 runtime control tools
-
-
-async def _handle_runtime_toggle_mouse_grab(arguments: Any) -> list:
-    """Handle runtime_toggle_mouse_grab tool."""
-    return await _ipc_bool_call(
-        "toggle_mouse_grab",
-        success_msg="Mouse grab toggled.",
-        failure_msg="Failed to toggle mouse grab.",
-    )
-
-
-async def _handle_runtime_get_mouse_speed(arguments: Any) -> list:
-    """Handle runtime_get_mouse_speed tool."""
-
-    async def _cb(client):
-        speed = await client.get_mouse_speed()
-        if speed is not None:
-            return f"Mouse speed: {speed}"
-        else:
-            return "Failed to get mouse speed."
-
-    return await _ipc_call(_cb)
-
-
-async def _handle_runtime_set_cpu_speed(arguments: Any) -> list:
-    """Handle runtime_set_cpu_speed tool."""
-    speed = arguments["speed"]
-    return await _ipc_bool_call(
-        "set_cpu_speed",
-        speed,
-        success_msg=f"CPU speed set to {speed}.",
-        failure_msg="Failed to set CPU speed.",
-    )
 
 
 async def _handle_runtime_get_cpu_speed(arguments: Any) -> list:
@@ -3706,50 +3677,6 @@ async def _handle_runtime_get_resolution(arguments: Any) -> list:
 # Round 5 - Autocrop and WHDLoad
 
 
-async def _handle_runtime_set_autocrop(arguments: Any) -> list:
-    """Handle runtime_set_autocrop tool."""
-    enabled = arguments["enabled"]
-    return await _ipc_bool_call(
-        "set_autocrop",
-        enabled,
-        success_msg=f"Autocrop {'enabled' if enabled else 'disabled'}.",
-        failure_msg="Failed to set autocrop.",
-    )
-
-
-async def _handle_runtime_get_autocrop(arguments: Any) -> list:
-    """Handle runtime_get_autocrop tool."""
-
-    async def _cb(client):
-        result = await client.get_autocrop()
-        if result is not None:
-            return f"Autocrop: {'enabled' if result else 'disabled'}"
-        else:
-            return "Failed to get autocrop status."
-
-    return await _ipc_call(_cb)
-
-
-async def _handle_runtime_insert_whdload(arguments: Any) -> list:
-    """Handle runtime_insert_whdload tool."""
-    path = arguments["path"]
-    return await _ipc_bool_call(
-        "insert_whdload",
-        path,
-        success_msg=f"WHDLoad game loaded: {path}\nNote: A reset may be required for the game to start.",
-        failure_msg="Failed to load WHDLoad game.",
-    )
-
-
-async def _handle_runtime_eject_whdload(arguments: Any) -> list:
-    """Handle runtime_eject_whdload tool."""
-    return await _ipc_bool_call(
-        "eject_whdload",
-        success_msg="WHDLoad game ejected.",
-        failure_msg="Failed to eject WHDLoad game.",
-    )
-
-
 async def _handle_runtime_get_whdload(arguments: Any) -> list:
     """Handle runtime_get_whdload tool."""
 
@@ -3772,24 +3699,6 @@ async def _handle_runtime_get_whdload(arguments: Any) -> list:
 # Round 6 - Debugging and Diagnostics
 
 
-async def _handle_runtime_debug_activate(arguments: Any) -> list:
-    """Handle runtime_debug_activate tool."""
-    return await _ipc_bool_call(
-        "debug_activate",
-        success_msg="Debugger activated.",
-        failure_msg="Failed to activate debugger. Amiberry may not be built with debugger support.",
-    )
-
-
-async def _handle_runtime_debug_deactivate(arguments: Any) -> list:
-    """Handle runtime_debug_deactivate tool."""
-    return await _ipc_bool_call(
-        "debug_deactivate",
-        success_msg="Debugger deactivated, emulation resumed.",
-        failure_msg="Failed to deactivate debugger.",
-    )
-
-
 async def _handle_runtime_debug_status(arguments: Any) -> list:
     """Handle runtime_debug_status tool."""
 
@@ -3804,26 +3713,6 @@ async def _handle_runtime_debug_status(arguments: Any) -> list:
             return "Failed to get debugger status."
 
     return await _ipc_call(_cb)
-
-
-async def _handle_runtime_debug_step(arguments: Any) -> list:
-    """Handle runtime_debug_step tool."""
-    count = arguments.get("count", 1)
-    return await _ipc_bool_call(
-        "debug_step",
-        count,
-        success_msg=f"Stepped {count} instruction(s).",
-        failure_msg="Failed to step. Debugger may not be active.",
-    )
-
-
-async def _handle_runtime_debug_continue(arguments: Any) -> list:
-    """Handle runtime_debug_continue tool."""
-    return await _ipc_bool_call(
-        "debug_continue",
-        success_msg="Execution continued.",
-        failure_msg="Failed to continue execution.",
-    )
 
 
 async def _handle_runtime_get_cpu_regs(arguments: Any) -> list:
@@ -3883,17 +3772,6 @@ async def _handle_runtime_disassemble(arguments: Any) -> list:
             return "No disassembly returned."
 
     return await _ipc_call(_cb)
-
-
-async def _handle_runtime_set_breakpoint(arguments: Any) -> list:
-    """Handle runtime_set_breakpoint tool."""
-    address = arguments["address"]
-    return await _ipc_bool_call(
-        "set_breakpoint",
-        address,
-        success_msg=f"Breakpoint set at {address}.",
-        failure_msg="Failed to set breakpoint. Maximum 20 breakpoints allowed.",
-    )
 
 
 async def _handle_runtime_clear_breakpoint(arguments: Any) -> list:
@@ -4098,14 +3976,13 @@ async def _handle_restart_amiberry(arguments: Any) -> list:
 
     # Re-launch with stored command
     cmd = _state.launch_cmd
-    _state.close_log_handle()
     try:
-        _state.process, _state.log_file_handle = launch_process(
-            cmd, log_path=_state.log_path
-        )
+        proc = launch_and_store(cmd, log_path=_state.log_path)
         return _text_result(
-            f"Amiberry restarted (PID: {_state.process.pid})\nCommand: {' '.join(cmd)}"
+            f"Amiberry restarted (PID: {proc.pid})\nCommand: {' '.join(cmd)}"
         )
+    except (FileNotFoundError, PermissionError, OSError, ValueError) as e:
+        return _text_result(f"Error restarting Amiberry: {str(e)}")
     except Exception as e:
         return _text_result(f"Error restarting Amiberry: {str(e)}")
 
@@ -4119,7 +3996,7 @@ async def _handle_runtime_read_memory(arguments: Any) -> list:
     width = arguments["width"]
     try:
         address = int(address_str, 0)  # Handles both hex (0x...) and decimal
-        client = _get_ipc_client()
+        client = get_ipc_client()
         value = await client.read_memory(address, width)
         if value is not None:
             return _text_result(
@@ -4142,7 +4019,7 @@ async def _handle_runtime_write_memory(arguments: Any) -> list:
     value = arguments["value"]
     try:
         address = int(address_str, 0)
-        client = _get_ipc_client()
+        client = get_ipc_client()
         success = await client.write_memory(address, width, value)
         if success:
             return _text_result(
@@ -4158,26 +4035,6 @@ async def _handle_runtime_write_memory(arguments: Any) -> list:
         return _text_result(f"Error: {str(e)}")
 
 
-async def _handle_runtime_load_config(arguments: Any) -> list:
-    """Handle runtime_load_config tool."""
-    config_path = arguments["config_path"]
-    return await _ipc_bool_call(
-        "load_config",
-        config_path,
-        success_msg=f"Configuration loaded: {config_path}",
-        failure_msg=f"Failed to load configuration: {config_path}",
-    )
-
-
-async def _handle_runtime_debug_step_over(arguments: Any) -> list:
-    """Handle runtime_debug_step_over tool."""
-    return await _ipc_bool_call(
-        "debug_step_over",
-        success_msg="Stepped over subroutine.",
-        failure_msg="Failed to step over. Is the debugger active?",
-    )
-
-
 # === Screenshot with Image Data ===
 
 
@@ -4185,25 +4042,25 @@ async def _handle_runtime_screenshot_view(arguments: Any) -> list:
     """Handle runtime_screenshot_view tool."""
     filename = arguments.get("filename")
     if not filename:
-        SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(SCREENSHOT_DIR.mkdir, parents=True, exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = str(SCREENSHOT_DIR / f"debug_{timestamp}.png")
 
     try:
-        client = _get_ipc_client()
+        client = get_ipc_client()
         success = await client.screenshot(filename)
         if success:
             screenshot_path = Path(filename)
-            if screenshot_path.exists():
+            if await asyncio.to_thread(screenshot_path.exists):
                 image_data = await asyncio.to_thread(screenshot_path.read_bytes)
 
                 # Detect format from magic bytes
                 # Claude API only accepts: image/jpeg, image/png, image/gif, image/webp
-                if image_data[:2] in (b'\xff\xd8',):
+                if image_data[:2] in (b"\xff\xd8",):
                     mime_type = "image/jpeg"
-                elif image_data[:4] == b'GIF8':
+                elif image_data[:4] == b"GIF8":
                     mime_type = "image/gif"
-                elif image_data[:4] == b'RIFF' and image_data[8:12] == b'WEBP':
+                elif image_data[:4] == b"RIFF" and image_data[8:12] == b"WEBP":
                     mime_type = "image/webp"
                 else:
                     # Amiberry saves PNG format - default to image/png
@@ -4211,13 +4068,13 @@ async def _handle_runtime_screenshot_view(arguments: Any) -> list:
 
                 b64_data = base64.b64encode(image_data).decode("utf-8")
 
-                if _HAS_IMAGE_CONTENT:
+                if _HAS_IMAGE_CONTENT and _ImageContent is not None:
                     return [
                         TextContent(
                             type="text",
                             text=f"Screenshot saved to: {filename}",
                         ),
-                        ImageContent(
+                        _ImageContent(
                             type="image",
                             data=b64_data,
                             mimeType=mime_type,
@@ -4235,6 +4092,8 @@ async def _handle_runtime_screenshot_view(arguments: Any) -> list:
             return _text_result("Failed to take screenshot.")
     except IPCConnectionError as e:
         return _text_result(f"Connection error: {str(e)}")
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        return _text_result(f"Error: {str(e)}")
     except Exception as e:
         return _text_result(f"Error: {str(e)}")
 
@@ -4251,7 +4110,7 @@ async def _handle_tail_log(arguments: Any) -> list:
     except ValueError:
         return _text_result(f"Error: Invalid log name '{log_name}'")
 
-    if not log_path.exists():
+    if not await asyncio.to_thread(log_path.exists):
         return _text_result(
             f"Error: Log file not found: {log_name}\nAvailable logs in: {LOG_DIR}"
         )
@@ -4277,6 +4136,8 @@ async def _handle_tail_log(arguments: Any) -> list:
             )
         else:
             return _text_result("No new log output since last read.")
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        return _text_result(f"Error reading log: {str(e)}")
     except Exception as e:
         return _text_result(f"Error reading log: {str(e)}")
 
@@ -4307,7 +4168,7 @@ async def _handle_wait_for_log_pattern(arguments: Any) -> list:
                 f"Timeout after {timeout}s. Pattern '{pattern}' not found in {log_name}."
             )
 
-        if log_path.exists():
+        if await asyncio.to_thread(log_path.exists):
             try:
 
                 def _read_and_match(_pos=last_pos):
@@ -4329,6 +4190,8 @@ async def _handle_wait_for_log_pattern(arguments: Any) -> list:
                         f"Pattern '{pattern}' found after {elapsed:.1f}s:\n{match_line}"
                     )
                 last_pos = new_pos
+            except (FileNotFoundError, PermissionError, OSError):
+                pass
             except Exception:
                 pass
 
@@ -4394,7 +4257,7 @@ async def _handle_get_crash_info(arguments: Any) -> list:
             return _text_result(f"Error: Invalid log name '{log_name}'")
     elif _state.log_path:
         log_files_to_scan = [_state.log_path]
-    elif LOG_DIR.exists():
+    elif await asyncio.to_thread(LOG_DIR.exists):
 
         def _find_latest_log():
             logs = []
@@ -4409,7 +4272,7 @@ async def _handle_get_crash_info(arguments: Any) -> list:
         log_files_to_scan = await asyncio.to_thread(_find_latest_log)
 
     for lp in log_files_to_scan:
-        if lp.exists():
+        if await asyncio.to_thread(lp.exists):
             try:
                 content = await asyncio.to_thread(lp.read_text, errors="replace")
                 found_crashes = []
@@ -4426,6 +4289,8 @@ async def _handle_get_crash_info(arguments: Any) -> list:
                         result_parts.append(f"  ... and {len(found_crashes) - 20} more")
                 else:
                     result_parts.append(f"\nNo crash indicators found in {lp.name}")
+            except (FileNotFoundError, PermissionError, OSError) as e:
+                result_parts.append(f"\nError reading {lp.name}: {str(e)}")
             except Exception as e:
                 result_parts.append(f"\nError reading {lp.name}: {str(e)}")
 
@@ -4455,7 +4320,7 @@ async def _handle_health_check(arguments: Any) -> list:
 
     # 2. IPC check
     try:
-        client = _get_ipc_client()
+        client = get_ipc_client()
         pong = await client.ping()
         if pong:
             results.append("IPC Ping: OK")
@@ -4518,7 +4383,7 @@ async def _handle_launch_and_wait_for_ipc(arguments: Any) -> list:
     # Validate LHA file
     if lha_file:
         lha_path = Path(lha_file)
-        if not lha_path.exists():
+        if not await asyncio.to_thread(lha_path.exists):
             return _text_result(f"Error: LHA file not found: {lha_file}")
 
     cmd = build_launch_command(
@@ -4531,13 +4396,16 @@ async def _handle_launch_and_wait_for_ipc(arguments: Any) -> list:
     )
 
     # Launch with logging
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(LOG_DIR.mkdir, parents=True, exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     log_name = f"amiberry_{timestamp}.log"
     log_path = LOG_DIR / log_name
 
     try:
-        _launch_and_store(cmd, log_path=log_path)
+        launch_and_store(cmd, log_path=log_path)
+    except (FileNotFoundError, PermissionError, OSError, ValueError) as e:
+        _state.close_log_handle()
+        return _text_result(f"Error launching Amiberry: {str(e)}")
     except Exception as e:
         _state.close_log_handle()
         return _text_result(f"Error launching Amiberry: {str(e)}")
@@ -4552,30 +4420,43 @@ async def _handle_launch_and_wait_for_ipc(arguments: Any) -> list:
             break
 
         # Check if process died
-        if _state.process.poll() is not None:
-            rc = _state.process.returncode
+        process = _state.process
+        if process is None:
+            return _text_result("Amiberry process is no longer tracked.")
+        if process.poll() is not None:
+            rc = process.returncode
             return _text_result(
                 f"Amiberry exited before IPC became available (exit code: {rc}).\nLog file: {log_path}\nCommand: {' '.join(cmd)}"
             )
 
         try:
-            client = _get_ipc_client()
+            client = get_ipc_client()
             pong = await client.ping()
             if pong:
                 ipc_ready = True
                 break
+        except (IPCConnectionError, OSError):
+            pass
         except Exception:
             pass
 
         await asyncio.sleep(0.5)
 
     if ipc_ready:
+        process = _state.process
+        if process is None:
+            return _text_result("Amiberry launched but process handle is unavailable.")
         return _text_result(
-            f"Amiberry launched and IPC ready!\n  PID: {_state.process.pid}\n  Log: {log_path}\n  Command: {' '.join(cmd)}\n  IPC connected after {elapsed:.1f}s"
+            f"Amiberry launched and IPC ready!\n  PID: {process.pid}\n  Log: {log_path}\n  Command: {' '.join(cmd)}\n  IPC connected after {elapsed:.1f}s"
         )
     else:
+        process = _state.process
+        if process is None:
+            return _text_result(
+                f"Amiberry launched but IPC not responding after {timeout}s.\n  PID: unknown\n  Log: {log_path}\n  Process still running: unknown"
+            )
         return _text_result(
-            f"Amiberry launched but IPC not responding after {timeout}s.\n  PID: {_state.process.pid}\n  Log: {log_path}\n  Process still running: {_state.process.poll() is None}"
+            f"Amiberry launched but IPC not responding after {timeout}s.\n  PID: {process.pid}\n  Log: {log_path}\n  Process still running: {process.poll() is None}"
         )
 
 
@@ -4601,44 +4482,46 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "list_roms": _handle_list_roms,
     "identify_rom": _handle_identify_rom,
     "get_amiberry_version": _handle_get_amiberry_version,
-    "pause_emulation": _handle_pause_emulation,
-    "resume_emulation": _handle_resume_emulation,
+    "pause_emulation": partial(_handle_no_arg_bool, "pause_emulation"),
+    "resume_emulation": partial(_handle_no_arg_bool, "resume_emulation"),
     "reset_emulation": _handle_reset_emulation,
-    "runtime_screenshot": _handle_runtime_screenshot,
-    "runtime_save_state": _handle_runtime_save_state,
-    "runtime_load_state": _handle_runtime_load_state,
-    "runtime_insert_floppy": _handle_runtime_insert_floppy,
-    "runtime_insert_cd": _handle_runtime_insert_cd,
+    "runtime_screenshot": partial(_handle_arg_bool, "runtime_screenshot"),
+    "runtime_save_state": partial(_handle_arg_bool, "runtime_save_state"),
+    "runtime_load_state": partial(_handle_arg_bool, "runtime_load_state"),
+    "runtime_insert_floppy": partial(_handle_arg_bool, "runtime_insert_floppy"),
+    "runtime_insert_cd": partial(_handle_arg_bool, "runtime_insert_cd"),
     "get_runtime_status": _handle_get_runtime_status,
     "runtime_get_config": _handle_runtime_get_config,
-    "runtime_set_config": _handle_runtime_set_config,
+    "runtime_set_config": partial(_handle_arg_bool, "runtime_set_config"),
     "check_ipc_connection": _handle_check_ipc_connection,
-    "runtime_eject_floppy": _handle_runtime_eject_floppy,
-    "runtime_eject_cd": _handle_runtime_eject_cd,
+    "runtime_eject_floppy": partial(_handle_arg_bool, "runtime_eject_floppy"),
+    "runtime_eject_cd": partial(_handle_no_arg_bool, "runtime_eject_cd"),
     "runtime_list_floppies": _handle_runtime_list_floppies,
     "runtime_list_configs": _handle_runtime_list_configs,
-    "runtime_set_volume": _handle_runtime_set_volume,
-    "runtime_get_volume": _handle_runtime_get_volume,
-    "runtime_mute": _handle_runtime_mute,
-    "runtime_unmute": _handle_runtime_unmute,
-    "runtime_toggle_fullscreen": _handle_runtime_toggle_fullscreen,
+    "runtime_set_volume": partial(_handle_arg_bool, "runtime_set_volume"),
+    "runtime_get_volume": partial(_handle_simple_query, "runtime_get_volume"),
+    "runtime_mute": partial(_handle_no_arg_bool, "runtime_mute"),
+    "runtime_unmute": partial(_handle_no_arg_bool, "runtime_unmute"),
+    "runtime_toggle_fullscreen": partial(
+        _handle_no_arg_bool, "runtime_toggle_fullscreen"
+    ),
     "runtime_set_warp": _handle_runtime_set_warp,
     "runtime_get_warp": _handle_runtime_get_warp,
     "runtime_get_version": _handle_runtime_get_version,
-    "runtime_frame_advance": _handle_runtime_frame_advance,
-    "runtime_send_mouse": _handle_runtime_send_mouse,
-    "runtime_set_mouse_speed": _handle_runtime_set_mouse_speed,
+    "runtime_frame_advance": partial(_handle_arg_bool, "runtime_frame_advance"),
+    "runtime_send_mouse": partial(_handle_arg_bool, "runtime_send_mouse"),
+    "runtime_set_mouse_speed": partial(_handle_arg_bool, "runtime_set_mouse_speed"),
     "runtime_send_key": _handle_runtime_send_key,
     "runtime_send_text": _handle_runtime_send_text,
-    "runtime_ping": _handle_runtime_ping,
+    "runtime_ping": partial(_handle_no_arg_bool, "runtime_ping"),
     "set_active_instance": _handle_set_active_instance,
     "get_active_instance": _handle_get_active_instance,
-    "runtime_quicksave": _handle_runtime_quicksave,
-    "runtime_quickload": _handle_runtime_quickload,
+    "runtime_quicksave": partial(_handle_arg_bool, "runtime_quicksave"),
+    "runtime_quickload": partial(_handle_arg_bool, "runtime_quickload"),
     "runtime_get_joyport_mode": _handle_runtime_get_joyport_mode,
-    "runtime_set_joyport_mode": _handle_runtime_set_joyport_mode,
+    "runtime_set_joyport_mode": partial(_handle_arg_bool, "runtime_set_joyport_mode"),
     "runtime_get_autofire": _handle_runtime_get_autofire,
-    "runtime_set_autofire": _handle_runtime_set_autofire,
+    "runtime_set_autofire": partial(_handle_arg_bool, "runtime_set_autofire"),
     "runtime_get_led_status": _handle_runtime_get_led_status,
     "runtime_list_harddrives": _handle_runtime_list_harddrives,
     "runtime_set_display_mode": _handle_runtime_set_display_mode,
@@ -4647,9 +4530,11 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "runtime_get_ntsc": _handle_runtime_get_ntsc,
     "runtime_set_sound_mode": _handle_runtime_set_sound_mode,
     "runtime_get_sound_mode": _handle_runtime_get_sound_mode,
-    "runtime_toggle_mouse_grab": _handle_runtime_toggle_mouse_grab,
-    "runtime_get_mouse_speed": _handle_runtime_get_mouse_speed,
-    "runtime_set_cpu_speed": _handle_runtime_set_cpu_speed,
+    "runtime_toggle_mouse_grab": partial(
+        _handle_no_arg_bool, "runtime_toggle_mouse_grab"
+    ),
+    "runtime_get_mouse_speed": partial(_handle_simple_query, "runtime_get_mouse_speed"),
+    "runtime_set_cpu_speed": partial(_handle_arg_bool, "runtime_set_cpu_speed"),
     "runtime_get_cpu_speed": _handle_runtime_get_cpu_speed,
     "runtime_toggle_rtg": _handle_runtime_toggle_rtg,
     "runtime_set_floppy_speed": _handle_runtime_set_floppy_speed,
@@ -4675,20 +4560,22 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "runtime_get_line_mode": _handle_runtime_get_line_mode,
     "runtime_set_resolution": _handle_runtime_set_resolution,
     "runtime_get_resolution": _handle_runtime_get_resolution,
-    "runtime_set_autocrop": _handle_runtime_set_autocrop,
-    "runtime_get_autocrop": _handle_runtime_get_autocrop,
-    "runtime_insert_whdload": _handle_runtime_insert_whdload,
-    "runtime_eject_whdload": _handle_runtime_eject_whdload,
+    "runtime_set_autocrop": partial(_handle_arg_bool, "runtime_set_autocrop"),
+    "runtime_get_autocrop": partial(_handle_simple_query, "runtime_get_autocrop"),
+    "runtime_insert_whdload": partial(_handle_arg_bool, "runtime_insert_whdload"),
+    "runtime_eject_whdload": partial(_handle_no_arg_bool, "runtime_eject_whdload"),
     "runtime_get_whdload": _handle_runtime_get_whdload,
-    "runtime_debug_activate": _handle_runtime_debug_activate,
-    "runtime_debug_deactivate": _handle_runtime_debug_deactivate,
+    "runtime_debug_activate": partial(_handle_no_arg_bool, "runtime_debug_activate"),
+    "runtime_debug_deactivate": partial(
+        _handle_no_arg_bool, "runtime_debug_deactivate"
+    ),
     "runtime_debug_status": _handle_runtime_debug_status,
-    "runtime_debug_step": _handle_runtime_debug_step,
-    "runtime_debug_continue": _handle_runtime_debug_continue,
+    "runtime_debug_step": partial(_handle_arg_bool, "runtime_debug_step"),
+    "runtime_debug_continue": partial(_handle_no_arg_bool, "runtime_debug_continue"),
     "runtime_get_cpu_regs": _handle_runtime_get_cpu_regs,
     "runtime_get_custom_regs": _handle_runtime_get_custom_regs,
     "runtime_disassemble": _handle_runtime_disassemble,
-    "runtime_set_breakpoint": _handle_runtime_set_breakpoint,
+    "runtime_set_breakpoint": partial(_handle_arg_bool, "runtime_set_breakpoint"),
     "runtime_clear_breakpoint": _handle_runtime_clear_breakpoint,
     "runtime_list_breakpoints": _handle_runtime_list_breakpoints,
     "runtime_get_copper_state": _handle_runtime_get_copper_state,
@@ -4703,8 +4590,8 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "restart_amiberry": _handle_restart_amiberry,
     "runtime_read_memory": _handle_runtime_read_memory,
     "runtime_write_memory": _handle_runtime_write_memory,
-    "runtime_load_config": _handle_runtime_load_config,
-    "runtime_debug_step_over": _handle_runtime_debug_step_over,
+    "runtime_load_config": partial(_handle_arg_bool, "runtime_load_config"),
+    "runtime_debug_step_over": partial(_handle_no_arg_bool, "runtime_debug_step_over"),
     "runtime_screenshot_view": _handle_runtime_screenshot_view,
     "tail_log": _handle_tail_log,
     "wait_for_log_pattern": _handle_wait_for_log_pattern,

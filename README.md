@@ -60,9 +60,10 @@ amiberry-mcp-server/
 │       ├── __init__.py
 │       ├── config.py          # Platform detection and paths
 │       ├── common.py          # Shared helpers (launch, scan, validation)
-│       ├── server.py          # MCP server (80+ tools)
+│       ├── shared_state.py    # Process state, IPC client caching, launch helpers
+│       ├── server.py          # MCP server (80+ tools, data-driven dispatch)
 │       ├── http_server.py     # HTTP API server (FastAPI)
-│       ├── ipc_client.py      # IPC client for runtime control
+│       ├── ipc_client.py      # IPC client with persistent connections
 │       ├── uae_config.py      # Config file parser/generator
 │       ├── savestate.py       # Savestate metadata parser
 │       └── rom_manager.py     # ROM identification
@@ -74,6 +75,7 @@ amiberry-mcp-server/
 │   └── test_http_api.sh       # HTTP API tests
 ├── tests/
 │   ├── test_server.py         # Server integration tests
+│   ├── test_shared_state.py   # Shared state module tests
 │   ├── test_mcp_connection.py # MCP protocol tests
 │   ├── test_uae_config.py     # Config parser tests
 │   ├── test_savestate.py      # Savestate parser tests

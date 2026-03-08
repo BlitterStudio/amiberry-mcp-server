@@ -31,9 +31,11 @@ class TestFindConfigPath:
 
     def test_returns_none_for_missing_config(self, tmp_path):
         """None is returned when the file doesn't exist."""
-        with patch("amiberry_mcp.common.CONFIG_DIR", tmp_path), \
-             patch("amiberry_mcp.common.IS_LINUX", False), \
-             patch("amiberry_mcp.common.SYSTEM_CONFIG_DIR", None):
+        with (
+            patch("amiberry_mcp.common.CONFIG_DIR", tmp_path),
+            patch("amiberry_mcp.common.IS_LINUX", False),
+            patch("amiberry_mcp.common.SYSTEM_CONFIG_DIR", None),
+        ):
             result = find_config_path("NonExistent.uae")
 
         assert result is None
@@ -45,9 +47,11 @@ class TestFindConfigPath:
         config_file = sub / "Deep.uae"
         config_file.write_text("cpu_model=68000\n")
 
-        with patch("amiberry_mcp.common.CONFIG_DIR", tmp_path), \
-             patch("amiberry_mcp.common.IS_LINUX", False), \
-             patch("amiberry_mcp.common.SYSTEM_CONFIG_DIR", None):
+        with (
+            patch("amiberry_mcp.common.CONFIG_DIR", tmp_path),
+            patch("amiberry_mcp.common.IS_LINUX", False),
+            patch("amiberry_mcp.common.SYSTEM_CONFIG_DIR", None),
+        ):
             # Asking for "subdir/Deep.uae" should work (it's a relative path)
             result = find_config_path("subdir/Deep.uae")
 
@@ -65,9 +69,11 @@ class TestFindConfigPath:
         config_dir = tmp_path / "configs"
         config_dir.mkdir()
 
-        with patch("amiberry_mcp.common.CONFIG_DIR", config_dir), \
-             patch("amiberry_mcp.common.IS_LINUX", False), \
-             patch("amiberry_mcp.common.SYSTEM_CONFIG_DIR", None):
+        with (
+            patch("amiberry_mcp.common.CONFIG_DIR", config_dir),
+            patch("amiberry_mcp.common.IS_LINUX", False),
+            patch("amiberry_mcp.common.SYSTEM_CONFIG_DIR", None),
+        ):
             result = find_config_path("../outside/secret.uae")
 
         assert result is None
@@ -82,9 +88,11 @@ class TestFindConfigPath:
         system_config = system_dir / "SystemConfig.uae"
         system_config.write_text("cpu_model=68000\n")
 
-        with patch("amiberry_mcp.common.CONFIG_DIR", user_dir), \
-             patch("amiberry_mcp.common.IS_LINUX", True), \
-             patch("amiberry_mcp.common.SYSTEM_CONFIG_DIR", system_dir):
+        with (
+            patch("amiberry_mcp.common.CONFIG_DIR", user_dir),
+            patch("amiberry_mcp.common.IS_LINUX", True),
+            patch("amiberry_mcp.common.SYSTEM_CONFIG_DIR", system_dir),
+        ):
             result = find_config_path("SystemConfig.uae")
 
         assert result is not None
@@ -103,9 +111,11 @@ class TestFindConfigPath:
         system_config = system_dir / "Shared.uae"
         system_config.write_text("from=system\n")
 
-        with patch("amiberry_mcp.common.CONFIG_DIR", user_dir), \
-             patch("amiberry_mcp.common.IS_LINUX", True), \
-             patch("amiberry_mcp.common.SYSTEM_CONFIG_DIR", system_dir):
+        with (
+            patch("amiberry_mcp.common.CONFIG_DIR", user_dir),
+            patch("amiberry_mcp.common.IS_LINUX", True),
+            patch("amiberry_mcp.common.SYSTEM_CONFIG_DIR", system_dir),
+        ):
             result = find_config_path("Shared.uae")
 
         assert result is not None

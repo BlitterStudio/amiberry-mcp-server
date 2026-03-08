@@ -8,8 +8,6 @@ Covers:
 - Fix #14: Response rstrip instead of strip
 """
 
-import asyncio
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,9 +26,10 @@ class TestIPCProtocolInjection:
     async def test_tab_in_argument_is_stripped(self, client):
         """Tab characters in arguments should be removed to prevent injection."""
         # We'll check the message that would be sent by mocking the socket
-        with patch("asyncio.open_unix_connection") as mock_conn, \
-             patch("os.path.exists", return_value=True):
-
+        with (
+            patch("asyncio.open_unix_connection") as mock_conn,
+            patch("os.path.exists", return_value=True),
+        ):
             mock_reader = AsyncMock()
             mock_reader.readline = AsyncMock(return_value=b"OK\tresult\n")
             mock_writer = MagicMock()
@@ -59,9 +58,10 @@ class TestIPCProtocolInjection:
     @pytest.mark.asyncio
     async def test_newline_in_argument_is_stripped(self, client):
         """Newline characters in arguments should be removed."""
-        with patch("asyncio.open_unix_connection") as mock_conn, \
-             patch("os.path.exists", return_value=True):
-
+        with (
+            patch("asyncio.open_unix_connection") as mock_conn,
+            patch("os.path.exists", return_value=True),
+        ):
             mock_reader = AsyncMock()
             mock_reader.readline = AsyncMock(return_value=b"OK\n")
             mock_writer = MagicMock()
@@ -85,9 +85,10 @@ class TestIPCProtocolInjection:
     @pytest.mark.asyncio
     async def test_carriage_return_in_argument_is_stripped(self, client):
         """Carriage return characters in arguments should be removed."""
-        with patch("asyncio.open_unix_connection") as mock_conn, \
-             patch("os.path.exists", return_value=True):
-
+        with (
+            patch("asyncio.open_unix_connection") as mock_conn,
+            patch("os.path.exists", return_value=True),
+        ):
             mock_reader = AsyncMock()
             mock_reader.readline = AsyncMock(return_value=b"OK\n")
             mock_writer = MagicMock()
@@ -107,9 +108,10 @@ class TestIPCProtocolInjection:
     @pytest.mark.asyncio
     async def test_clean_arguments_unchanged(self, client):
         """Arguments without special chars should pass through unchanged."""
-        with patch("asyncio.open_unix_connection") as mock_conn, \
-             patch("os.path.exists", return_value=True):
-
+        with (
+            patch("asyncio.open_unix_connection") as mock_conn,
+            patch("os.path.exists", return_value=True),
+        ):
             mock_reader = AsyncMock()
             mock_reader.readline = AsyncMock(return_value=b"OK\n")
             mock_writer = MagicMock()
@@ -137,9 +139,10 @@ class TestResponseParsing:
     @pytest.mark.asyncio
     async def test_response_preserves_leading_spaces(self, client):
         """Response should preserve leading whitespace (rstrip, not strip)."""
-        with patch("asyncio.open_unix_connection") as mock_conn, \
-             patch("os.path.exists", return_value=True):
-
+        with (
+            patch("asyncio.open_unix_connection") as mock_conn,
+            patch("os.path.exists", return_value=True),
+        ):
             mock_reader = AsyncMock()
             # Response with leading spaces in data
             mock_reader.readline = AsyncMock(return_value=b"OK\t  spaced value\n")
@@ -158,9 +161,10 @@ class TestResponseParsing:
     @pytest.mark.asyncio
     async def test_response_strips_trailing_newline(self, client):
         """Response trailing newlines/carriage returns should be stripped."""
-        with patch("asyncio.open_unix_connection") as mock_conn, \
-             patch("os.path.exists", return_value=True):
-
+        with (
+            patch("asyncio.open_unix_connection") as mock_conn,
+            patch("os.path.exists", return_value=True),
+        ):
             mock_reader = AsyncMock()
             mock_reader.readline = AsyncMock(return_value=b"OK\tvalue\r\n")
             mock_writer = MagicMock()
@@ -186,9 +190,10 @@ class TestResponseSizeLimit:
     @pytest.mark.asyncio
     async def test_large_response_is_truncated(self, client):
         """Responses larger than 1MB should be truncated."""
-        with patch("asyncio.open_unix_connection") as mock_conn, \
-             patch("os.path.exists", return_value=True):
-
+        with (
+            patch("asyncio.open_unix_connection") as mock_conn,
+            patch("os.path.exists", return_value=True),
+        ):
             # Create a response larger than 1MB
             large_data = b"OK\t" + b"X" * (2 * 1024 * 1024) + b"\n"
             mock_reader = AsyncMock()
@@ -209,9 +214,10 @@ class TestResponseSizeLimit:
     @pytest.mark.asyncio
     async def test_normal_response_not_truncated(self, client):
         """Normal-sized responses should not be truncated."""
-        with patch("asyncio.open_unix_connection") as mock_conn, \
-             patch("os.path.exists", return_value=True):
-
+        with (
+            patch("asyncio.open_unix_connection") as mock_conn,
+            patch("os.path.exists", return_value=True),
+        ):
             mock_reader = AsyncMock()
             mock_reader.readline = AsyncMock(return_value=b"OK\tnormal response\n")
             mock_writer = MagicMock()

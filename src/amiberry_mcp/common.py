@@ -7,6 +7,7 @@ import asyncio
 import datetime
 import signal
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,10 @@ from .config import (
     LOG_DIR,
     SYSTEM_CONFIG_DIR,
 )
+
+# TTL-based cache for scan_disk_images results
+_scan_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_SCAN_CACHE_TTL = 60.0  # seconds
 
 
 def _is_path_within(path: Path, parent: Path) -> bool:
@@ -180,6 +185,17 @@ def terminate_process(proc: subprocess.Popen, timeout: float = 5.0) -> None:
             pass
 
 
+def _get_cache_key(search_dirs: list[Path], image_type: str, search_term: str) -> str:
+    """Generate a cache key from scan parameters."""
+    dirs_str = ",".join(str(d) for d in search_dirs)
+    return f"{dirs_str}|{image_type}|{search_term}"
+
+
+def clear_scan_cache() -> None:
+    """Clear the scan cache. Useful for testing and manual invalidation."""
+    _scan_cache.clear()
+
+
 def scan_disk_images(
     search_dirs: list[Path],
     image_type: str = "all",
@@ -188,7 +204,16 @@ def scan_disk_images(
     """Scan directories for disk images, with optional type filtering and search.
 
     Returns a deduplicated list of image info dicts sorted by name.
+    Uses targeted extension globs for performance and caches results with 60s TTL.
     """
+    cache_key = _get_cache_key(search_dirs, image_type, search_term)
+    now = time.time()
+
+    if cache_key in _scan_cache:
+        timestamp, cached_result = _scan_cache[cache_key]
+        if now - timestamp < _SCAN_CACHE_TTL:
+            return cached_result
+
     extensions = get_extensions_for_type(image_type)
     ext_set = {e.lower() for e in extensions}
     search_lower = search_term.lower() if search_term else ""
@@ -199,31 +224,31 @@ def scan_disk_images(
     for search_dir in search_dirs:
         if not search_dir.exists():
             continue
-        for img_path in search_dir.rglob("*"):
-            if not img_path.is_file():
-                continue
-            if img_path.suffix.lower() not in ext_set:
-                continue
-            path_str = str(img_path)
-            if path_str in seen:
-                continue
-            if search_lower and search_lower not in img_path.name.lower():
-                continue
-            seen.add(path_str)
-            try:
-                file_size = img_path.stat().st_size
-            except OSError:
-                continue
-            images.append(
-                {
-                    "name": img_path.name,
-                    "path": path_str,
-                    "type": classify_image_type(img_path.suffix),
-                    "size": file_size,
-                }
-            )
+        for ext in ext_set:
+            for img_path in search_dir.rglob(f"*{ext}"):
+                if not img_path.is_file():
+                    continue
+                path_str = str(img_path)
+                if path_str in seen:
+                    continue
+                if search_lower and search_lower not in img_path.name.lower():
+                    continue
+                seen.add(path_str)
+                try:
+                    file_size = img_path.stat().st_size
+                except OSError:
+                    continue
+                images.append(
+                    {
+                        "name": img_path.name,
+                        "path": path_str,
+                        "type": classify_image_type(img_path.suffix),
+                        "size": file_size,
+                    }
+                )
 
     images.sort(key=lambda x: x["name"].lower())
+    _scan_cache[cache_key] = (now, images)
     return images
 
 

@@ -14,19 +14,23 @@ import pytest
 
 
 class TestLaunchAndStore:
-    """Tests for Fix #4: _launch_and_store helper."""
+    """Tests for Fix #4: launch_and_store helper (now in shared_state)."""
 
     def test_stores_process_and_state(self):
-        """_launch_and_store should store process, cmd, and log_path in _state."""
-        from amiberry_mcp.server import _launch_and_store, _state
+        """launch_and_store should store process, cmd, and log_path in _state."""
+        from amiberry_mcp.shared_state import get_state, launch_and_store
 
+        _state = get_state()
         mock_proc = MagicMock()
         mock_log = MagicMock()
         cmd = ["/usr/bin/amiberry", "-G"]
 
-        with patch("amiberry_mcp.server.launch_process", return_value=(mock_proc, mock_log)):
+        with patch(
+            "amiberry_mcp.shared_state.launch_process",
+            return_value=(mock_proc, mock_log),
+        ):
             with patch.object(_state, "close_log_handle"):
-                result = _launch_and_store(cmd, log_path=Path("/tmp/test.log"))
+                result = launch_and_store(cmd, log_path=Path("/tmp/test.log"))
 
         assert result is mock_proc
         assert _state.process is mock_proc
@@ -35,14 +39,20 @@ class TestLaunchAndStore:
         assert _state.log_file_handle is mock_log
 
     def test_closes_previous_log_handle(self):
-        """_launch_and_store should close the previous log handle first."""
-        from amiberry_mcp.server import _launch_and_store, _state
+        """launch_and_store should close the previous log handle first."""
+        from amiberry_mcp.shared_state import get_state, launch_and_store
 
+        _state = get_state()
         mock_proc = MagicMock()
 
-        with patch("amiberry_mcp.server.launch_process", return_value=(mock_proc, None)), \
-             patch.object(_state, "close_log_handle") as mock_close:
-            _launch_and_store(["/usr/bin/amiberry"])
+        with (
+            patch(
+                "amiberry_mcp.shared_state.launch_process",
+                return_value=(mock_proc, None),
+            ),
+            patch.object(_state, "close_log_handle") as mock_close,
+        ):
+            launch_and_store(["/usr/bin/amiberry"])
 
         mock_close.assert_called_once()
 
@@ -59,7 +69,6 @@ class TestWarpModeStrings:
         mock_client.set_warp = MagicMock(return_value=True)
 
         # Make set_warp async
-        import asyncio
 
         async def mock_set_warp(enabled):
             return True
@@ -91,6 +100,7 @@ class TestWarpModeStrings:
         mock_client.set_warp = mock_set_warp
 
         with patch("amiberry_mcp.server._ipc_call") as mock_ipc:
+
             async def capture_cb(cb):
                 result = await cb(mock_client)
                 return [MagicMock(type="text", text=result)]
@@ -114,6 +124,7 @@ class TestWarpModeStrings:
         mock_client.set_warp = mock_set_warp
 
         with patch("amiberry_mcp.server._ipc_call") as mock_ipc:
+
             async def capture_cb(cb):
                 result = await cb(mock_client)
                 return [MagicMock(type="text", text=result)]

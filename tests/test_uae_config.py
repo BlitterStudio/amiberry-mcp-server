@@ -208,9 +208,7 @@ class TestModifyPreservesStructure:
     def test_preserves_blank_lines(self, tmp_path: Path):
         """Blank lines should be preserved after modification."""
         config_file = tmp_path / "test.uae"
-        config_file.write_text(
-            "cpu_model=68000\n\nchipset=ocs\n\nsound_output=exact\n"
-        )
+        config_file.write_text("cpu_model=68000\n\nchipset=ocs\n\nsound_output=exact\n")
 
         modify_uae_config(config_file, {"chipset": "aga"})
 
@@ -222,15 +220,13 @@ class TestModifyPreservesStructure:
     def test_preserves_key_ordering(self, tmp_path: Path):
         """Keys should remain in their original order."""
         config_file = tmp_path / "test.uae"
-        config_file.write_text(
-            "chipset=ocs\ncpu_model=68000\nsound_output=exact\n"
-        )
+        config_file.write_text("chipset=ocs\ncpu_model=68000\nsound_output=exact\n")
 
         modify_uae_config(config_file, {"cpu_model": "68020"})
 
         content = config_file.read_text()
-        lines = [l for l in content.strip().split("\n") if l and "=" in l]
-        keys = [l.split("=")[0] for l in lines]
+        lines = [line for line in content.strip().split("\n") if line and "=" in line]
+        keys = [line.split("=")[0] for line in lines]
         assert keys == ["chipset", "cpu_model", "sound_output"]
 
     def test_new_keys_appended_at_end(self, tmp_path: Path):
@@ -241,7 +237,7 @@ class TestModifyPreservesStructure:
         modify_uae_config(config_file, {"new_key": "new_value"})
 
         content = config_file.read_text()
-        lines = [l for l in content.strip().split("\n") if l and "=" in l]
+        lines = [line for line in content.strip().split("\n") if line and "=" in line]
         assert lines[-1] == "new_key=new_value"
 
     def test_removed_keys_leave_no_trace(self, tmp_path: Path):
@@ -262,9 +258,7 @@ class TestModifyPreservesStructure:
     def test_preserves_hash_comments(self, tmp_path: Path):
         """Hash-style comments should also be preserved."""
         config_file = tmp_path / "test.uae"
-        config_file.write_text(
-            "# Hash comment\ncpu_model=68000\n"
-        )
+        config_file.write_text("# Hash comment\ncpu_model=68000\n")
 
         modify_uae_config(config_file, {"cpu_model": "68020"})
 
