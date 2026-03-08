@@ -162,7 +162,7 @@ AMIGA_KEY_MAP: dict[str, int] = {
     "help": 0x5F,
 }
 
-# Character to (keycode, needs_shift) mapping for type_text support
+# Character to (keycode, needs_shift) mapping for send_text support
 # Maps printable ASCII characters to their Amiga key + shift state
 _CHAR_TO_KEY: dict[str, tuple[int, bool]] = {
     # Lowercase letters (no shift)
@@ -592,7 +592,7 @@ class AmiberryIPCClient:
         success, _ = await self._send_command("SEND_KEY", str(keycode), state)
         return success
 
-    async def type_text(self, text: str, delay: float = 0.05) -> tuple[int, int]:
+    async def send_text(self, text: str, delay: float = 0.05) -> tuple[int, int]:
         """
         Type a string of text by sending key press/release events.
 

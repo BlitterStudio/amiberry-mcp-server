@@ -345,7 +345,7 @@ class RuntimeSendKeyRequest(BaseModel):
     state: int
 
 
-class RuntimeTypeTextRequest(BaseModel):
+class RuntimeSendTextRequest(BaseModel):
     text: str
     delay_ms: int = 50
 
@@ -1814,9 +1814,9 @@ async def runtime_send_key(request: RuntimeSendKeyRequest):
 
 
 @app.post("/runtime/type")
-async def runtime_type_text(request: RuntimeTypeTextRequest):
+async def runtime_send_text(request: RuntimeSendTextRequest):
     """
-    Type a string of text into the emulation character by character.
+    Send a string of text into the emulation character by character.
     Handles uppercase (via Shift) and common symbols.
     Requires Amiberry to be running with IPC enabled.
     """
@@ -1829,7 +1829,7 @@ async def runtime_type_text(request: RuntimeTypeTextRequest):
 
     delay = request.delay_ms / 1000.0
     async with _ipc_context() as client:
-        typed, skipped = await client.type_text(request.text, delay=delay)
+        typed, skipped = await client.send_text(request.text, delay=delay)
         return _ipc_success_or_raise(
             typed > 0,
             f"Typed {typed} character(s)",
