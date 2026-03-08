@@ -9,20 +9,39 @@ The client automatically chooses the best available transport.
 """
 
 import asyncio
+import importlib
 import os
 import sys
 from typing import Any
 
+if not hasattr(asyncio, "open_unix_connection"):
+
+    async def _unsupported_open_unix_connection(
+        *args: Any, **kwargs: Any
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        raise OSError("Unix sockets are not supported on this platform")
+
+    asyncio.open_unix_connection = _unsupported_open_unix_connection  # type: ignore[attr-defined]
+
 # Check for D-Bus support (Linux only)
-DBUS_AVAILABLE = False
+_dbus_available, DBusAddress, new_method_call, open_dbus_connection = (
+    False,
+    None,
+    None,
+    None,
+)
 if sys.platform == "linux":
     try:
-        from jeepney import DBusAddress, new_method_call
-        from jeepney.io.asyncio import open_dbus_connection
-
-        DBUS_AVAILABLE = True
+        jeepney_module = importlib.import_module("jeepney")
+        jeepney_asyncio_module = importlib.import_module("jeepney.io.asyncio")
+        DBusAddress = jeepney_module.DBusAddress
+        new_method_call = jeepney_module.new_method_call
+        open_dbus_connection = jeepney_asyncio_module.open_dbus_connection
+        _dbus_available = True
     except ImportError:
         pass
+
+DBUS_AVAILABLE = _dbus_available
 
 
 # Socket paths - cache base directory
@@ -115,50 +134,123 @@ _RESOLUTION_MODE_MAP = {
 # Maps friendly key names to Amiga hardware scancodes (0x00-0x67)
 AMIGA_KEY_MAP: dict[str, int] = {
     # Row 0 - number row
-    "backquote": 0x00, "tilde": 0x00, "grave": 0x00,
-    "1": 0x01, "2": 0x02, "3": 0x03, "4": 0x04, "5": 0x05,
-    "6": 0x06, "7": 0x07, "8": 0x08, "9": 0x09, "0": 0x0A,
-    "minus": 0x0B, "equals": 0x0C, "backslash": 0x0D,
+    "backquote": 0x00,
+    "tilde": 0x00,
+    "grave": 0x00,
+    "1": 0x01,
+    "2": 0x02,
+    "3": 0x03,
+    "4": 0x04,
+    "5": 0x05,
+    "6": 0x06,
+    "7": 0x07,
+    "8": 0x08,
+    "9": 0x09,
+    "0": 0x0A,
+    "minus": 0x0B,
+    "equals": 0x0C,
+    "backslash": 0x0D,
     # Row 1 - QWERTY row
-    "q": 0x10, "w": 0x11, "e": 0x12, "r": 0x13, "t": 0x14,
-    "y": 0x15, "u": 0x16, "i": 0x17, "o": 0x18, "p": 0x19,
-    "leftbracket": 0x1A, "rightbracket": 0x1B,
+    "q": 0x10,
+    "w": 0x11,
+    "e": 0x12,
+    "r": 0x13,
+    "t": 0x14,
+    "y": 0x15,
+    "u": 0x16,
+    "i": 0x17,
+    "o": 0x18,
+    "p": 0x19,
+    "leftbracket": 0x1A,
+    "rightbracket": 0x1B,
     # Row 2 - ASDF row
-    "a": 0x20, "s": 0x21, "d": 0x22, "f": 0x23, "g": 0x24,
-    "h": 0x25, "j": 0x26, "k": 0x27, "l": 0x28,
-    "semicolon": 0x29, "quote": 0x2A, "hash": 0x2B,
+    "a": 0x20,
+    "s": 0x21,
+    "d": 0x22,
+    "f": 0x23,
+    "g": 0x24,
+    "h": 0x25,
+    "j": 0x26,
+    "k": 0x27,
+    "l": 0x28,
+    "semicolon": 0x29,
+    "quote": 0x2A,
+    "hash": 0x2B,
     # Row 3 - ZXCV row
     "lessthan": 0x30,
-    "z": 0x31, "x": 0x32, "c": 0x33, "v": 0x34, "b": 0x35,
-    "n": 0x36, "m": 0x37,
-    "comma": 0x38, "period": 0x39, "slash": 0x3A,
+    "z": 0x31,
+    "x": 0x32,
+    "c": 0x33,
+    "v": 0x34,
+    "b": 0x35,
+    "n": 0x36,
+    "m": 0x37,
+    "comma": 0x38,
+    "period": 0x39,
+    "slash": 0x3A,
     # Special keys
-    "space": 0x40, "backspace": 0x41, "tab": 0x42,
-    "numpad_enter": 0x43, "return": 0x44, "enter": 0x44,
-    "escape": 0x45, "esc": 0x45, "delete": 0x46, "del": 0x46,
+    "space": 0x40,
+    "backspace": 0x41,
+    "tab": 0x42,
+    "numpad_enter": 0x43,
+    "return": 0x44,
+    "enter": 0x44,
+    "escape": 0x45,
+    "esc": 0x45,
+    "delete": 0x46,
+    "del": 0x46,
     # Numpad
     "numpad_0": 0x0F,
-    "numpad_1": 0x1D, "numpad_2": 0x1E, "numpad_3": 0x1F,
-    "numpad_4": 0x2D, "numpad_5": 0x2E, "numpad_6": 0x2F,
-    "numpad_7": 0x3D, "numpad_8": 0x3E, "numpad_9": 0x3F,
-    "numpad_period": 0x3C, "numpad_minus": 0x4A,
-    "numpad_lparen": 0x5A, "numpad_rparen": 0x5B,
-    "numpad_divide": 0x5C, "numpad_multiply": 0x5D,
+    "numpad_1": 0x1D,
+    "numpad_2": 0x1E,
+    "numpad_3": 0x1F,
+    "numpad_4": 0x2D,
+    "numpad_5": 0x2E,
+    "numpad_6": 0x2F,
+    "numpad_7": 0x3D,
+    "numpad_8": 0x3E,
+    "numpad_9": 0x3F,
+    "numpad_period": 0x3C,
+    "numpad_minus": 0x4A,
+    "numpad_lparen": 0x5A,
+    "numpad_rparen": 0x5B,
+    "numpad_divide": 0x5C,
+    "numpad_multiply": 0x5D,
     "numpad_plus": 0x5E,
     # Cursor keys
-    "up": 0x4C, "down": 0x4D, "right": 0x4E, "left": 0x4F,
+    "up": 0x4C,
+    "down": 0x4D,
+    "right": 0x4E,
+    "left": 0x4F,
     # Function keys
-    "f1": 0x50, "f2": 0x51, "f3": 0x52, "f4": 0x53, "f5": 0x54,
-    "f6": 0x55, "f7": 0x56, "f8": 0x57, "f9": 0x58, "f10": 0x59,
+    "f1": 0x50,
+    "f2": 0x51,
+    "f3": 0x52,
+    "f4": 0x53,
+    "f5": 0x54,
+    "f6": 0x55,
+    "f7": 0x56,
+    "f8": 0x57,
+    "f9": 0x58,
+    "f10": 0x59,
     # Modifier keys
-    "left_shift": 0x60, "lshift": 0x60,
-    "right_shift": 0x61, "rshift": 0x61,
-    "caps_lock": 0x62, "capslock": 0x62,
-    "ctrl": 0x63, "control": 0x63,
-    "left_alt": 0x64, "lalt": 0x64, "alt": 0x64,
-    "right_alt": 0x65, "ralt": 0x65,
-    "left_amiga": 0x66, "lamiga": 0x66,
-    "right_amiga": 0x67, "ramiga": 0x67,
+    "left_shift": 0x60,
+    "lshift": 0x60,
+    "right_shift": 0x61,
+    "rshift": 0x61,
+    "caps_lock": 0x62,
+    "capslock": 0x62,
+    "ctrl": 0x63,
+    "control": 0x63,
+    "left_alt": 0x64,
+    "lalt": 0x64,
+    "alt": 0x64,
+    "right_alt": 0x65,
+    "ralt": 0x65,
+    "left_amiga": 0x66,
+    "lamiga": 0x66,
+    "right_amiga": 0x67,
+    "ramiga": 0x67,
     "help": 0x5F,
 }
 
@@ -166,46 +258,104 @@ AMIGA_KEY_MAP: dict[str, int] = {
 # Maps printable ASCII characters to their Amiga key + shift state
 _CHAR_TO_KEY: dict[str, tuple[int, bool]] = {
     # Lowercase letters (no shift)
-    "a": (0x20, False), "b": (0x35, False), "c": (0x33, False),
-    "d": (0x22, False), "e": (0x12, False), "f": (0x23, False),
-    "g": (0x24, False), "h": (0x25, False), "i": (0x17, False),
-    "j": (0x26, False), "k": (0x27, False), "l": (0x28, False),
-    "m": (0x37, False), "n": (0x36, False), "o": (0x18, False),
-    "p": (0x19, False), "q": (0x10, False), "r": (0x13, False),
-    "s": (0x21, False), "t": (0x14, False), "u": (0x16, False),
-    "v": (0x34, False), "w": (0x11, False), "x": (0x32, False),
-    "y": (0x15, False), "z": (0x31, False),
+    "a": (0x20, False),
+    "b": (0x35, False),
+    "c": (0x33, False),
+    "d": (0x22, False),
+    "e": (0x12, False),
+    "f": (0x23, False),
+    "g": (0x24, False),
+    "h": (0x25, False),
+    "i": (0x17, False),
+    "j": (0x26, False),
+    "k": (0x27, False),
+    "l": (0x28, False),
+    "m": (0x37, False),
+    "n": (0x36, False),
+    "o": (0x18, False),
+    "p": (0x19, False),
+    "q": (0x10, False),
+    "r": (0x13, False),
+    "s": (0x21, False),
+    "t": (0x14, False),
+    "u": (0x16, False),
+    "v": (0x34, False),
+    "w": (0x11, False),
+    "x": (0x32, False),
+    "y": (0x15, False),
+    "z": (0x31, False),
     # Uppercase letters (shift)
-    "A": (0x20, True), "B": (0x35, True), "C": (0x33, True),
-    "D": (0x22, True), "E": (0x12, True), "F": (0x23, True),
-    "G": (0x24, True), "H": (0x25, True), "I": (0x17, True),
-    "J": (0x26, True), "K": (0x27, True), "L": (0x28, True),
-    "M": (0x37, True), "N": (0x36, True), "O": (0x18, True),
-    "P": (0x19, True), "Q": (0x10, True), "R": (0x13, True),
-    "S": (0x21, True), "T": (0x14, True), "U": (0x16, True),
-    "V": (0x34, True), "W": (0x11, True), "X": (0x32, True),
-    "Y": (0x15, True), "Z": (0x31, True),
+    "A": (0x20, True),
+    "B": (0x35, True),
+    "C": (0x33, True),
+    "D": (0x22, True),
+    "E": (0x12, True),
+    "F": (0x23, True),
+    "G": (0x24, True),
+    "H": (0x25, True),
+    "I": (0x17, True),
+    "J": (0x26, True),
+    "K": (0x27, True),
+    "L": (0x28, True),
+    "M": (0x37, True),
+    "N": (0x36, True),
+    "O": (0x18, True),
+    "P": (0x19, True),
+    "Q": (0x10, True),
+    "R": (0x13, True),
+    "S": (0x21, True),
+    "T": (0x14, True),
+    "U": (0x16, True),
+    "V": (0x34, True),
+    "W": (0x11, True),
+    "X": (0x32, True),
+    "Y": (0x15, True),
+    "Z": (0x31, True),
     # Numbers (no shift)
-    "1": (0x01, False), "2": (0x02, False), "3": (0x03, False),
-    "4": (0x04, False), "5": (0x05, False), "6": (0x06, False),
-    "7": (0x07, False), "8": (0x08, False), "9": (0x09, False),
+    "1": (0x01, False),
+    "2": (0x02, False),
+    "3": (0x03, False),
+    "4": (0x04, False),
+    "5": (0x05, False),
+    "6": (0x06, False),
+    "7": (0x07, False),
+    "8": (0x08, False),
+    "9": (0x09, False),
     "0": (0x0A, False),
     # Shifted number row symbols (US layout)
-    "!": (0x01, True), "@": (0x02, True), "#": (0x03, True),
-    "$": (0x04, True), "%": (0x05, True), "^": (0x06, True),
-    "&": (0x07, True), "*": (0x08, True), "(": (0x09, True),
+    "!": (0x01, True),
+    "@": (0x02, True),
+    "#": (0x03, True),
+    "$": (0x04, True),
+    "%": (0x05, True),
+    "^": (0x06, True),
+    "&": (0x07, True),
+    "*": (0x08, True),
+    "(": (0x09, True),
     ")": (0x0A, True),
     # Punctuation (no shift)
-    "-": (0x0B, False), "=": (0x0C, False), "\\": (0x0D, False),
-    "[": (0x1A, False), "]": (0x1B, False),
-    ";": (0x29, False), "'": (0x2A, False),
-    ",": (0x38, False), ".": (0x39, False), "/": (0x3A, False),
+    "-": (0x0B, False),
+    "=": (0x0C, False),
+    "\\": (0x0D, False),
+    "[": (0x1A, False),
+    "]": (0x1B, False),
+    ";": (0x29, False),
+    "'": (0x2A, False),
+    ",": (0x38, False),
+    ".": (0x39, False),
+    "/": (0x3A, False),
     "`": (0x00, False),
     # Shifted punctuation
-    "_": (0x0B, True), "+": (0x0C, True), "|": (0x0D, True),
-    "{": (0x1A, True), "}": (0x1B, True),
-    ":": (0x29, True), "\"": (0x2A, True),
-    "<": (0x38, True), ">": (0x39, True), "?": (0x3A, True),
+    "_": (0x0B, True),
+    "+": (0x0C, True),
+    "|": (0x0D, True),
+    "{": (0x1A, True),
+    "}": (0x1B, True),
+    ":": (0x29, True),
+    '"': (0x2A, True),
+    "<": (0x38, True),
+    ">": (0x39, True),
+    "?": (0x3A, True),
     "~": (0x00, True),
     # Whitespace
     " ": (0x40, False),
@@ -288,6 +438,43 @@ class AmiberryIPCClient:
         else:
             self._socket_path = _find_socket_path()
 
+        self._reader: asyncio.StreamReader | None = None
+        self._writer: asyncio.StreamWriter | None = None
+        self._connection_lock = asyncio.Lock()
+
+    async def __aenter__(self) -> "AmiberryIPCClient":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.close()
+
+    async def close(self) -> None:
+        async with self._connection_lock:
+            await self._close_socket_connection()
+
+    async def _close_socket_connection(self) -> None:
+        if self._writer is not None:
+            try:
+                self._writer.close()
+                await self._writer.wait_closed()
+            except OSError:
+                pass
+
+        self._writer = None
+        self._reader = None
+
+    async def _ensure_socket_connection(self, timeout: float) -> None:
+        if self._writer is not None and self._reader is not None:
+            if not self._writer.is_closing():
+                return
+
+            await self._close_socket_connection()
+
+        self._reader, self._writer = await asyncio.wait_for(
+            asyncio.open_unix_connection(self._socket_path),
+            timeout=timeout,
+        )
+
     @property
     def transport(self) -> str:
         """Return the transport type that will be used."""
@@ -318,73 +505,101 @@ class AmiberryIPCClient:
         # Build message: COMMAND\tARG1\tARG2...\n
         # Sanitize arguments to prevent protocol injection via tab/newline
         sanitized_args = [
-            str(a).replace("\t", "").replace("\n", "").replace("\r", "")
-            for a in args
+            str(a).replace("\t", "").replace("\n", "").replace("\r", "") for a in args
         ]
         parts = [command.upper()] + sanitized_args
         message = "\t".join(parts) + "\n"
 
-        writer = None
-        try:
-            # Create socket and connect
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_unix_connection(socket_path), timeout=timeout
-            )
+        reconnect_errors = (
+            BrokenPipeError,
+            ConnectionResetError,
+            ConnectionError,
+            asyncio.IncompleteReadError,
+        )
 
-            # Send command
-            writer.write(message.encode("utf-8"))
-            await writer.drain()
+        async with self._connection_lock:
+            first_reconnect_error: Exception | None = None
 
-            # Read response (limit to 1MB to prevent memory exhaustion)
-            _MAX_RESPONSE_SIZE = 1024 * 1024
-            response = await asyncio.wait_for(
-                reader.readline(), timeout=timeout
-            )
-            if len(response) > _MAX_RESPONSE_SIZE:
-                response = response[:_MAX_RESPONSE_SIZE]
-
-            # Parse response
-            response_str = response.decode("utf-8").rstrip("\n\r")
-            if not response_str:
-                return False, ["Empty response"]
-
-            parts = response_str.split("\t")
-            success = parts[0] == "OK"
-            data = parts[1:] if len(parts) > 1 else []
-
-            return success, data
-
-        except asyncio.TimeoutError as e:
-            raise IPCConnectionError(f"Connection to {socket_path} timed out") from e
-        except FileNotFoundError as e:
-            raise IPCConnectionError(f"Socket not found: {socket_path}") from e
-        except ConnectionRefusedError as e:
-            raise IPCConnectionError(f"Connection refused to {socket_path}") from e
-        except Exception as e:
-            raise IPCConnectionError(f"Socket error: {e}") from e
-        finally:
-            if writer is not None:
-                writer.close()
+            for _attempt in range(2):
                 try:
-                    await writer.wait_closed()
-                except Exception:
-                    pass
+                    await self._ensure_socket_connection(timeout)
+
+                    if self._writer is None or self._reader is None:
+                        raise IPCConnectionError("Socket connection is not available")
+
+                    # Send command
+                    self._writer.write(message.encode("utf-8"))
+                    await self._writer.drain()
+
+                    # Read response (limit to 1MB to prevent memory exhaustion)
+                    _MAX_RESPONSE_SIZE = 1024 * 1024
+                    response = await asyncio.wait_for(
+                        self._reader.readline(), timeout=timeout
+                    )
+                    if len(response) > _MAX_RESPONSE_SIZE:
+                        response = response[:_MAX_RESPONSE_SIZE]
+
+                    # Parse response
+                    response_str = response.decode("utf-8").rstrip("\n\r")
+                    if not response_str:
+                        return False, ["Empty response"]
+
+                    parts = response_str.split("\t")
+                    success = parts[0] == "OK"
+                    data = parts[1:] if len(parts) > 1 else []
+
+                    return success, data
+
+                except reconnect_errors as e:
+                    await self._close_socket_connection()
+
+                    if first_reconnect_error is None:
+                        first_reconnect_error = e
+                        continue
+
+                    raise IPCConnectionError(
+                        f"Socket error: {first_reconnect_error}"
+                    ) from first_reconnect_error
+                except asyncio.TimeoutError as e:
+                    await self._close_socket_connection()
+                    raise IPCConnectionError(
+                        f"Connection to {socket_path} timed out"
+                    ) from e
+                except FileNotFoundError as e:
+                    await self._close_socket_connection()
+                    raise IPCConnectionError(f"Socket not found: {socket_path}") from e
+                except IPCConnectionError:
+                    raise
+                except Exception as e:
+                    await self._close_socket_connection()
+                    raise IPCConnectionError(f"Socket error: {e}") from e
+
+        raise IPCConnectionError("Socket command failed")
 
     async def _send_dbus_command(
         self, method: str, *args: Any, timeout: float = 5.0
     ) -> tuple[bool, list[str]]:
         """Send a command over D-Bus and return the response."""
-        if not DBUS_AVAILABLE:
+        if (
+            not DBUS_AVAILABLE
+            or open_dbus_connection is None
+            or DBusAddress is None
+            or new_method_call is None
+        ):
             raise IPCConnectionError("D-Bus support not available")
 
+        open_dbus_connection_fn = open_dbus_connection
+        dbus_address_type = DBusAddress
+        method_call_builder = new_method_call
+
         try:
-            async with open_dbus_connection(bus="SESSION") as conn:
-                addr = DBusAddress(
+            async with open_dbus_connection_fn(bus="SESSION") as conn:
+                addr = dbus_address_type(
                     DBUS_PATH, bus_name=DBUS_INTERFACE, interface=DBUS_INTERFACE
                 )
 
                 # Build the method call
-                msg = new_method_call(addr, method)
+                msg = method_call_builder(addr, method)
                 if args:
                     msg.body = args
 
@@ -638,6 +853,7 @@ class AmiberryIPCClient:
             typed += 1
 
         return typed, skipped
+
     async def read_memory(self, address: int, width: int = 1) -> int | None:
         """
         Read memory from the emulated Amiga.

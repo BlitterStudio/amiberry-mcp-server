@@ -18,9 +18,7 @@ import re
 import signal
 import subprocess
 from contextlib import asynccontextmanager as _asynccontextmanager
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -33,7 +31,6 @@ from .common import (
     detect_amiberry_version,
     format_log_timestamp,
     format_signal_info,
-    launch_process,
     normalize_log_path,
     scan_disk_images,
     terminate_process,
@@ -43,7 +40,6 @@ from .common import (
 )
 from .config import (
     AMIBERRY_HOME,
-    CD_EXTENSIONS,
     CONFIG_DIR,
     DISK_IMAGE_DIRS,
     EMULATOR_BINARY,
@@ -59,7 +55,6 @@ from .config import (
     get_platform_info,
 )
 from .ipc_client import (
-    AmiberryIPCClient,
     IPCConnectionError,
 )
 from .rom_manager import (
@@ -71,6 +66,7 @@ from .savestate import (
     get_savestate_summary,
     inspect_savestate,
 )
+from .shared_state import get_ipc_client, get_state, launch_and_store
 from .uae_config import (
     create_config_from_template,
     get_config_summary,
@@ -78,40 +74,7 @@ from .uae_config import (
     parse_uae_config,
 )
 
-
-@dataclass
-class _ProcessState:
-    process: subprocess.Popen | None = None
-    launch_cmd: list[str] | None = None
-    log_path: Path | None = None
-    log_file_handle: Any | None = None
-    log_read_positions: dict[str, int] = field(default_factory=dict)
-    active_instance: int | None = None
-    ipc_client_cache: tuple[int | None, AmiberryIPCClient] | None = None
-
-    def close_log_handle(self) -> None:
-        """Close the log file handle if open."""
-        if self.log_file_handle is not None:
-            try:
-                self.log_file_handle.close()
-            except OSError:
-                pass
-            self.log_file_handle = None
-
-
-_state = _ProcessState()
-
-
-def _get_ipc_client() -> AmiberryIPCClient:
-    """Get an IPC client for the active instance, reusing cached clients."""
-    if (
-        _state.ipc_client_cache is not None
-        and _state.ipc_client_cache[0] == _state.active_instance
-    ):
-        return _state.ipc_client_cache[1]
-    client = AmiberryIPCClient(prefer_dbus=False, instance=_state.active_instance)
-    _state.ipc_client_cache = (_state.active_instance, client)
-    return client
+_state = get_state()
 
 
 @_asynccontextmanager
@@ -121,7 +84,7 @@ async def _ipc_context():
     Yields an IPC client. Maps IPC errors to appropriate HTTPExceptions.
     """
     try:
-        yield _get_ipc_client()
+        yield get_ipc_client()
     except IPCConnectionError as e:
         raise HTTPException(
             status_code=503, detail=f"IPC connection error: {str(e)}"
@@ -269,8 +232,32 @@ def _validate_range(value: int, min_val: int, max_val: int, name: str) -> None:
         )
 
 
+def _create_no_arg_ipc_endpoint(
+    route: str,
+    ipc_method: str,
+    success_msg: str,
+    failure_detail: str,
+    method: str = "POST",
+):
+    async def handler():
+        async with _ipc_context() as client:
+            success = await getattr(client, ipc_method)()
+            return _ipc_success_or_raise(success, success_msg, failure_detail)
+
+    handler.__name__ = f"auto_{ipc_method}"
+    if method == "POST":
+        app.post(route)(handler)
+    elif method == "DELETE":
+        app.delete(route)(handler)
+    elif method == "GET":
+        app.get(route)(handler)
+    return handler
+
+
 # Platform process name constant
-_PGREP_ARGS = ["-f", "Amiberry.app/Contents/MacOS/Amiberry"] if IS_MACOS else ["amiberry"]
+_PGREP_ARGS = (
+    ["-f", "Amiberry.app/Contents/MacOS/Amiberry"] if IS_MACOS else ["amiberry"]
+)
 
 # Mode map constants
 _AUTOFIRE_MODES = {0: "off", 1: "normal", 2: "toggle", 3: "always", 4: "toggle_noaf"}
@@ -348,6 +335,7 @@ class RuntimeSendKeyRequest(BaseModel):
 class RuntimeSendTextRequest(BaseModel):
     text: str
     delay_ms: int = 50
+
 
 # Round 2 request models
 class RuntimeQuickSaveRequest(BaseModel):
@@ -514,7 +502,7 @@ def _is_amiberry_running() -> bool:
     try:
         result = subprocess.run(["pgrep"] + _PGREP_ARGS, capture_output=True, text=True)
         return result.returncode == 0
-    except Exception:
+    except (OSError, FileNotFoundError):
         return False
 
 
@@ -528,7 +516,7 @@ def _stop_amiberry() -> bool:
     try:
         subprocess.run(["pkill"] + _PGREP_ARGS, check=False)
         return True
-    except Exception:
+    except (OSError, FileNotFoundError):
         return False
 
 
@@ -609,6 +597,18 @@ async def get_config(config_name: str):
             message=f"Configuration: {config_name}",
             data={"content": content},
         )
+    except FileNotFoundError as e:
+        raise HTTPException(
+            status_code=404, detail=f"Configuration not found: {config_name}"
+        ) from e
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=403, detail=f"Permission denied reading config: {config_name}"
+        ) from e
+    except OSError as e:
+        raise HTTPException(
+            status_code=500, detail=f"I/O error reading config: {str(e)}"
+        ) from e
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Error reading config: {str(e)}"
@@ -673,7 +673,7 @@ async def launch_amiberry(request: LaunchRequest):
 
     if request.disk_image:
         disk_path = Path(request.disk_image)
-        if not disk_path.exists():
+        if not await asyncio.to_thread(disk_path.exists):
             raise HTTPException(
                 status_code=404,
                 detail=f"Disk image not found: {request.disk_image}",
@@ -681,7 +681,7 @@ async def launch_amiberry(request: LaunchRequest):
 
     if request.lha_file:
         lha_path = Path(request.lha_file)
-        if not lha_path.exists():
+        if not await asyncio.to_thread(lha_path.exists):
             raise HTTPException(
                 status_code=404, detail=f"LHA file not found: {request.lha_file}"
             )
@@ -698,10 +698,7 @@ async def launch_amiberry(request: LaunchRequest):
 
     try:
         # Launch in background
-        _state.close_log_handle()
-        _state.process, _ = launch_process(cmd)
-        _state.launch_cmd = cmd
-        _state.log_path = None
+        launch_and_store(cmd)
 
         if request.model:
             message = f"Launched Amiberry with model: {request.model}"
@@ -787,7 +784,7 @@ async def launch_with_logging(request: LaunchWithLoggingRequest):
         )
 
     # Create log directory if needed
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(LOG_DIR.mkdir, parents=True, exist_ok=True)
 
     # Generate log filename
     log_name = request.log_name
@@ -810,7 +807,7 @@ async def launch_with_logging(request: LaunchWithLoggingRequest):
 
     if request.lha_file:
         lha_path = Path(request.lha_file)
-        if not lha_path.exists():
+        if not await asyncio.to_thread(lha_path.exists):
             raise HTTPException(
                 status_code=404, detail=f"LHA file not found: {request.lha_file}"
             )
@@ -825,10 +822,7 @@ async def launch_with_logging(request: LaunchWithLoggingRequest):
     )
 
     try:
-        _state.close_log_handle()
-        _state.process, _state.log_file_handle = launch_process(cmd, log_path=log_path)
-        _state.launch_cmd = cmd
-        _state.log_path = log_path
+        launch_and_store(cmd, log_path=log_path)
 
         return StatusResponse(
             success=True,
@@ -877,14 +871,14 @@ async def create_config(config_name: str, request: CreateConfigRequest):
             status_code=400, detail=f"Invalid config name: {config_name}"
         )
 
-    if config_path.exists():
+    if await asyncio.to_thread(config_path.exists):
         raise HTTPException(
             status_code=409,
             detail=f"Configuration '{config_name}' already exists. Use PATCH to modify.",
         )
 
     try:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(CONFIG_DIR.mkdir, parents=True, exist_ok=True)
         await asyncio.to_thread(
             lambda: create_config_from_template(
                 config_path, request.template, request.overrides
@@ -902,6 +896,15 @@ async def create_config(config_name: str, request: CreateConfigRequest):
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Permission denied creating config: {config_name}",
+        ) from e
+    except OSError as e:
+        raise HTTPException(
+            status_code=500, detail=f"I/O error creating config: {str(e)}"
+        ) from e
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Error creating config: {str(e)}"
@@ -921,6 +924,19 @@ async def modify_config(config_name: str, request: ModifyConfigRequest):
             message=f"Modified configuration: {config_name}",
             data={"modifications": request.modifications},
         )
+    except FileNotFoundError as e:
+        raise HTTPException(
+            status_code=404, detail=f"Configuration not found: {config_name}"
+        ) from e
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Permission denied modifying config: {config_name}",
+        ) from e
+    except OSError as e:
+        raise HTTPException(
+            status_code=500, detail=f"I/O error modifying config: {str(e)}"
+        ) from e
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Error modifying config: {str(e)}"
@@ -945,7 +961,7 @@ async def launch_whdload(
 
     if exact_path:
         lha_path = Path(exact_path)
-        if not lha_path.exists():
+        if not await asyncio.to_thread(lha_path.exists):
             raise HTTPException(
                 status_code=404, detail=f"LHA file not found: {exact_path}"
             )
@@ -996,10 +1012,7 @@ async def launch_whdload(
     )
 
     try:
-        _state.close_log_handle()
-        _state.process, _ = launch_process(cmd)
-        _state.launch_cmd = cmd
-        _state.log_path = None
+        launch_and_store(cmd)
 
         return StatusResponse(
             success=True,
@@ -1025,12 +1038,11 @@ async def launch_cd(request: LaunchCDRequest):
 
     if request.cd_image:
         cd_path = Path(request.cd_image)
-        if not cd_path.exists():
+        if not await asyncio.to_thread(cd_path.exists):
             raise HTTPException(
                 status_code=404, detail=f"CD image not found: {request.cd_image}"
             )
     elif request.search_term:
-        search_lower = request.search_term.lower()
         search_dirs = DISK_IMAGE_DIRS + [AMIBERRY_HOME / "CD"]
         if IS_MACOS:
             search_dirs.append(AMIBERRY_HOME / "CDs")
@@ -1069,10 +1081,7 @@ async def launch_cd(request: LaunchCDRequest):
     )
 
     try:
-        _state.close_log_handle()
-        _state.process, _ = launch_process(cmd)
-        _state.launch_cmd = cmd
-        _state.log_path = None
+        launch_and_store(cmd)
 
         return StatusResponse(
             success=True,
@@ -1109,7 +1118,7 @@ async def launch_with_disk_swapper(request: DiskSwapperRequest):
     verified_paths = []
     for img in request.disk_images:
         img_path = Path(img)
-        if not img_path.exists():
+        if not await asyncio.to_thread(img_path.exists):
             raise HTTPException(status_code=404, detail=f"Disk image not found: {img}")
         verified_paths.append(str(img_path))
 
@@ -1131,10 +1140,7 @@ async def launch_with_disk_swapper(request: DiskSwapperRequest):
     )
 
     try:
-        _state.close_log_handle()
-        _state.process, _ = launch_process(cmd)
-        _state.launch_cmd = cmd
-        _state.log_path = None
+        launch_and_store(cmd)
 
         return StatusResponse(
             success=True,
@@ -1150,7 +1156,7 @@ async def launch_with_disk_swapper(request: DiskSwapperRequest):
 @app.get("/logs", response_model=list[LogFile])
 async def list_logs():
     """List available log files from previous launches."""
-    if not LOG_DIR.exists():
+    if not await asyncio.to_thread(LOG_DIR.exists):
         return []
 
     def _scan_logs():
@@ -1172,7 +1178,7 @@ async def get_log_content(log_name: str, tail_lines: int | None = None):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    if not log_path.exists():
+    if not await asyncio.to_thread(log_path.exists):
         raise HTTPException(status_code=404, detail=f"Log file not found: {log_name}")
 
     try:
@@ -1187,6 +1193,18 @@ async def get_log_content(log_name: str, tail_lines: int | None = None):
             message=f"Log file: {log_name}",
             data={"content": content, "lines": len(content.splitlines())},
         )
+    except FileNotFoundError as e:
+        raise HTTPException(
+            status_code=404, detail=f"Log file not found: {log_name}"
+        ) from e
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=403, detail=f"Permission denied reading log: {log_name}"
+        ) from e
+    except OSError as e:
+        raise HTTPException(
+            status_code=500, detail=f"I/O error reading log: {str(e)}"
+        ) from e
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Error reading log: {str(e)}"
@@ -1207,7 +1225,7 @@ async def inspect_savestate_endpoint(savestate_name: str):
     if not _is_path_within(path, SAVESTATE_DIR):
         raise HTTPException(status_code=400, detail="Invalid savestate name")
 
-    if not path.exists():
+    if not await asyncio.to_thread(path.exists):
         raise HTTPException(
             status_code=404, detail=f"Savestate not found: {savestate_name}"
         )
@@ -1223,6 +1241,19 @@ async def inspect_savestate_endpoint(savestate_name: str):
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except FileNotFoundError as e:
+        raise HTTPException(
+            status_code=404, detail=f"Savestate not found: {savestate_name}"
+        ) from e
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Permission denied reading savestate: {savestate_name}",
+        ) from e
+    except OSError as e:
+        raise HTTPException(
+            status_code=500, detail=f"I/O error inspecting savestate: {str(e)}"
+        ) from e
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Error inspecting savestate: {str(e)}"
@@ -1242,12 +1273,21 @@ async def list_roms(directory: str | None = None):
             )
         rom_dir = candidate
 
-    if not rom_dir.exists():
+    if not await asyncio.to_thread(rom_dir.exists):
         return []
 
     try:
         roms = await asyncio.to_thread(scan_rom_directory, rom_dir)
         return [RomInfo(**rom) for rom in roms if not rom.get("error")]
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Permission denied scanning ROM directory: {rom_dir}",
+        ) from e
+    except OSError as e:
+        raise HTTPException(
+            status_code=500, detail=f"I/O error scanning ROMs: {str(e)}"
+        ) from e
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Error scanning ROMs: {str(e)}"
@@ -1266,7 +1306,7 @@ async def identify_rom_endpoint(rom_path: str):
             detail="ROM path must be within the Amiberry home directory",
         )
 
-    if not path.exists():
+    if not await asyncio.to_thread(path.exists):
         raise HTTPException(status_code=404, detail=f"ROM file not found: {rom_path}")
 
     try:
@@ -1278,6 +1318,18 @@ async def identify_rom_endpoint(rom_path: str):
             message=f"Identified ROM: {path.name}",
             data={"rom": rom_info, "summary": summary},
         )
+    except FileNotFoundError as e:
+        raise HTTPException(
+            status_code=404, detail=f"ROM file not found: {rom_path}"
+        ) from e
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=403, detail=f"Permission denied reading ROM: {rom_path}"
+        ) from e
+    except OSError as e:
+        raise HTTPException(
+            status_code=500, detail=f"I/O error identifying ROM: {str(e)}"
+        ) from e
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Error identifying ROM: {str(e)}"
@@ -1363,30 +1415,19 @@ async def get_runtime_status():
         )
 
 
-@app.post("/runtime/pause")
-async def pause_emulation():
-    """
-    Pause a running Amiberry emulation.
-    Requires Amiberry to be running with IPC enabled.
-    """
-    async with _ipc_context() as client:
-        success = await client.pause()
-        return _ipc_success_or_raise(
-            success, "Emulation paused", "Failed to pause emulation"
-        )
+_create_no_arg_ipc_endpoint(
+    route="/runtime/pause",
+    ipc_method="pause",
+    success_msg="Emulation paused",
+    failure_detail="Failed to pause emulation",
+)
 
-
-@app.post("/runtime/resume")
-async def resume_emulation():
-    """
-    Resume a paused Amiberry emulation.
-    Requires Amiberry to be running with IPC enabled.
-    """
-    async with _ipc_context() as client:
-        success = await client.resume()
-        return _ipc_success_or_raise(
-            success, "Emulation resumed", "Failed to resume emulation"
-        )
+_create_no_arg_ipc_endpoint(
+    route="/runtime/resume",
+    ipc_method="resume",
+    success_msg="Emulation resumed",
+    failure_detail="Failed to resume emulation",
+)
 
 
 @app.post("/runtime/reset")
@@ -1403,17 +1444,12 @@ async def reset_emulation(request: RuntimeResetRequest):
         )
 
 
-@app.post("/runtime/quit")
-async def quit_emulation():
-    """
-    Quit the running Amiberry emulation.
-    Requires Amiberry to be running with IPC enabled.
-    """
-    async with _ipc_context() as client:
-        success = await client.quit()
-        return _ipc_success_or_raise(
-            success, "Amiberry quit command sent", "Failed to quit Amiberry"
-        )
+_create_no_arg_ipc_endpoint(
+    route="/runtime/quit",
+    ipc_method="quit",
+    success_msg="Amiberry quit command sent",
+    failure_detail="Failed to quit Amiberry",
+)
 
 
 @app.post("/runtime/screenshot")
@@ -1549,7 +1585,7 @@ async def check_ipc_connection():
     Check if Amiberry IPC is available and get connection status.
     """
     try:
-        client = _get_ipc_client()
+        client = get_ipc_client()
 
         result = {
             "transport": client.transport,
@@ -1597,15 +1633,12 @@ async def runtime_eject_floppy(request: RuntimeEjectFloppyRequest):
         )
 
 
-@app.post("/runtime/eject-cd")
-async def runtime_eject_cd():
-    """
-    Eject the CD from the running emulation.
-    Requires Amiberry to be running with IPC enabled.
-    """
-    async with _ipc_context() as client:
-        success = await client.eject_cd()
-        return _ipc_success_or_raise(success, "CD ejected", "Failed to eject CD")
+_create_no_arg_ipc_endpoint(
+    route="/runtime/eject-cd",
+    ipc_method="eject_cd",
+    success_msg="CD ejected",
+    failure_detail="Failed to eject CD",
+)
 
 
 @app.get("/runtime/list-floppies")
@@ -1676,39 +1709,26 @@ async def runtime_set_volume(request: RuntimeSetVolumeRequest):
         )
 
 
-@app.post("/runtime/mute")
-async def runtime_mute():
-    """
-    Mute the audio.
-    Requires Amiberry to be running with IPC enabled.
-    """
-    async with _ipc_context() as client:
-        success = await client.mute()
-        return _ipc_success_or_raise(success, "Audio muted", "Failed to mute")
+_create_no_arg_ipc_endpoint(
+    route="/runtime/mute",
+    ipc_method="mute",
+    success_msg="Audio muted",
+    failure_detail="Failed to mute",
+)
 
+_create_no_arg_ipc_endpoint(
+    route="/runtime/unmute",
+    ipc_method="unmute",
+    success_msg="Audio unmuted",
+    failure_detail="Failed to unmute",
+)
 
-@app.post("/runtime/unmute")
-async def runtime_unmute():
-    """
-    Unmute the audio.
-    Requires Amiberry to be running with IPC enabled.
-    """
-    async with _ipc_context() as client:
-        success = await client.unmute()
-        return _ipc_success_or_raise(success, "Audio unmuted", "Failed to unmute")
-
-
-@app.post("/runtime/fullscreen")
-async def runtime_toggle_fullscreen():
-    """
-    Toggle fullscreen/windowed mode.
-    Requires Amiberry to be running with IPC enabled.
-    """
-    async with _ipc_context() as client:
-        success = await client.toggle_fullscreen()
-        return _ipc_success_or_raise(
-            success, "Fullscreen toggled", "Failed to toggle fullscreen"
-        )
+_create_no_arg_ipc_endpoint(
+    route="/runtime/fullscreen",
+    ipc_method="toggle_fullscreen",
+    success_msg="Fullscreen toggled",
+    failure_detail="Failed to toggle fullscreen",
+)
 
 
 @app.get("/runtime/warp")
@@ -1762,15 +1782,13 @@ async def runtime_get_version():
         )
 
 
-@app.get("/runtime/ping")
-async def runtime_ping():
-    """
-    Ping the running Amiberry instance to test connectivity.
-    Requires Amiberry to be running with IPC enabled.
-    """
-    async with _ipc_context() as client:
-        success = await client.ping()
-        return _ipc_success_or_raise(success, "PONG", "Ping failed")
+_create_no_arg_ipc_endpoint(
+    route="/runtime/ping",
+    ipc_method="ping",
+    success_msg="PONG",
+    failure_detail="Ping failed",
+    method="GET",
+)
 
 
 @app.post("/runtime/frame-advance")
@@ -1836,6 +1854,8 @@ async def runtime_send_text(request: RuntimeSendTextRequest):
             "Failed to type text (no characters typed)",
             data={"typed": typed, "skipped": skipped},
         )
+
+
 @app.post("/runtime/mouse")
 async def runtime_send_mouse(request: RuntimeSendMouseRequest):
     """
@@ -2147,17 +2167,12 @@ async def runtime_set_sound_mode(request: RuntimeSetSoundModeRequest):
 # Round 3 runtime control endpoints
 
 
-@app.post("/runtime/mouse-grab")
-async def runtime_toggle_mouse_grab():
-    """
-    Toggle mouse capture.
-    Requires Amiberry to be running with IPC enabled.
-    """
-    async with _ipc_context() as client:
-        success = await client.toggle_mouse_grab()
-        return _ipc_success_or_raise(
-            success, "Mouse grab toggled", "Failed to toggle mouse grab"
-        )
+_create_no_arg_ipc_endpoint(
+    route="/runtime/mouse-grab",
+    ipc_method="toggle_mouse_grab",
+    success_msg="Mouse grab toggled",
+    failure_detail="Failed to toggle mouse grab",
+)
 
 
 @app.get("/runtime/mouse-speed")
@@ -2778,51 +2793,31 @@ async def runtime_insert_whdload(request: RuntimeInsertWHDLoadRequest):
         )
 
 
-@app.delete("/runtime/whdload")
-async def runtime_eject_whdload():
-    """
-    Eject the currently loaded WHDLoad game.
-    Requires Amiberry to be running with IPC enabled.
-    """
-    async with _ipc_context() as client:
-        success = await client.eject_whdload()
-        return _ipc_success_or_raise(
-            success, "WHDLoad game ejected", "Failed to eject WHDLoad game", data={}
-        )
+_create_no_arg_ipc_endpoint(
+    route="/runtime/whdload",
+    ipc_method="eject_whdload",
+    success_msg="WHDLoad game ejected",
+    failure_detail="Failed to eject WHDLoad game",
+    method="DELETE",
+)
 
 
 # === Round 6 - Debugging and Diagnostics ===
 
 
-@app.post("/runtime/debug/activate")
-async def runtime_debug_activate():
-    """
-    Activate the built-in debugger.
-    Requires Amiberry to be built with debugger support.
-    """
-    async with _ipc_context() as client:
-        success = await client.debug_activate()
-        return _ipc_success_or_raise(
-            success,
-            "Debugger activated",
-            "Failed to activate debugger. Amiberry may not be built with debugger support.",
-            data={},
-        )
+_create_no_arg_ipc_endpoint(
+    route="/runtime/debug/activate",
+    ipc_method="debug_activate",
+    success_msg="Debugger activated",
+    failure_detail="Failed to activate debugger. Amiberry may not be built with debugger support.",
+)
 
-
-@app.post("/runtime/debug/deactivate")
-async def runtime_debug_deactivate():
-    """
-    Deactivate the debugger and resume emulation.
-    """
-    async with _ipc_context() as client:
-        success = await client.debug_deactivate()
-        return _ipc_success_or_raise(
-            success,
-            "Debugger deactivated, emulation resumed",
-            "Failed to deactivate debugger",
-            data={},
-        )
+_create_no_arg_ipc_endpoint(
+    route="/runtime/debug/deactivate",
+    ipc_method="debug_deactivate",
+    success_msg="Debugger deactivated, emulation resumed",
+    failure_detail="Failed to deactivate debugger",
+)
 
 
 @app.get("/runtime/debug/status")
@@ -2858,16 +2853,12 @@ async def runtime_debug_step(request: RuntimeDebugStepRequest):
         )
 
 
-@app.post("/runtime/debug/continue")
-async def runtime_debug_continue():
-    """
-    Continue execution until next breakpoint.
-    """
-    async with _ipc_context() as client:
-        success = await client.debug_continue()
-        return _ipc_success_or_raise(
-            success, "Execution continued", "Failed to continue execution", data={}
-        )
+_create_no_arg_ipc_endpoint(
+    route="/runtime/debug/continue",
+    ipc_method="debug_continue",
+    success_msg="Execution continued",
+    failure_detail="Failed to continue execution",
+)
 
 
 @app.get("/runtime/cpu/regs")
@@ -3192,11 +3183,8 @@ async def restart_amiberry_process():
         await asyncio.to_thread(terminate_process, _state.process)
 
     cmd = _state.launch_cmd
-    _state.close_log_handle()
     try:
-        _state.process, _state.log_file_handle = launch_process(
-            cmd, log_path=_state.log_path
-        )
+        launch_and_store(cmd, log_path=_state.log_path)
         return StatusResponse(
             success=True,
             message=f"Amiberry restarted (PID: {_state.process.pid})",
@@ -3273,16 +3261,12 @@ async def runtime_load_config(request: RuntimeLoadConfigRequest):
         )
 
 
-@app.post("/runtime/debug/step-over")
-async def runtime_debug_step_over():
-    """Step over subroutine calls (JSR/BSR)."""
-    async with _ipc_context() as client:
-        success = await client.debug_step_over()
-        return _ipc_success_or_raise(
-            success,
-            "Stepped over subroutine.",
-            "Failed to step over. Is debugger active?",
-        )
+_create_no_arg_ipc_endpoint(
+    route="/runtime/debug/step-over",
+    ipc_method="debug_step_over",
+    success_msg="Stepped over subroutine.",
+    failure_detail="Failed to step over. Is debugger active?",
+)
 
 
 # === Screenshot with Image Data ===
@@ -3293,7 +3277,7 @@ async def runtime_screenshot_view(request: RuntimeScreenshotViewRequest):
     """Take a screenshot and return the image data as base64."""
     filename = request.filename
     if not filename:
-        SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(SCREENSHOT_DIR.mkdir, parents=True, exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = str(SCREENSHOT_DIR / f"debug_{timestamp}.png")
     else:
@@ -3309,16 +3293,16 @@ async def runtime_screenshot_view(request: RuntimeScreenshotViewRequest):
         success = await client.screenshot(filename)
         if success:
             screenshot_path = Path(filename)
-            if screenshot_path.exists():
+            if await asyncio.to_thread(screenshot_path.exists):
                 image_data = await asyncio.to_thread(screenshot_path.read_bytes)
                 b64_data = base64.b64encode(image_data).decode("utf-8")
                 # Detect format from magic bytes
                 # Claude API only accepts: image/jpeg, image/png, image/gif, image/webp
-                if image_data[:2] in (b'\xff\xd8',):
+                if image_data[:2] in (b"\xff\xd8",):
                     mime_type = "image/jpeg"
-                elif image_data[:4] == b'GIF8':
+                elif image_data[:4] == b"GIF8":
                     mime_type = "image/gif"
-                elif image_data[:4] == b'RIFF' and image_data[8:12] == b'WEBP':
+                elif image_data[:4] == b"RIFF" and image_data[8:12] == b"WEBP":
                     mime_type = "image/webp"
                 else:
                     # Amiberry saves PNG format - default to image/png
@@ -3353,7 +3337,7 @@ async def tail_log(request: TailLogRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    if not log_path.exists():
+    if not await asyncio.to_thread(log_path.exists):
         raise HTTPException(status_code=404, detail=f"Log file not found: {log_name}")
 
     last_pos = _state.log_read_positions.get(log_name, 0)
@@ -3381,6 +3365,18 @@ async def tail_log(request: TailLogRequest):
             return StatusResponse(
                 success=True, message="No new log output since last read."
             )
+    except FileNotFoundError as e:
+        raise HTTPException(
+            status_code=404, detail=f"Log file not found: {log_name}"
+        ) from e
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=403, detail=f"Permission denied reading log: {log_name}"
+        ) from e
+    except OSError as e:
+        raise HTTPException(
+            status_code=500, detail=f"I/O error reading log: {str(e)}"
+        ) from e
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Error reading log: {str(e)}"
@@ -3413,7 +3409,7 @@ async def wait_for_log_pattern(request: WaitForLogPatternRequest):
                 message=f"Timeout after {request.timeout}s. Pattern '{request.pattern}' not found.",
             )
 
-        if log_path.exists():
+        if await asyncio.to_thread(log_path.exists):
             try:
 
                 def _read_and_match(_pos=last_pos):
@@ -3500,7 +3496,7 @@ async def get_crash_info(request: GetCrashInfoRequest):
             raise HTTPException(status_code=400, detail=str(e)) from e
     elif _state.log_path:
         log_files_to_scan = [_state.log_path]
-    elif LOG_DIR.exists():
+    elif await asyncio.to_thread(LOG_DIR.exists):
 
         def _find_latest_log() -> list[Path]:
             logs = []
@@ -3516,7 +3512,7 @@ async def get_crash_info(request: GetCrashInfoRequest):
 
     crash_indicators = []
     for lp in log_files_to_scan:
-        if lp.exists():
+        if await asyncio.to_thread(lp.exists):
             try:
                 content = await asyncio.to_thread(lp.read_text, errors="replace")
                 for i, line in enumerate(content.splitlines()):
@@ -3564,7 +3560,7 @@ async def health_check():
 
     # IPC check
     try:
-        client = _get_ipc_client()
+        client = get_ipc_client()
         pong = await client.ping()
         if pong:
             data["ipc"] = {"status": "CONNECTED"}
@@ -3627,7 +3623,7 @@ async def launch_and_wait_for_ipc(request: LaunchAndWaitRequest):
 
     if request.lha_file:
         lha_path = Path(request.lha_file)
-        if not lha_path.exists():
+        if not await asyncio.to_thread(lha_path.exists):
             raise HTTPException(
                 status_code=404, detail=f"LHA not found: {request.lha_file}"
             )
@@ -3642,18 +3638,14 @@ async def launch_and_wait_for_ipc(request: LaunchAndWaitRequest):
     )
 
     # Launch with logging
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(LOG_DIR.mkdir, parents=True, exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     log_name = f"amiberry_{timestamp}.log"
     log_path = LOG_DIR / log_name
 
-    _state.close_log_handle()
     try:
-        _state.process, _state.log_file_handle = launch_process(cmd, log_path=log_path)
-        _state.launch_cmd = cmd
-        _state.log_path = log_path
+        launch_and_store(cmd, log_path=log_path)
     except Exception as e:
-        _state.close_log_handle()
         raise HTTPException(status_code=500, detail=f"Error launching: {str(e)}") from e
 
     # Wait for IPC
@@ -3673,7 +3665,7 @@ async def launch_and_wait_for_ipc(request: LaunchAndWaitRequest):
             )
 
         try:
-            client = _get_ipc_client()
+            client = get_ipc_client()
             pong = await client.ping()
             if pong:
                 ipc_ready = True

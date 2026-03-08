@@ -202,7 +202,9 @@ def calculate_rom_crc32(path: Path) -> str:
         ValueError: If the file exceeds the maximum allowed size
     """
     if path.stat().st_size > _MAX_ROM_SIZE:
-        raise ValueError(f"ROM file too large ({path.stat().st_size} bytes, max {_MAX_ROM_SIZE})")
+        raise ValueError(
+            f"ROM file too large ({path.stat().st_size} bytes, max {_MAX_ROM_SIZE})"
+        )
     data = path.read_bytes()
     crc = zlib.crc32(data) & 0xFFFFFFFF
     return f"{crc:08X}"
@@ -222,7 +224,9 @@ def calculate_rom_md5(path: Path) -> str:
         ValueError: If the file exceeds the maximum allowed size
     """
     if path.stat().st_size > _MAX_ROM_SIZE:
-        raise ValueError(f"ROM file too large ({path.stat().st_size} bytes, max {_MAX_ROM_SIZE})")
+        raise ValueError(
+            f"ROM file too large ({path.stat().st_size} bytes, max {_MAX_ROM_SIZE})"
+        )
     data = path.read_bytes()
     return hashlib.md5(data, usedforsecurity=False).hexdigest()
 

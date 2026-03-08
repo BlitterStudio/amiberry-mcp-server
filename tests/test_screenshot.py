@@ -6,7 +6,6 @@ These tests mock the IPC layer so they run without a live Amiberry instance.
 """
 
 import base64
-import struct
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -24,7 +23,9 @@ _MINIMAL_PNG = (
 )
 
 # Minimal valid JPEG (SOI + APP0 header + EOI)
-_JPEG_BYTES = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9"
+_JPEG_BYTES = (
+    b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +54,7 @@ class TestRuntimeScreenshot:
         from amiberry_mcp.server import call_tool
 
         mock_client = _make_ipc_client_mock(success=True)
-        with patch("amiberry_mcp.server._get_ipc_client", return_value=mock_client):
+        with patch("amiberry_mcp.server.get_ipc_client", return_value=mock_client):
             result = await call_tool(
                 "runtime_screenshot", {"filename": "/tmp/test_shot.png"}
             )
@@ -69,7 +70,7 @@ class TestRuntimeScreenshot:
         from amiberry_mcp.server import call_tool
 
         mock_client = _make_ipc_client_mock(success=False)
-        with patch("amiberry_mcp.server._get_ipc_client", return_value=mock_client):
+        with patch("amiberry_mcp.server.get_ipc_client", return_value=mock_client):
             result = await call_tool(
                 "runtime_screenshot", {"filename": "/tmp/fail.png"}
             )
@@ -87,10 +88,8 @@ class TestRuntimeScreenshot:
         mock_client.screenshot = AsyncMock(
             side_effect=IPCConnectionError("socket not found")
         )
-        with patch("amiberry_mcp.server._get_ipc_client", return_value=mock_client):
-            result = await call_tool(
-                "runtime_screenshot", {"filename": "/tmp/err.png"}
-            )
+        with patch("amiberry_mcp.server.get_ipc_client", return_value=mock_client):
+            result = await call_tool("runtime_screenshot", {"filename": "/tmp/err.png"})
 
         assert len(result) == 1
         assert "Connection error" in result[0].text or "error" in result[0].text.lower()
@@ -114,7 +113,7 @@ class TestRuntimeScreenshotView:
         screenshot_file.write_bytes(_MINIMAL_PNG)
 
         mock_client = _make_ipc_client_mock(success=True)
-        with patch("amiberry_mcp.server._get_ipc_client", return_value=mock_client):
+        with patch("amiberry_mcp.server.get_ipc_client", return_value=mock_client):
             result = await call_tool(
                 "runtime_screenshot_view", {"filename": str(screenshot_file)}
             )
@@ -132,7 +131,7 @@ class TestRuntimeScreenshotView:
         screenshot_file.write_bytes(_MINIMAL_PNG)
 
         mock_client = _make_ipc_client_mock(success=True)
-        with patch("amiberry_mcp.server._get_ipc_client", return_value=mock_client):
+        with patch("amiberry_mcp.server.get_ipc_client", return_value=mock_client):
             result = await call_tool(
                 "runtime_screenshot_view", {"filename": str(screenshot_file)}
             )
@@ -155,7 +154,7 @@ class TestRuntimeScreenshotView:
         screenshot_file.write_bytes(_MINIMAL_PNG)
 
         mock_client = _make_ipc_client_mock(success=True)
-        with patch("amiberry_mcp.server._get_ipc_client", return_value=mock_client):
+        with patch("amiberry_mcp.server.get_ipc_client", return_value=mock_client):
             result = await call_tool(
                 "runtime_screenshot_view", {"filename": str(screenshot_file)}
             )
@@ -173,7 +172,7 @@ class TestRuntimeScreenshotView:
         screenshot_file.write_bytes(_JPEG_BYTES)
 
         mock_client = _make_ipc_client_mock(success=True)
-        with patch("amiberry_mcp.server._get_ipc_client", return_value=mock_client):
+        with patch("amiberry_mcp.server.get_ipc_client", return_value=mock_client):
             result = await call_tool(
                 "runtime_screenshot_view", {"filename": str(screenshot_file)}
             )
@@ -192,7 +191,7 @@ class TestRuntimeScreenshotView:
         screenshot_file.write_bytes(b"\x00\x01\x02\x03" * 64)
 
         mock_client = _make_ipc_client_mock(success=True)
-        with patch("amiberry_mcp.server._get_ipc_client", return_value=mock_client):
+        with patch("amiberry_mcp.server.get_ipc_client", return_value=mock_client):
             result = await call_tool(
                 "runtime_screenshot_view", {"filename": str(screenshot_file)}
             )
@@ -219,8 +218,8 @@ class TestRuntimeScreenshotView:
             return True
 
         mock_client.screenshot = AsyncMock(side_effect=capture_filename)
-        with patch("amiberry_mcp.server._get_ipc_client", return_value=mock_client):
-            result = await call_tool("runtime_screenshot_view", {})
+        with patch("amiberry_mcp.server.get_ipc_client", return_value=mock_client):
+            await call_tool("runtime_screenshot_view", {})
 
         assert saved_filename is not None, "screenshot() was never called"
         assert "debug_" in saved_filename
@@ -240,7 +239,7 @@ class TestRuntimeScreenshotView:
         nonexistent = tmp_path / "ghost.png"
 
         mock_client = _make_ipc_client_mock(success=True)
-        with patch("amiberry_mcp.server._get_ipc_client", return_value=mock_client):
+        with patch("amiberry_mcp.server.get_ipc_client", return_value=mock_client):
             result = await call_tool(
                 "runtime_screenshot_view", {"filename": str(nonexistent)}
             )
@@ -254,7 +253,7 @@ class TestRuntimeScreenshotView:
         from amiberry_mcp.server import call_tool
 
         mock_client = _make_ipc_client_mock(success=False)
-        with patch("amiberry_mcp.server._get_ipc_client", return_value=mock_client):
+        with patch("amiberry_mcp.server.get_ipc_client", return_value=mock_client):
             result = await call_tool(
                 "runtime_screenshot_view", {"filename": "/tmp/nope.png"}
             )
@@ -269,10 +268,8 @@ class TestRuntimeScreenshotView:
         from amiberry_mcp.server import call_tool
 
         mock_client = _make_ipc_client_mock()
-        mock_client.screenshot = AsyncMock(
-            side_effect=IPCConnectionError("no socket")
-        )
-        with patch("amiberry_mcp.server._get_ipc_client", return_value=mock_client):
+        mock_client.screenshot = AsyncMock(side_effect=IPCConnectionError("no socket"))
+        with patch("amiberry_mcp.server.get_ipc_client", return_value=mock_client):
             result = await call_tool(
                 "runtime_screenshot_view", {"filename": "/tmp/err.png"}
             )

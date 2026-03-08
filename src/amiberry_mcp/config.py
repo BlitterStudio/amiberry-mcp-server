@@ -29,7 +29,9 @@ elif IS_LINUX:
     AMIBERRY_HOME = Path.home() / "Amiberry"
 
     # XDG_CONFIG_HOME defaults to ~/.config if not set or empty
-    XDG_CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+    XDG_CONFIG_HOME = Path(
+        os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
+    )
 
     CONFIG_DIR = AMIBERRY_HOME / "conf"  # User configs
     SYSTEM_CONFIG_DIR = XDG_CONFIG_HOME / "amiberry"  # System configs

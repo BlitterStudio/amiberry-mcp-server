@@ -155,7 +155,12 @@ def modify_uae_config(
             bare = stripped.strip()
 
             # Preserve blank lines, comments, and non key=value lines
-            if not bare or bare.startswith(";") or bare.startswith("#") or "=" not in bare:
+            if (
+                not bare
+                or bare.startswith(";")
+                or bare.startswith("#")
+                or "=" not in bare
+            ):
                 new_lines.append(stripped)
                 continue
 
