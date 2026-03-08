@@ -111,6 +111,148 @@ _RESOLUTION_MODE_MAP = {
     "super": 2,
 }
 
+# Amiga keyboard scancode mapping
+# Maps friendly key names to Amiga hardware scancodes (0x00-0x67)
+AMIGA_KEY_MAP: dict[str, int] = {
+    # Row 0 - number row
+    "backquote": 0x00, "tilde": 0x00, "grave": 0x00,
+    "1": 0x01, "2": 0x02, "3": 0x03, "4": 0x04, "5": 0x05,
+    "6": 0x06, "7": 0x07, "8": 0x08, "9": 0x09, "0": 0x0A,
+    "minus": 0x0B, "equals": 0x0C, "backslash": 0x0D,
+    # Row 1 - QWERTY row
+    "q": 0x10, "w": 0x11, "e": 0x12, "r": 0x13, "t": 0x14,
+    "y": 0x15, "u": 0x16, "i": 0x17, "o": 0x18, "p": 0x19,
+    "leftbracket": 0x1A, "rightbracket": 0x1B,
+    # Row 2 - ASDF row
+    "a": 0x20, "s": 0x21, "d": 0x22, "f": 0x23, "g": 0x24,
+    "h": 0x25, "j": 0x26, "k": 0x27, "l": 0x28,
+    "semicolon": 0x29, "quote": 0x2A, "hash": 0x2B,
+    # Row 3 - ZXCV row
+    "lessthan": 0x30,
+    "z": 0x31, "x": 0x32, "c": 0x33, "v": 0x34, "b": 0x35,
+    "n": 0x36, "m": 0x37,
+    "comma": 0x38, "period": 0x39, "slash": 0x3A,
+    # Special keys
+    "space": 0x40, "backspace": 0x41, "tab": 0x42,
+    "numpad_enter": 0x43, "return": 0x44, "enter": 0x44,
+    "escape": 0x45, "esc": 0x45, "delete": 0x46, "del": 0x46,
+    # Numpad
+    "numpad_0": 0x0F,
+    "numpad_1": 0x1D, "numpad_2": 0x1E, "numpad_3": 0x1F,
+    "numpad_4": 0x2D, "numpad_5": 0x2E, "numpad_6": 0x2F,
+    "numpad_7": 0x3D, "numpad_8": 0x3E, "numpad_9": 0x3F,
+    "numpad_period": 0x3C, "numpad_minus": 0x4A,
+    "numpad_lparen": 0x5A, "numpad_rparen": 0x5B,
+    "numpad_divide": 0x5C, "numpad_multiply": 0x5D,
+    "numpad_plus": 0x5E,
+    # Cursor keys
+    "up": 0x4C, "down": 0x4D, "right": 0x4E, "left": 0x4F,
+    # Function keys
+    "f1": 0x50, "f2": 0x51, "f3": 0x52, "f4": 0x53, "f5": 0x54,
+    "f6": 0x55, "f7": 0x56, "f8": 0x57, "f9": 0x58, "f10": 0x59,
+    # Modifier keys
+    "left_shift": 0x60, "lshift": 0x60,
+    "right_shift": 0x61, "rshift": 0x61,
+    "caps_lock": 0x62, "capslock": 0x62,
+    "ctrl": 0x63, "control": 0x63,
+    "left_alt": 0x64, "lalt": 0x64, "alt": 0x64,
+    "right_alt": 0x65, "ralt": 0x65,
+    "left_amiga": 0x66, "lamiga": 0x66,
+    "right_amiga": 0x67, "ramiga": 0x67,
+    "help": 0x5F,
+}
+
+# Character to (keycode, needs_shift) mapping for type_text support
+# Maps printable ASCII characters to their Amiga key + shift state
+_CHAR_TO_KEY: dict[str, tuple[int, bool]] = {
+    # Lowercase letters (no shift)
+    "a": (0x20, False), "b": (0x35, False), "c": (0x33, False),
+    "d": (0x22, False), "e": (0x12, False), "f": (0x23, False),
+    "g": (0x24, False), "h": (0x25, False), "i": (0x17, False),
+    "j": (0x26, False), "k": (0x27, False), "l": (0x28, False),
+    "m": (0x37, False), "n": (0x36, False), "o": (0x18, False),
+    "p": (0x19, False), "q": (0x10, False), "r": (0x13, False),
+    "s": (0x21, False), "t": (0x14, False), "u": (0x16, False),
+    "v": (0x34, False), "w": (0x11, False), "x": (0x32, False),
+    "y": (0x15, False), "z": (0x31, False),
+    # Uppercase letters (shift)
+    "A": (0x20, True), "B": (0x35, True), "C": (0x33, True),
+    "D": (0x22, True), "E": (0x12, True), "F": (0x23, True),
+    "G": (0x24, True), "H": (0x25, True), "I": (0x17, True),
+    "J": (0x26, True), "K": (0x27, True), "L": (0x28, True),
+    "M": (0x37, True), "N": (0x36, True), "O": (0x18, True),
+    "P": (0x19, True), "Q": (0x10, True), "R": (0x13, True),
+    "S": (0x21, True), "T": (0x14, True), "U": (0x16, True),
+    "V": (0x34, True), "W": (0x11, True), "X": (0x32, True),
+    "Y": (0x15, True), "Z": (0x31, True),
+    # Numbers (no shift)
+    "1": (0x01, False), "2": (0x02, False), "3": (0x03, False),
+    "4": (0x04, False), "5": (0x05, False), "6": (0x06, False),
+    "7": (0x07, False), "8": (0x08, False), "9": (0x09, False),
+    "0": (0x0A, False),
+    # Shifted number row symbols (US layout)
+    "!": (0x01, True), "@": (0x02, True), "#": (0x03, True),
+    "$": (0x04, True), "%": (0x05, True), "^": (0x06, True),
+    "&": (0x07, True), "*": (0x08, True), "(": (0x09, True),
+    ")": (0x0A, True),
+    # Punctuation (no shift)
+    "-": (0x0B, False), "=": (0x0C, False), "\\": (0x0D, False),
+    "[": (0x1A, False), "]": (0x1B, False),
+    ";": (0x29, False), "'": (0x2A, False),
+    ",": (0x38, False), ".": (0x39, False), "/": (0x3A, False),
+    "`": (0x00, False),
+    # Shifted punctuation
+    "_": (0x0B, True), "+": (0x0C, True), "|": (0x0D, True),
+    "{": (0x1A, True), "}": (0x1B, True),
+    ":": (0x29, True), "\"": (0x2A, True),
+    "<": (0x38, True), ">": (0x39, True), "?": (0x3A, True),
+    "~": (0x00, True),
+    # Whitespace
+    " ": (0x40, False),
+    "\n": (0x44, False),
+    "\t": (0x42, False),
+}
+
+
+def resolve_key_name(key: str) -> int:
+    """
+    Resolve a key name to its Amiga scancode.
+
+    Accepts friendly names (e.g. 'space', 'return', 'f1', 'a') or
+    numeric codes as strings (e.g. '0x44', '68').
+
+    Args:
+        key: Key name or numeric code string.
+
+    Returns:
+        Amiga scancode (0-127).
+
+    Raises:
+        ValueError: If the key name is not recognized.
+    """
+    normalized = key.strip().lower()
+
+    # Try as a friendly name first
+    if normalized in AMIGA_KEY_MAP:
+        return AMIGA_KEY_MAP[normalized]
+
+    # Try as a numeric value (decimal or hex)
+    try:
+        code = int(normalized, 0)
+        if 0 <= code <= 127:
+            return code
+        raise ValueError(f"Keycode {code} out of range (0-127)")
+    except ValueError as e:
+        if "out of range" in str(e):
+            raise
+        pass
+
+    raise ValueError(
+        f"Unknown key: '{key}'. Use a name (e.g. 'space', 'return', 'f1') "
+        f"or a numeric code (0-127). Available names: "
+        f"{', '.join(sorted(set(AMIGA_KEY_MAP.keys())))}"
+    )
+
 
 class AmiberryIPCClient:
     """
@@ -450,6 +592,52 @@ class AmiberryIPCClient:
         success, _ = await self._send_command("SEND_KEY", str(keycode), state)
         return success
 
+    async def type_text(self, text: str, delay: float = 0.05) -> tuple[int, int]:
+        """
+        Type a string of text by sending key press/release events.
+
+        Maps each character to its Amiga keycode, handling shift for
+        uppercase letters and shifted symbols. Unsupported characters
+        are silently skipped.
+
+        Args:
+            text: The text to type.
+            delay: Delay in seconds between key events (default: 0.05).
+
+        Returns:
+            Tuple of (chars_typed, chars_skipped).
+        """
+        typed = 0
+        skipped = 0
+        shift_code = AMIGA_KEY_MAP["left_shift"]
+
+        for char in text:
+            mapping = _CHAR_TO_KEY.get(char)
+            if mapping is None:
+                skipped += 1
+                continue
+
+            keycode, needs_shift = mapping
+
+            # Press shift if needed
+            if needs_shift:
+                await self.send_key(shift_code, True)
+                await asyncio.sleep(delay)
+
+            # Press and release the key
+            await self.send_key(keycode, True)
+            await asyncio.sleep(delay)
+            await self.send_key(keycode, False)
+            await asyncio.sleep(delay)
+
+            # Release shift if it was pressed
+            if needs_shift:
+                await self.send_key(shift_code, False)
+                await asyncio.sleep(delay)
+
+            typed += 1
+
+        return typed, skipped
     async def read_memory(self, address: int, width: int = 1) -> int | None:
         """
         Read memory from the emulated Amiga.

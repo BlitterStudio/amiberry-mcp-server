@@ -18,6 +18,7 @@ An MCP (Model Context Protocol) server for controlling Amiberry, the Amiga emula
 - **Disk Swapping**: Insert floppy/CD images into running emulation
 - **Live Configuration**: Query and modify config options at runtime
 - **Screenshots**: Capture screenshots from running emulation
+- **Keyboard Input**: Send key presses or type text into the emulation
 - **Cross-platform**: Works on Linux, macOS, and FreeBSD
 
 ### Developer/Debug Features
@@ -390,10 +391,10 @@ Try asking Claude:
 #### Input Control
 | Tool | Description |
 |------|-------------|
-| `send_key` | Send keyboard input |
+| `send_key` | Send keyboard input by key name (e.g. 'space', 'return', 'f1') or scancode, with press/release/press-and-release |
+| `type_text` | Type a string of text into the emulation (handles shift for uppercase/symbols) |
 | `send_mouse` | Send mouse movement and buttons |
 | `set_mouse_speed` | Set mouse sensitivity (10-200) |
-
 #### Utility
 | Tool | Description |
 |------|-------------|
@@ -523,6 +524,14 @@ Ask Claude:
 - "Load the Turrican WHDLoad game"
 - "What WHDLoad game is loaded?"
 - "Eject the WHDLoad game"
+
+### Keyboard Input
+- "Press the space bar"
+- "Type 'dir' and press Return"
+- "Press F1"
+- "Press Escape"
+- "Hold Ctrl and press C"
+- "Type 'list' followed by Enter"
 
 ### Debugging and Diagnostics
 - "Activate the debugger"
@@ -787,6 +796,19 @@ curl "http://localhost:8080/runtime/drive/state?drive=0"
 curl http://localhost:8080/runtime/audio/state
 curl http://localhost:8080/runtime/dma/state
 
+# Keyboard input
+curl -X POST http://localhost:8080/runtime/key \
+  -H "Content-Type: application/json" \
+  -d '{"keycode": 64, "state": 1}'   # Press SPACE (keycode 64)
+curl -X POST http://localhost:8080/runtime/key \
+  -H "Content-Type: application/json" \
+  -d '{"keycode": 64, "state": 0}'   # Release SPACE
+
+# Type text into emulation
+curl -X POST http://localhost:8080/runtime/type \
+  -H "Content-Type: application/json" \
+  -d '{"text": "dir\n", "delay_ms": 50}'
+
 # Utility
 curl http://localhost:8080/runtime/version
 curl http://localhost:8080/runtime/ping
@@ -996,10 +1018,10 @@ curl http://localhost:8080/runtime/ping
 **Input Control**
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/runtime/key` | POST | Send keyboard input |
+| `/runtime/key` | POST | Send keyboard input (keycode + state) |
+| `/runtime/type` | POST | Type a string of text character by character |
 | `/runtime/mouse` | POST | Send mouse input |
 | `/runtime/mouse-speed` | POST | Set mouse sensitivity |
-
 **Utility**
 | Endpoint | Method | Description |
 |----------|--------|-------------|

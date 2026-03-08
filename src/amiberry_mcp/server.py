@@ -57,6 +57,7 @@ from .config import (
 from .ipc_client import (
     AmiberryIPCClient,
     IPCConnectionError,
+    resolve_key_name,
 )
 from .rom_manager import (
     get_rom_summary,
@@ -890,6 +891,45 @@ async def list_tools() -> list[Tool]:
                     },
                 },
                 "required": ["speed"],
+            },
+        ),
+        Tool(
+            name="runtime_send_key",
+            description="Send keyboard input to the running emulation. Accepts a key name (e.g. 'space', 'return', 'f1', 'a') or numeric Amiga scancode. By default performs a press-and-release; set state to 'press' or 'release' for individual events. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "Key name (e.g. 'space', 'return', 'escape', 'f1', 'a', 'up', 'ctrl') or numeric Amiga scancode (e.g. '68', '0x44'). Common keys: space, return/enter, escape/esc, backspace, delete/del, tab, up, down, left, right, f1-f10, ctrl, alt/lalt, left_shift/lshift, right_shift/rshift, left_amiga/lamiga, right_amiga/ramiga, help, a-z, 0-9.",
+                    },
+                    "state": {
+                        "type": "string",
+                        "description": "Key state: 'press' (key down only), 'release' (key up only), or 'press_and_release' (full keypress, default). Use 'press'/'release' for modifier keys or key combinations.",
+                        "enum": ["press", "release", "press_and_release"],
+                    },
+                },
+                "required": ["key"],
+            },
+        ),
+        Tool(
+            name="runtime_type_text",
+            description="Type a string of text into the running emulation by sending key events for each character. Handles uppercase (via Shift), symbols, and common whitespace (space, newline as Return, tab). Use this for entering commands like 'dir' or filenames. For special keys like F1 or Return, use runtime_send_key instead. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Text to type. Supports letters (a-z, A-Z), digits (0-9), common punctuation, space, and newline (\\n for Return). Example: 'dir\\n' types 'dir' and presses Return.",
+                    },
+                    "delay_ms": {
+                        "type": "integer",
+                        "description": "Delay in milliseconds between key events (default: 50). Increase for slower machines or if characters are dropped.",
+                        "minimum": 10,
+                        "maximum": 1000,
+                    },
+                },
+                "required": ["text"],
             },
         ),
         Tool(
@@ -2971,6 +3011,55 @@ async def _handle_runtime_set_mouse_speed(arguments: Any) -> list:
         failure_msg="Failed to set mouse speed.",
     )
 
+async def _handle_runtime_send_key(arguments: Any) -> list:
+    """Handle runtime_send_key tool."""
+    key = arguments["key"]
+    state = arguments.get("state", "press_and_release")
+
+    try:
+        keycode = resolve_key_name(key)
+    except ValueError as e:
+        return _text_result(str(e))
+
+    async def _cb(client):
+        if state == "press":
+            success = await client.send_key(keycode, True)
+            action = "pressed"
+        elif state == "release":
+            success = await client.send_key(keycode, False)
+            action = "released"
+        else:  # press_and_release
+            success = await client.send_key(keycode, True)
+            if success:
+                import asyncio
+                await asyncio.sleep(0.05)
+                success = await client.send_key(keycode, False)
+            action = "pressed and released"
+
+        if success:
+            return f"Key '{key}' (scancode 0x{keycode:02X}) {action}."
+        else:
+            return f"Failed to send key '{key}'."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_type_text(arguments: Any) -> list:
+    """Handle runtime_type_text tool."""
+    text = arguments["text"]
+    delay_ms = arguments.get("delay_ms", 50)
+    delay = delay_ms / 1000.0
+
+    async def _cb(client):
+        typed, skipped = await client.type_text(text, delay=delay)
+        preview = text[:40] + ("..." if len(text) > 40 else "")
+        preview = preview.replace("\n", "\\n").replace("\t", "\\t")
+        msg = f"Typed {typed} character(s) from '{preview}'."
+        if skipped:
+            msg += f" ({skipped} unsupported character(s) skipped.)"
+        return msg
+
+    return await _ipc_call(_cb)
 
 async def _handle_runtime_ping(arguments: Any) -> list:
     """Handle runtime_ping tool."""
@@ -4539,6 +4628,8 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "runtime_frame_advance": _handle_runtime_frame_advance,
     "runtime_send_mouse": _handle_runtime_send_mouse,
     "runtime_set_mouse_speed": _handle_runtime_set_mouse_speed,
+    "runtime_send_key": _handle_runtime_send_key,
+    "runtime_type_text": _handle_runtime_type_text,
     "runtime_ping": _handle_runtime_ping,
     "set_active_instance": _handle_set_active_instance,
     "get_active_instance": _handle_get_active_instance,
