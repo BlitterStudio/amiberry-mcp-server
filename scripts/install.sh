@@ -194,6 +194,54 @@ except Exception as e:
 END
 fi
 
+# Configure Codex
+CODEX_DIR="$HOME/.codex"
+CODEX_CONFIG="$CODEX_DIR/config.toml"
+if [ -d "$CODEX_DIR" ] || command -v codex &> /dev/null; then
+    echo ""
+    echo "Configuring Codex..."
+    mkdir -p "$CODEX_DIR"
+    if [ ! -f "$CODEX_CONFIG" ]; then
+        touch "$CODEX_CONFIG"
+    fi
+
+    python3 << END
+import re
+
+config_file = "$CODEX_CONFIG"
+project_dir = "$PROJECT_DIR"
+
+try:
+    with open(config_file, 'r') as f:
+        content = f.read()
+
+    server_block = f'''[mcp_servers.amiberry]
+command = "{project_dir}/venv/bin/python"
+args = ["-m", "amiberry_mcp.server"]
+'''
+
+    # Remove existing amiberry block if present (handles update case)
+    content = re.sub(
+        r'\[mcp_servers\.amiberry\][^\[]*',
+        '',
+        content,
+        flags=re.DOTALL
+    ).rstrip()
+
+    if content:
+        content = content + '\n\n' + server_block
+    else:
+        content = server_block
+
+    with open(config_file, 'w') as f:
+        f.write(content)
+
+    print('Created/Updated Codex configuration')
+except Exception as e:
+    print(f'Error updating config: {e}')
+END
+fi
+
 # Configure Gemini (Antigravity)
 GEMINI_DIR="$HOME/.gemini/antigravity"
 GEMINI_CONFIG="$GEMINI_DIR/mcp_config.json"
