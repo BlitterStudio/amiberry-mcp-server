@@ -159,6 +159,39 @@ END
 fi
 
 
+# Remove from Codex config
+CODEX_CONFIG="$HOME/.codex/config.toml"
+if [ -f "$CODEX_CONFIG" ]; then
+    echo "Updating Codex configuration..."
+
+    python3 << END
+import re
+
+config_file = "$CODEX_CONFIG"
+
+try:
+    with open(config_file, 'r') as f:
+        content = f.read()
+
+    if '[mcp_servers.amiberry]' in content:
+        content = re.sub(
+            r'\n*\[mcp_servers\.amiberry\][^\[]*',
+            '',
+            content,
+            flags=re.DOTALL
+        ).rstrip()
+
+        with open(config_file, 'w') as f:
+            f.write(content + '\n' if content else '')
+
+        print('Removed amiberry from Codex configuration')
+    else:
+        print('Amiberry entry not found in Codex config')
+except Exception as e:
+    print(f'Error updating config: {e}')
+END
+fi
+
 # Remove LaunchAgent (macOS)
 if [[ "$OSTYPE" == "darwin"* ]]; then
     PLIST_PATH="$HOME/Library/LaunchAgents/com.amiberry.httpapi.plist"
