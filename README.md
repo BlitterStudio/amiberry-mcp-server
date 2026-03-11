@@ -104,7 +104,7 @@ cd amiberry-mcp-server
 The installer will:
 1. Create a Python virtual environment
 2. Install dependencies
-3. Configure Claude Desktop, Claude Code, and Gemini (Antigravity) automatically
+3. Configure Claude Desktop, Claude Code, Gemini (Antigravity), and Codex automatically
 
 ### Manual Installation
 
