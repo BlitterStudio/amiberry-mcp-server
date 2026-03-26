@@ -14,7 +14,8 @@ IS_LINUX = _PLATFORM == "Linux"
 
 if IS_MACOS:
     EMULATOR_BINARY = "/Applications/Amiberry.app/Contents/MacOS/Amiberry"
-    AMIBERRY_HOME = Path.home() / "Library" / "Application Support" / "Amiberry"
+    _home_env = os.environ.get("AMIBERRY_HOME_DIR")
+    AMIBERRY_HOME = Path(_home_env) if _home_env else Path.home() / "Documents" / "Amiberry"
     CONFIG_DIR = AMIBERRY_HOME / "Configurations"
     SYSTEM_CONFIG_DIR = None  # macOS doesn't have separate system configs
     SAVESTATE_DIR = AMIBERRY_HOME / "Savestates"
@@ -26,7 +27,8 @@ if IS_MACOS:
     ]
 elif IS_LINUX:
     EMULATOR_BINARY = "amiberry"  # Assumes it's in PATH
-    AMIBERRY_HOME = Path.home() / "Amiberry"
+    _home_env = os.environ.get("AMIBERRY_HOME_DIR")
+    AMIBERRY_HOME = Path(_home_env) if _home_env else Path.home() / "Amiberry"
 
     # XDG_CONFIG_HOME defaults to ~/.config if not set or empty
     XDG_CONFIG_HOME = Path(

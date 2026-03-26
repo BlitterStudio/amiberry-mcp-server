@@ -160,7 +160,7 @@ Try asking Claude:
 
 ### macOS
 ```
-~/Library/Application Support/Amiberry/
+~/Documents/Amiberry/
 ├── Configurations/    # .uae config files
 ├── Floppies/         # .adf, .adz, .dms files
 ├── Harddrives/       # .hdf, .hdz files
@@ -1092,7 +1092,7 @@ tail -f ~/Library/Logs/Claude/mcp*.log
 ### View captured Amiberry logs
 ```bash
 # macOS
-ls ~/Library/Application\ Support/Amiberry/logs/
+ls ~/Documents/Amiberry/logs/
 
 # Linux
 ls ~/Amiberry/logs/
