@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-MCP (Model Context Protocol) server for controlling the Amiberry Amiga emulator via Claude AI.
+MCP (Model Context Protocol) server for controlling the Amiberry Amiga emulator from any MCP-compatible AI assistant (Claude Desktop, Claude Code, Codex, Gemini/Antigravity, Cursor, Cline, etc.).
 Python 3.10+ project using `hatchling` build system with `ruff` for linting/formatting and `pytest` for testing.
 
 **Source layout**: `src/amiberry_mcp/` (package), `tests/` (flat test dir), `scripts/` (shell installers).

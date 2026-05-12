@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-Test script for Amiberry MCP Server
-This simulates how Claude Desktop would interact with the server
+Test script for Amiberry MCP Server.
+
+Exercises the server the same way an MCP client (Claude Desktop, Claude Code,
+Codex, Gemini/Antigravity, Cursor, etc.) would.
 """
 
 import asyncio
@@ -124,7 +126,7 @@ async def test_server():
         print("1. If directories are missing, create them or adjust paths")
         print("2. Add some .uae config files to your config directory")
         print("3. Add some .adf/.hdf disk images to your disk directories")
-        print("4. Restart Claude Desktop and try asking about Amiberry")
+        print("4. Restart your MCP client and try asking about Amiberry")
         print()
 
     except ImportError as e:

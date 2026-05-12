@@ -1,4 +1,4 @@
-"""Amiberry MCP Server - Control Amiberry emulator through Claude AI."""
+"""Amiberry MCP Server - Control the Amiberry emulator from any MCP-compatible AI assistant."""
 
 __version__ = "1.0.0"
 
