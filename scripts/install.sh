@@ -220,9 +220,11 @@ command = "{project_dir}/venv/bin/python"
 args = ["-m", "amiberry_mcp.server"]
 '''
 
-    # Remove existing amiberry block if present (handles update case)
+    # Remove existing amiberry block if present (handles update case).
+    # Stop at the next section header (newline + '['), not any '[', since
+    # values like args = ["-m", ...] contain a literal '['.
     content = re.sub(
-        r'\[mcp_servers\.amiberry\][^\[]*',
+        r'\[mcp_servers\.amiberry\].*?(?=\n\[|\Z)',
         '',
         content,
         flags=re.DOTALL
