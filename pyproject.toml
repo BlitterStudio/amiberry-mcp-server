@@ -5,14 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "amiberry-mcp-server"
 version = "1.0.0"
-description = "MCP Server for controlling Amiberry Amiga emulator through Claude AI"
+description = "MCP server for controlling the Amiberry Amiga emulator from any MCP-compatible AI assistant"
 readme = "README.md"
 license = "GPL-3.0-or-later"
 requires-python = ">=3.10"
 authors = [
     { name = "midwan" }
 ]
-keywords = ["mcp", "amiberry", "amiga", "emulator", "claude", "ai"]
+keywords = ["mcp", "amiberry", "amiga", "emulator", "ai-assistant", "ai"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",

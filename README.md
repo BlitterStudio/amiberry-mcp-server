@@ -1,6 +1,8 @@
 # Amiberry MCP Server
 
-An MCP (Model Context Protocol) server for controlling Amiberry, the Amiga emulator, through Claude AI.
+An MCP (Model Context Protocol) server for controlling [Amiberry](https://github.com/BlitterStudio/amiberry), the Amiga emulator, from any MCP-compatible AI assistant — Claude Desktop, Claude Code, Codex, Gemini (Antigravity), Cursor, Cline, Windsurf, and others.
+
+> **MCP is client-agnostic.** This README uses Claude Desktop as the worked example because its config path is well-known, but the server itself talks plain MCP over stdio and works with anything that speaks the protocol. The installer auto-configures Claude Desktop, Claude Code, Codex, and Gemini/Antigravity if it detects them; for other clients, point them at the same `python -m amiberry_mcp.server` command (see [Other MCP clients](#other-mcp-clients) below).
 
 ## Features
 
@@ -49,7 +51,7 @@ An MCP (Model Context Protocol) server for controlling Amiberry, the Amiga emula
 - Amiberry emulator installed:
   - **macOS**: Amiberry.app in `/Applications`
   - **Linux**: `amiberry` command in PATH
-- Claude Desktop application (for MCP integration)
+- An MCP-compatible AI client (Claude Desktop, Claude Code, Codex, Gemini/Antigravity, Cursor, Cline, Windsurf, …)
 
 ## Project Structure
 
@@ -104,7 +106,9 @@ cd amiberry-mcp-server
 The installer will:
 1. Create a Python virtual environment
 2. Install dependencies
-3. Configure Claude Desktop, Claude Code, Gemini (Antigravity), and Codex automatically
+3. Auto-detect and configure any of: Claude Desktop, Claude Code, Codex, Gemini (Antigravity)
+
+> Other MCP clients (Cursor, Cline, Windsurf, …) aren't auto-configured — see [Other MCP clients](#other-mcp-clients) for the snippet to paste into their config.
 
 ### Manual Installation
 
@@ -116,10 +120,20 @@ source venv/bin/activate
 # Install the package
 pip install -e .
 
-# Configure Claude Desktop manually (see below)
+# Configure your MCP client manually (see below)
 ```
 
-### Claude Desktop Configuration
+### Client Configuration
+
+All MCP clients ultimately need the same two things: the command to launch and its args. For this server:
+
+| Field   | Value                                              |
+|---------|----------------------------------------------------|
+| Command | `/path/to/amiberry-mcp-server/venv/bin/python`     |
+| Args    | `["-m", "amiberry_mcp.server"]`                    |
+| Transport | stdio                                            |
+
+#### Claude Desktop
 
 Edit your Claude Desktop configuration file:
 
@@ -147,11 +161,22 @@ Add this configuration:
 
 Then restart Claude Desktop.
 
+#### Other MCP clients
+
+The same `command` / `args` pair works for any stdio MCP client. Paste an equivalent entry into:
+
+- **Claude Code** — `~/.claude.json` (the installer handles this automatically)
+- **Codex** — `~/.codex/config.toml`, as a `[mcp_servers.amiberry]` block (installer handles this)
+- **Gemini / Antigravity** — `~/.gemini/antigravity/mcp_config.json` (installer handles this)
+- **Cursor** — `~/.cursor/mcp.json` (or `.cursor/mcp.json` inside a project)
+- **Cline / Continue / Windsurf** — see each client's MCP settings UI; same command/args
+- **Anything else MCP-aware** — point it at `python -m amiberry_mcp.server` via stdio
+
 ## Verification
 
-After installation, restart your AI assistant (Claude Desktop, Claude Code, or Gemini). You should see the MCP tools become available.
+After installation, restart your AI client. You should see the Amiberry MCP tools become available (typically shown as a tool/hammer icon, in a `/mcp` list, or in the client's tool inspector).
 
-Try asking Claude:
+Try asking your assistant:
 - "What Amiberry configurations do I have?"
 - "Show me my disk images"
 - "Launch Amiberry with the A500 model"
@@ -448,7 +473,7 @@ Try asking Claude:
 ## Usage Examples
 
 ### Basic Usage
-Ask Claude:
+Ask your AI assistant:
 - "List my Amiberry configurations"
 - "Show me all Workbench disk images"
 - "Launch Amiberry with the A1200 model"
@@ -1072,10 +1097,15 @@ ruff format src/ tests/
 
 ## Troubleshooting
 
-### MCP tools not appearing in Claude
-- Restart Claude Desktop completely (quit and reopen)
-- Check paths in `claude_desktop_config.json`
-- Verify the virtual environment exists
+### MCP tools not appearing in your client
+- Restart the MCP client completely (quit and reopen) — most clients only load MCP servers at startup
+- Check the `command` path in your client's config points at this project's `venv/bin/python`
+- Verify the virtual environment exists (`ls venv/bin/python`)
+- Run `python -m amiberry_mcp.server` directly — it should sit waiting for stdio input. If it errors, fix that first.
+- Inspect the client's MCP log:
+  - Claude Desktop (macOS): `~/Library/Logs/Claude/mcp*.log`
+  - Claude Code: `claude mcp list` then check stderr for the server
+  - Cursor: View → Output → "MCP" channel
 
 ### "Command not found" errors
 - **Linux**: Ensure `amiberry` is in your PATH
@@ -1083,11 +1113,6 @@ ruff format src/ tests/
 
 ### Permission errors
 - Check that scripts are executable: `chmod +x scripts/*.sh`
-
-### View logs (macOS)
-```bash
-tail -f ~/Library/Logs/Claude/mcp*.log
-```
 
 ### View captured Amiberry logs
 ```bash
@@ -1122,5 +1147,5 @@ GPL-3.0 License - see [LICENSE](LICENSE) file.
 
 - [MCP Documentation](https://modelcontextprotocol.io)
 - [Amiberry Project](https://github.com/BlitterStudio/amiberry)
-- [Claude Desktop](https://claude.ai/download)
+- MCP-compatible clients: [Claude Desktop](https://claude.ai/download), [Claude Code](https://claude.com/claude-code), [Codex](https://github.com/openai/codex), [Cursor](https://cursor.com), [Cline](https://github.com/cline/cline), [Continue](https://continue.dev), [Windsurf](https://codeium.com/windsurf)
 - [FastAPI Documentation](https://fastapi.tiangolo.com)

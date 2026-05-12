@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 MCP Server for Amiberry emulator control.
-Enables Claude AI to interact with Amiberry through the Model Context Protocol.
+Enables any MCP-compatible AI assistant (Claude Desktop, Claude Code, Codex,
+Gemini/Antigravity, Cursor, Cline, etc.) to interact with Amiberry through the
+Model Context Protocol.
 """
 
 import asyncio
@@ -2047,7 +2049,7 @@ async def list_tools() -> list[Tool]:
         # === Screenshot with Image Data ===
         Tool(
             name="runtime_screenshot_view",
-            description="Take a screenshot and return the image data so Claude can see what is displayed on the emulation screen. Essential for debugging visual issues.",
+            description="Take a screenshot and return the image data so the AI assistant can see what is displayed on the emulation screen. Essential for debugging visual issues.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -4055,7 +4057,8 @@ async def _handle_runtime_screenshot_view(arguments: Any) -> list:
                 image_data = await asyncio.to_thread(screenshot_path.read_bytes)
 
                 # Detect format from magic bytes
-                # Claude API only accepts: image/jpeg, image/png, image/gif, image/webp
+                # MCP ImageContent / most LLM vision APIs accept:
+                # image/jpeg, image/png, image/gif, image/webp
                 if image_data[:2] in (b"\xff\xd8",):
                     mime_type = "image/jpeg"
                 elif image_data[:4] == b"GIF8":

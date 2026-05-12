@@ -83,7 +83,7 @@ async def test_mcp_protocol():
                 print("MCP Protocol Test Completed Successfully")
                 print("=" * 50)
                 print()
-                print("Your server is ready to use with Claude Desktop!")
+                print("Your server is ready to use with any MCP-compatible client!")
                 print()
 
                 return True

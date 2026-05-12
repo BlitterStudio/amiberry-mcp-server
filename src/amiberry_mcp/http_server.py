@@ -3297,7 +3297,8 @@ async def runtime_screenshot_view(request: RuntimeScreenshotViewRequest):
                 image_data = await asyncio.to_thread(screenshot_path.read_bytes)
                 b64_data = base64.b64encode(image_data).decode("utf-8")
                 # Detect format from magic bytes
-                # Claude API only accepts: image/jpeg, image/png, image/gif, image/webp
+                # MCP ImageContent / most LLM vision APIs accept:
+                # image/jpeg, image/png, image/gif, image/webp
                 if image_data[:2] in (b"\xff\xd8",):
                     mime_type = "image/jpeg"
                 elif image_data[:4] == b"GIF8":
