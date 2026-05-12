@@ -175,8 +175,10 @@ try:
         content = f.read()
 
     if '[mcp_servers.amiberry]' in content:
+        # Stop at the next section header (newline + '['), not any '[', since
+        # values like args = ["-m", ...] contain a literal '['.
         content = re.sub(
-            r'\n*\[mcp_servers\.amiberry\][^\[]*',
+            r'\n*\[mcp_servers\.amiberry\].*?(?=\n\[|\Z)',
             '',
             content,
             flags=re.DOTALL
