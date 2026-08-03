@@ -69,6 +69,7 @@ class MouseButton(str, Enum):
 
     @property
     def _mask(self) -> int:
+        """Return the private complete-mask bit for this public button."""
         return {self.LEFT: 1, self.RIGHT: 2, self.MIDDLE: 4}[self]
 
 
@@ -358,7 +359,8 @@ _CODE_DEFAULTS = {
 class CaptureError(RuntimeError):
     """Actionable screenshot transaction failed with a stable code."""
 
-    def __init__(self, code: StableCode, message: str):
+    def __init__(self, code: StableCode, message: str) -> None:
+        """Initialize an error with its public stable code."""
         super().__init__(message)
         self.code = code
 
@@ -378,7 +380,8 @@ class _ActionAbort(RuntimeError):
         *,
         execution_state: ExecutionState | None = None,
         next_action: NextAction | None = None,
-    ):
+    ) -> None:
+        """Initialize an internal abort with its result classification."""
         super().__init__(message)
         self.code = code
         self.phase = phase
@@ -436,7 +439,7 @@ def translate_screenshot_point(
 
 
 def _decode_image_dimensions(data: bytes) -> tuple[str, int, int]:
-    """Decode dimensions from PNG IHDR or a JPEG SOF marker."""
+    """Decode bounded dimensions from a supported screenshot image header."""
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
         if len(data) < 24 or data[12:16] != b"IHDR":
             raise CaptureError(StableCode.CAPTURE_NOT_ACTIONABLE, "Invalid PNG IHDR")
@@ -485,6 +488,78 @@ def _decode_image_dimensions(data: bytes) -> tuple[str, int, int]:
                     return "image/jpeg", width, height
                 break
             offset += length
+
+    if data[:6] in {b"GIF87a", b"GIF89a"}:
+        if len(data) < 13:
+            raise CaptureError(
+                StableCode.CAPTURE_NOT_ACTIONABLE,
+                "GIF logical screen descriptor is truncated",
+            )
+        width, height = struct.unpack("<HH", data[6:10])
+        if width <= 0 or height <= 0:
+            raise CaptureError(
+                StableCode.CAPTURE_NOT_ACTIONABLE, "GIF dimensions are invalid"
+            )
+        return "image/gif", width, height
+
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        if len(data) < 20:
+            raise CaptureError(
+                StableCode.CAPTURE_NOT_ACTIONABLE, "WebP chunk header is truncated"
+            )
+        riff_size = int.from_bytes(data[4:8], "little")
+        riff_end = riff_size + 8
+        chunk_size = int.from_bytes(data[16:20], "little")
+        chunk_end = 20 + chunk_size
+        if riff_size < 12 or riff_end > len(data) or chunk_end > riff_end:
+            raise CaptureError(
+                StableCode.CAPTURE_NOT_ACTIONABLE,
+                "WebP RIFF or image chunk is truncated",
+            )
+
+        chunk_type = data[12:16]
+        payload = data[20:chunk_end]
+        if chunk_type == b"VP8 ":
+            if len(payload) < 10 or payload[0] & 1 or payload[3:6] != b"\x9d\x01\x2a":
+                raise CaptureError(
+                    StableCode.CAPTURE_NOT_ACTIONABLE,
+                    "WebP VP8 frame header is invalid",
+                )
+            width = int.from_bytes(payload[6:8], "little") & 0x3FFF
+            height = int.from_bytes(payload[8:10], "little") & 0x3FFF
+        elif chunk_type == b"VP8L":
+            if len(payload) < 5 or payload[0] != 0x2F:
+                raise CaptureError(
+                    StableCode.CAPTURE_NOT_ACTIONABLE,
+                    "WebP VP8L frame header is invalid",
+                )
+            dimensions = int.from_bytes(payload[1:5], "little")
+            if dimensions >> 29:
+                raise CaptureError(
+                    StableCode.CAPTURE_NOT_ACTIONABLE,
+                    "WebP VP8L version is unsupported",
+                )
+            width = (dimensions & 0x3FFF) + 1
+            height = ((dimensions >> 14) & 0x3FFF) + 1
+        elif chunk_type == b"VP8X":
+            if len(payload) != 10 or payload[1:4] != b"\x00\x00\x00":
+                raise CaptureError(
+                    StableCode.CAPTURE_NOT_ACTIONABLE,
+                    "WebP VP8X canvas header is invalid",
+                )
+            width = int.from_bytes(payload[4:7], "little") + 1
+            height = int.from_bytes(payload[7:10], "little") + 1
+        else:
+            raise CaptureError(
+                StableCode.CAPTURE_NOT_ACTIONABLE,
+                "WebP image chunk type is unsupported",
+            )
+        if width <= 0 or height <= 0:
+            raise CaptureError(
+                StableCode.CAPTURE_NOT_ACTIONABLE, "WebP dimensions are invalid"
+            )
+        return "image/webp", width, height
+
     raise CaptureError(
         StableCode.CAPTURE_NOT_ACTIONABLE, "Screenshot image format is invalid"
     )
@@ -514,7 +589,8 @@ def _payload_hash(payload: dict[str, Any]) -> str:
 class GuiAutomationService:
     """Own screenshot capture and serialized GUI action transactions."""
 
-    def __init__(self, state: ProcessState | None = None):
+    def __init__(self, state: ProcessState | None = None) -> None:
+        """Initialize the service with one controller process state."""
         self._state = state or get_state()
         self._cleanup_tasks: set[asyncio.Task[_CleanupOutcome]] = set()
 
@@ -890,6 +966,7 @@ class GuiAutomationService:
             cleanup_needed = readiness.cleanup_needed
 
             async def guarded(point: Point, mask: int, phase: FailurePhase) -> None:
+                """Emit one guarded input transition and validate its receipt."""
                 nonlocal input_ambiguous, input_confirmed, cleanup_needed
                 input_ambiguous = True
                 cleanup_needed = True
@@ -943,6 +1020,7 @@ class GuiAutomationService:
                         execution_state=execution,
                         next_action=next_action,
                     )
+                input_confirmed = True
                 if response.x is None or response.y is None:
                     raise IPCError("Applied guarded input omitted coordinates")
                 if (
@@ -955,7 +1033,6 @@ class GuiAutomationService:
                     or response.y != point.y
                 ):
                     raise IPCError("Applied guarded input response contradicts request")
-                input_confirmed = True
                 applied_point = Point(response.x, response.y)
                 if not applied or applied[-1] != applied_point:
                     applied.append(applied_point)
