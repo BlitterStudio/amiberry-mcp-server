@@ -82,6 +82,7 @@ _LIFECYCLE_OPERATIONS = frozenset(
         "launch_cd",
         "launch_whdload",
         "launch_with_logging",
+        "set_disk_swapper",
         "restart_amiberry",
         "kill_amiberry",
     }
@@ -361,10 +362,11 @@ class ProcessState:
                     lock.release()
                 self._prune_endpoint_locks({self.active_endpoint})
 
-    async def reset_endpoint(
+    @asynccontextmanager
+    async def reset_endpoint_transition(
         self, instance: int | None, *, unexpected_exit: bool = False
-    ) -> None:
-        """Invalidate one runtime endpoint under lifecycle lock ordering.
+    ) -> AsyncIterator[None]:
+        """Reset one endpoint and hold lifecycle locks across its mutation.
 
         Expected launch/restart/kill transitions discard obsolete cleanup
         ownership. Unexpected exits retain ownership and mark only requests
@@ -374,19 +376,32 @@ class ProcessState:
         async with self.routing_lock:
             lock = self.endpoint_lock(endpoint)
             await lock.acquire()
+            completed = False
             try:
                 cached = self.ipc_client_cache
                 if cached is not None and cached[0] == instance:
                     await cached[1].close()
                     self.ipc_client_cache = None
                 self.invalidate_endpoint_captures(endpoint)
-                if unexpected_exit:
-                    self.mark_active_requests_outcome_unknown(endpoint)
-                else:
-                    self.dirty_ownership.pop(endpoint, None)
+                yield
+                completed = True
             finally:
+                if completed:
+                    if unexpected_exit:
+                        self.mark_active_requests_outcome_unknown(endpoint)
+                    else:
+                        self.dirty_ownership.pop(endpoint, None)
                 lock.release()
                 self._prune_endpoint_locks({self.active_endpoint})
+
+    async def reset_endpoint(
+        self, instance: int | None, *, unexpected_exit: bool = False
+    ) -> None:
+        """Invalidate one runtime endpoint under lifecycle lock ordering."""
+        async with self.reset_endpoint_transition(
+            instance, unexpected_exit=unexpected_exit
+        ):
+            pass
 
 
 # Module-level state — each importing process gets its own instance.

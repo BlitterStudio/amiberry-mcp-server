@@ -427,6 +427,47 @@ class TestCoordinator:
         assert state.active_endpoint not in state.dirty_ownership
 
     @pytest.mark.asyncio
+    async def test_lifecycle_transition_excludes_actions_through_mutation(self):
+        state = ProcessState(active_instance=0)
+        action_entered = asyncio.Event()
+
+        async def run_action() -> None:
+            async with coordinated_runtime_operation(
+                "runtime_send_mouse", state=state, timeout=1.0
+            ):
+                action_entered.set()
+
+        async with state.reset_endpoint_transition(0):
+            assert state.routing_lock.locked()
+            assert state.endpoint_lock("instance:0").locked()
+            action_task = asyncio.create_task(run_action())
+            await asyncio.sleep(0)
+            assert action_entered.is_set() is False
+
+        await action_task
+        assert action_entered.is_set() is True
+
+    @pytest.mark.asyncio
+    async def test_failed_lifecycle_transition_retains_dirty_ownership(self):
+        state = ProcessState(active_instance=0)
+        endpoint = state.active_endpoint
+        state.dirty_ownership[endpoint] = DirtyOwnership(
+            endpoint,
+            "runtime-a",
+            TabletMode.OFF,
+            MouseUntrapMode.OFF,
+            TabletMode.MOUSEHACK,
+            MouseUntrapMode.MAGIC,
+            2,
+        )
+
+        with pytest.raises(RuntimeError, match="launch failed"):
+            async with state.reset_endpoint_transition(0):
+                raise RuntimeError("launch failed")
+
+        assert endpoint in state.dirty_ownership
+
+    @pytest.mark.asyncio
     async def test_cancelled_instance_switch_releases_acquired_endpoint_locks(self):
         state = ProcessState(active_instance=0)
         old_lock = state.endpoint_lock("instance:0")
@@ -476,6 +517,10 @@ class TestCoordinator:
         )
         assert (
             mutation_impact_for("launch_amiberry")
+            is MutationImpact.ROUTE_LIFECYCLE_RESET
+        )
+        assert (
+            mutation_impact_for("set_disk_swapper")
             is MutationImpact.ROUTE_LIFECYCLE_RESET
         )
         assert (

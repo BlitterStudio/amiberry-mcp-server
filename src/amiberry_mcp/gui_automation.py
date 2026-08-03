@@ -626,6 +626,23 @@ class GuiAutomationService:
         """Drag one named button between two screenshot pixels."""
         return await self._execute(GuiAction.DRAG, request)
 
+    def validation_error(
+        self,
+        action: GuiAction,
+        request_id: str,
+        capture_id: str | None,
+        message: str,
+    ) -> AutomationResult:
+        """Return the canonical result for an adapter envelope rejection."""
+        return self._make_result(
+            StableCode.ACTION_REJECTED,
+            request_id,
+            action,
+            message,
+            capture_id=capture_id,
+            phase=FailurePhase.VALIDATION,
+        )
+
     def _make_result(
         self,
         code: StableCode,

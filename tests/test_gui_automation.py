@@ -42,6 +42,8 @@ from amiberry_mcp.gui_automation import (
     ClickRequest,
     DragRequest,
     ExecutionState,
+    FailurePhase,
+    GuiAction,
     GuiAutomationService,
     MouseButton,
     MoveRequest,
@@ -236,6 +238,28 @@ def test_minimum_settings_preserve_existing_capabilities():
     assert _desired_tablet_mode(TabletMode.OFF) is TabletMode.MOUSEHACK
     assert _desired_mouse_untrap(MouseUntrapMode.BOTH) is MouseUntrapMode.BOTH
     assert _desired_mouse_untrap(MouseUntrapMode.MIDDLE) is MouseUntrapMode.BOTH
+
+
+def test_validation_error_uses_canonical_result_contract():
+    service = GuiAutomationService(ProcessState(controller_id="controller-test"))
+
+    result = service.validation_error(
+        GuiAction.CLICK,
+        "request-1",
+        "capture-1",
+        "button must be left, right, or middle",
+    )
+
+    payload = result.to_dict()
+    assert payload["schema_version"] == 1
+    assert payload["ok"] is False
+    assert payload["code"] == "action_rejected"
+    assert payload["controller_id"] == "controller-test"
+    assert payload["request_id"] == "request-1"
+    assert payload["capture_id"] == "capture-1"
+    assert payload["action"] == "click"
+    assert payload["failure_phase"] == FailurePhase.VALIDATION.value
+    assert payload["next_action"] == "correct_request"
 
 
 class TestCaptureTransaction:
