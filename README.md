@@ -517,6 +517,9 @@ are unsupported.
 
 Older Amiberry builds can still return a visible screenshot, but its metadata
 has `actionable=false`, `capture_id=null`, and `next_action="upgrade_runtime"`.
+Actionable capture currently requires Amiberry's SDL or OpenGL renderer; Vulkan
+continues to support legacy screenshots but rejects coordinate automation until
+it can pair screenshot pixels with the exact presented frame geometry.
 There is deliberately no relative-coordinate fallback. Actionable GUI
 automation is supported on Linux and macOS; live platform validation remains a
 separate release check from the automated contract and geometry tests.

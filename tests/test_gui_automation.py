@@ -59,6 +59,7 @@ from amiberry_mcp.ipc_client import (
     ActionableScreenshotResult,
     AutomationConfigResponse,
     AutomationState,
+    CommandError,
     ConfigUpdateReason,
     DisplayMode,
     GuardedInputReason,
@@ -476,6 +477,26 @@ class TestCaptureTransaction:
         with pytest.raises(CaptureError):
             await GuiAutomationService(state).capture(str(path))
 
+        assert not state.captures
+
+    @pytest.mark.asyncio
+    async def test_upstream_capture_rejection_is_not_runtime_unreachable(
+        self, tmp_path
+    ):
+        path = tmp_path / "unsupported.png"
+        state = ProcessState()
+        client = _client()
+        client.capture_actionable_screenshot = AsyncMock(
+            side_effect=CommandError(
+                "Actionable screenshot failed: reason=unsupported_renderer"
+            )
+        )
+        state.ipc_client_cache = (None, client)
+
+        with pytest.raises(CaptureError) as raised:
+            await GuiAutomationService(state).capture(str(path))
+
+        assert raised.value.code is StableCode.CAPTURE_NOT_ACTIONABLE
         assert not state.captures
 
 

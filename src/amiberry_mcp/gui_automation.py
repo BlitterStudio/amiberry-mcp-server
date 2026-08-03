@@ -23,6 +23,7 @@ from .ipc_client import (
     ActionableCaptureGeometry,
     AmiberryIPCClient,
     AutomationState,
+    CommandError,
     GuardedInputReason,
     IPCError,
     MouseUntrapMode,
@@ -667,6 +668,8 @@ class GuiAutomationService:
                 )
         except AutomationBusyError as e:
             raise CaptureError(StableCode.AUTOMATION_BUSY, str(e)) from e
+        except CommandError as e:
+            raise CaptureError(StableCode.CAPTURE_NOT_ACTIONABLE, str(e)) from e
         except IPCError as e:
             raise CaptureError(StableCode.RUNTIME_UNREACHABLE, str(e)) from e
 

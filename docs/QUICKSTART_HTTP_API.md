@@ -110,7 +110,10 @@ reconcile the visible state—never replay the action blindly.
 
 Legacy runtimes return the screenshot with `actionable=false`,
 `capture_id=null`, and `next_action="upgrade_runtime"`; there is no
-relative-coordinate fallback. This workflow supports Linux and macOS. Run one
+relative-coordinate fallback. Actionable capture currently requires Amiberry's
+SDL or OpenGL renderer. Vulkan still supports legacy screenshots, but returns
+an actionable-capture error until it can bind pixels to exact presented-frame
+geometry. This workflow supports Linux and macOS. Run one
 controller process per Amiberry runtime instance; simultaneous MCP and HTTP
 servers controlling the same instance are unsupported. Automated contract
 coverage does not replace the pending live Linux/macOS release check.
