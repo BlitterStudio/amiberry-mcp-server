@@ -30,6 +30,7 @@ except ImportError:
     _HAS_IMAGE_CONTENT = False
 
 from .common import (
+    _is_path_within,
     build_launch_command,
     detect_amiberry_version,
     format_log_timestamp,
@@ -55,6 +56,19 @@ from .config import (
     SYSTEM_CONFIG_DIR,
     get_platform_info,
 )
+from .gui_automation import (
+    MAX_CAPTURE_ID_LENGTH,
+    MAX_DWELL_MS,
+    REQUEST_ID_PATTERN,
+    CaptureError,
+    ClickRequest,
+    DragRequest,
+    GuiAction,
+    GuiAutomationService,
+    MouseButton,
+    MoveRequest,
+    StableCode,
+)
 from .ipc_client import (
     IPCConnectionError,
     resolve_key_name,
@@ -68,7 +82,12 @@ from .savestate import (
     get_savestate_summary,
     inspect_savestate,
 )
-from .shared_state import get_ipc_client, get_state, launch_and_store
+from .shared_state import (
+    coordinated_runtime_operation,
+    get_ipc_client,
+    get_state,
+    launch_and_store,
+)
 from .uae_config import (
     create_config_from_template,
     get_config_summary,
@@ -77,6 +96,7 @@ from .uae_config import (
 )
 
 _state = get_state()
+_gui_automation = GuiAutomationService(_state)
 
 app = Server("amiberry-emulator")
 
@@ -91,6 +111,8 @@ async def _ipc_bool_call(
     *args: Any,
     success_msg: str,
     failure_msg: str,
+    operation: str | None = None,
+    option: str | None = None,
 ) -> list[TextContent]:
     """Call a boolean-returning IPC method with standard error handling."""
 
@@ -102,19 +124,27 @@ async def _ipc_bool_call(
         else:
             return failure_msg
 
-    return await _ipc_call(_cb)
+    return await _ipc_call(_cb, operation=operation, option=option)
 
 
 async def _ipc_call(
     callback: Any,
+    *,
+    operation: str | None = None,
+    option: str | None = None,
 ) -> list[TextContent]:
     """Call an IPC callback with standard error handling.
 
     The callback receives the IPC client and should return a string result.
     """
     try:
-        client = get_ipc_client()
-        result = await callback(client)
+        if operation is None:
+            result = await callback(get_ipc_client())
+        else:
+            async with coordinated_runtime_operation(
+                operation, option, _state
+            ) as pinned:
+                result = await callback(pinned.client)
         return _text_result(result)
     except IPCConnectionError as e:
         return _text_result(f"Connection error: {str(e)}")
@@ -343,7 +373,12 @@ _SIMPLE_QUERY_HANDLERS: dict[str, tuple[str, str, str]] = {
 
 async def _handle_no_arg_bool(tool_name: str, arguments: Any) -> list:
     method, success, failure = _NO_ARG_BOOL_HANDLERS[tool_name]
-    return await _ipc_bool_call(method, success_msg=success, failure_msg=failure)
+    return await _ipc_bool_call(
+        method,
+        success_msg=success,
+        failure_msg=failure,
+        operation=tool_name,
+    )
 
 
 async def _handle_arg_bool(tool_name: str, arguments: Any) -> list:
@@ -374,6 +409,8 @@ async def _handle_arg_bool(tool_name: str, arguments: Any) -> list:
         *ipc_args,
         success_msg=success,
         failure_msg=failure,
+        operation=tool_name,
+        option=values.get("option") if tool_name == "runtime_set_config" else None,
     )
 
 
@@ -2060,6 +2097,108 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="runtime_gui_move",
+            description="Move or hover using pixels from the exact preceding runtime_screenshot_view capture. Use its capture_id and obey the returned next_action; do not improvise retries.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "capture_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": MAX_CAPTURE_ID_LENGTH,
+                    },
+                    "request_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "pattern": REQUEST_ID_PATTERN.pattern,
+                    },
+                    "x": {"type": "integer", "minimum": 0},
+                    "y": {"type": "integer", "minimum": 0},
+                    "dwell_ms": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": MAX_DWELL_MS,
+                        "default": 0,
+                    },
+                },
+                "required": ["capture_id", "request_id", "x", "y"],
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="runtime_gui_click",
+            description="Click or double-click using pixels from the exact preceding runtime_screenshot_view capture. Use its capture_id and obey the returned next_action; do not improvise retries.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "capture_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": MAX_CAPTURE_ID_LENGTH,
+                    },
+                    "request_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "pattern": REQUEST_ID_PATTERN.pattern,
+                    },
+                    "x": {"type": "integer", "minimum": 0},
+                    "y": {"type": "integer", "minimum": 0},
+                    "button": {
+                        "type": "string",
+                        "enum": ["left", "right", "middle"],
+                        "default": "left",
+                    },
+                    "click_count": {
+                        "type": "integer",
+                        "enum": [1, 2],
+                        "default": 1,
+                    },
+                },
+                "required": ["capture_id", "request_id", "x", "y"],
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="runtime_gui_drag",
+            description="Drag using pixels from the exact preceding runtime_screenshot_view capture. Use its capture_id and obey the returned next_action; do not improvise retries.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "capture_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": MAX_CAPTURE_ID_LENGTH,
+                    },
+                    "request_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "pattern": REQUEST_ID_PATTERN.pattern,
+                    },
+                    "start_x": {"type": "integer", "minimum": 0},
+                    "start_y": {"type": "integer", "minimum": 0},
+                    "end_x": {"type": "integer", "minimum": 0},
+                    "end_y": {"type": "integer", "minimum": 0},
+                    "button": {
+                        "type": "string",
+                        "enum": ["left", "right", "middle"],
+                        "default": "left",
+                    },
+                },
+                "required": [
+                    "capture_id",
+                    "request_id",
+                    "start_x",
+                    "start_y",
+                    "end_x",
+                    "end_y",
+                ],
+                "additionalProperties": False,
+            },
+        ),
         # === Log Tailing and Crash Detection ===
         Tool(
             name="tail_log",
@@ -2281,7 +2420,8 @@ async def _handle_launch_amiberry(arguments: Any) -> list:
     )
 
     try:
-        proc = launch_and_store(cmd)
+        async with _state.reset_endpoint_transition(_state.active_instance):
+            proc = launch_and_store(cmd)
 
         if model:
             result = f"Launched Amiberry with model: {model}"
@@ -2394,7 +2534,8 @@ async def _handle_launch_with_logging(arguments: Any) -> list:
     )
 
     try:
-        proc = launch_and_store(cmd, log_path=log_path)
+        async with _state.reset_endpoint_transition(_state.active_instance):
+            proc = launch_and_store(cmd, log_path=log_path)
 
         result = "Launched Amiberry with logging enabled\n"
         result += f"PID: {proc.pid}\n"
@@ -2574,7 +2715,8 @@ async def _handle_launch_whdload(arguments: Any) -> list:
     )
 
     try:
-        proc = launch_and_store(cmd)
+        async with _state.reset_endpoint_transition(_state.active_instance):
+            proc = launch_and_store(cmd)
 
         return _text_result(
             f"Launched WHDLoad game: {lha_path.name}\nModel: {model}\nPID: {proc.pid}"
@@ -2636,7 +2778,8 @@ async def _handle_launch_cd(arguments: Any) -> list:
     )
 
     try:
-        proc = launch_and_store(cmd)
+        async with _state.reset_endpoint_transition(_state.active_instance):
+            proc = launch_and_store(cmd)
 
         return _text_result(
             f"Launched CD image: {cd_path.name}\nModel: {model}\nPID: {proc.pid}"
@@ -2685,7 +2828,8 @@ async def _handle_set_disk_swapper(arguments: Any) -> list:
     )
 
     try:
-        proc = launch_and_store(cmd)
+        async with _state.reset_endpoint_transition(_state.active_instance):
+            proc = launch_and_store(cmd)
 
         result = f"Launched with disk swapper ({len(verified_paths)} disks):\n"
         result += f"  PID: {proc.pid}\n"
@@ -2921,7 +3065,7 @@ async def _handle_reset_emulation(arguments: Any) -> list:
         else:
             return f"Failed to perform {reset_type} reset."
 
-    return await _ipc_call(_cb)
+    return await _ipc_call(_cb, operation="reset_emulation")
 
 
 async def _handle_get_runtime_status(arguments: Any) -> list:
@@ -3128,7 +3272,7 @@ async def _handle_set_active_instance(arguments: Any) -> list:
     """Handle set_active_instance tool."""
 
     instance = arguments.get("instance")
-    _state.active_instance = instance
+    await _state.select_instance(instance)
     status = (
         f"Active instance set to {instance}"
         if instance is not None
@@ -3232,7 +3376,7 @@ async def _handle_runtime_set_display_mode(arguments: Any) -> list:
         else:
             return "Failed to set display mode."
 
-    return await _ipc_call(_cb)
+    return await _ipc_call(_cb, operation="runtime_set_display_mode")
 
 
 async def _handle_runtime_get_display_mode(arguments: Any) -> list:
@@ -3261,7 +3405,7 @@ async def _handle_runtime_set_ntsc(arguments: Any) -> list:
         else:
             return f"Failed to set video mode to {mode}."
 
-    return await _ipc_call(_cb)
+    return await _ipc_call(_cb, operation="runtime_set_ntsc")
 
 
 async def _handle_runtime_get_ntsc(arguments: Any) -> list:
@@ -3335,7 +3479,7 @@ async def _handle_runtime_toggle_rtg(arguments: Any) -> list:
         else:
             return "Failed to toggle RTG."
 
-    return await _ipc_call(_cb)
+    return await _ipc_call(_cb, operation="runtime_toggle_rtg")
 
 
 async def _handle_runtime_set_floppy_speed(arguments: Any) -> list:
@@ -3411,7 +3555,7 @@ async def _handle_runtime_toggle_status_line(arguments: Any) -> list:
         else:
             return "Failed to toggle status line."
 
-    return await _ipc_call(_cb)
+    return await _ipc_call(_cb, operation="runtime_toggle_status_line")
 
 
 async def _handle_runtime_set_chipset(arguments: Any) -> list:
@@ -3568,7 +3712,7 @@ async def _handle_runtime_set_window_size(arguments: Any) -> list:
         else:
             return "Failed to set window size."
 
-    return await _ipc_call(_cb)
+    return await _ipc_call(_cb, operation="runtime_set_window_size")
 
 
 async def _handle_runtime_get_window_size(arguments: Any) -> list:
@@ -3601,7 +3745,7 @@ async def _handle_runtime_set_scaling(arguments: Any) -> list:
         else:
             return "Failed to set scaling mode."
 
-    return await _ipc_call(_cb)
+    return await _ipc_call(_cb, operation="runtime_set_scaling")
 
 
 async def _handle_runtime_get_scaling(arguments: Any) -> list:
@@ -3630,7 +3774,7 @@ async def _handle_runtime_set_line_mode(arguments: Any) -> list:
         else:
             return "Failed to set line mode."
 
-    return await _ipc_call(_cb)
+    return await _ipc_call(_cb, operation="runtime_set_line_mode")
 
 
 async def _handle_runtime_get_line_mode(arguments: Any) -> list:
@@ -3659,7 +3803,7 @@ async def _handle_runtime_set_resolution(arguments: Any) -> list:
         else:
             return "Failed to set resolution."
 
-    return await _ipc_call(_cb)
+    return await _ipc_call(_cb, operation="runtime_set_resolution")
 
 
 async def _handle_runtime_get_resolution(arguments: Any) -> list:
@@ -3943,7 +4087,8 @@ async def _handle_kill_amiberry(arguments: Any) -> list:
     if _state.process is None or _state.process.poll() is not None:
         return _text_result("No running Amiberry process to kill.")
     pid = _state.process.pid
-    await asyncio.to_thread(terminate_process, _state.process)
+    async with _state.reset_endpoint_transition(_state.active_instance):
+        await asyncio.to_thread(terminate_process, _state.process)
     return _text_result(f"Amiberry process (PID {pid}) terminated.")
 
 
@@ -3972,14 +4117,15 @@ async def _handle_restart_amiberry(arguments: Any) -> list:
         return _text_result(
             "No previous launch command stored. Use a launch tool first."
         )
-    # Kill existing process if running
-    if _state.process is not None and _state.process.poll() is None:
-        await asyncio.to_thread(terminate_process, _state.process)
-
-    # Re-launch with stored command
     cmd = _state.launch_cmd
     try:
-        proc = launch_and_store(cmd, log_path=_state.log_path)
+        async with _state.reset_endpoint_transition(_state.active_instance):
+            # Kill existing process if running
+            if _state.process is not None and _state.process.poll() is None:
+                await asyncio.to_thread(terminate_process, _state.process)
+
+            # Re-launch with stored command
+            proc = launch_and_store(cmd, log_path=_state.log_path)
         return _text_result(
             f"Amiberry restarted (PID: {proc.pid})\nCommand: {' '.join(cmd)}"
         )
@@ -4040,6 +4186,151 @@ async def _handle_runtime_write_memory(arguments: Any) -> list:
 # === Screenshot with Image Data ===
 
 
+_GUI_REQUIRED_FIELDS = {
+    GuiAction.MOVE: {"capture_id", "request_id", "x", "y"},
+    GuiAction.CLICK: {"capture_id", "request_id", "x", "y"},
+    GuiAction.DRAG: {
+        "capture_id",
+        "request_id",
+        "start_x",
+        "start_y",
+        "end_x",
+        "end_y",
+    },
+}
+_GUI_OPTIONAL_FIELDS = {
+    GuiAction.MOVE: {"dwell_ms"},
+    GuiAction.CLICK: {"button", "click_count"},
+    GuiAction.DRAG: {"button"},
+}
+_GUI_COORDINATE_FIELDS = {
+    GuiAction.MOVE: ("x", "y"),
+    GuiAction.CLICK: ("x", "y"),
+    GuiAction.DRAG: ("start_x", "start_y", "end_x", "end_y"),
+}
+
+
+def _validate_gui_action_arguments(
+    action: GuiAction, arguments: Any
+) -> tuple[dict[str, Any], str | None]:
+    """Validate a direct MCP action envelope against its closed schema."""
+    if not isinstance(arguments, dict):
+        return {}, "arguments must be an object"
+    required = _GUI_REQUIRED_FIELDS[action]
+    allowed = required | _GUI_OPTIONAL_FIELDS[action]
+    missing = sorted(required - arguments.keys())
+    if missing:
+        return arguments, f"missing required field(s): {', '.join(missing)}"
+    extra = sorted(str(key) for key in arguments.keys() if key not in allowed)
+    if extra:
+        return arguments, f"unexpected field(s): {', '.join(extra)}"
+
+    capture_id = arguments["capture_id"]
+    if (
+        not isinstance(capture_id, str)
+        or not capture_id
+        or len(capture_id) > MAX_CAPTURE_ID_LENGTH
+    ):
+        return arguments, "capture_id must be a non-empty bounded string"
+    request_id = arguments["request_id"]
+    if not isinstance(request_id, str) or not REQUEST_ID_PATTERN.fullmatch(request_id):
+        return arguments, (
+            "request_id must be 1-128 characters from A-Z, a-z, 0-9, . _ : -"
+        )
+
+    for field in _GUI_COORDINATE_FIELDS[action]:
+        value = arguments[field]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return arguments, f"{field} must be a non-negative integer"
+
+    if action is GuiAction.MOVE:
+        dwell_ms = arguments.get("dwell_ms", 0)
+        if (
+            isinstance(dwell_ms, bool)
+            or not isinstance(dwell_ms, int)
+            or not 0 <= dwell_ms <= MAX_DWELL_MS
+        ):
+            return arguments, "dwell_ms must be an integer from 0 to 5000"
+    elif action is GuiAction.CLICK:
+        button = arguments.get("button", MouseButton.LEFT.value)
+        if not isinstance(button, str) or button not in {
+            member.value for member in MouseButton
+        }:
+            return arguments, "button must be left, right, or middle"
+        click_count = arguments.get("click_count", 1)
+        if (
+            isinstance(click_count, bool)
+            or not isinstance(click_count, int)
+            or click_count not in {1, 2}
+        ):
+            return arguments, "click_count must be 1 or 2"
+    else:
+        button = arguments.get("button", MouseButton.LEFT.value)
+        if not isinstance(button, str) or button not in {
+            member.value for member in MouseButton
+        }:
+            return arguments, "button must be left, right, or middle"
+    return arguments, None
+
+
+def _json_text(payload: dict[str, Any]) -> TextContent:
+    """Serialize one canonical pure-JSON MCP text block."""
+    return TextContent(
+        type="text",
+        text=json.dumps(payload, sort_keys=True, separators=(",", ":")),
+    )
+
+
+async def _handle_runtime_gui_action(action: GuiAction, arguments: Any) -> list:
+    """Validate and delegate one MCP GUI action to the shared service."""
+    values, error = _validate_gui_action_arguments(action, arguments)
+    if error is not None:
+        request_id = values.get("request_id", "")
+        capture_id = values.get("capture_id")
+        result = _gui_automation.validation_error(
+            action,
+            request_id if isinstance(request_id, str) else "",
+            capture_id if isinstance(capture_id, str) else None,
+            error,
+        )
+        return [_json_text(result.to_dict())]
+
+    if action is GuiAction.MOVE:
+        result = await _gui_automation.move(
+            MoveRequest(
+                values["capture_id"],
+                values["request_id"],
+                values["x"],
+                values["y"],
+                values.get("dwell_ms", 0),
+            )
+        )
+    elif action is GuiAction.CLICK:
+        result = await _gui_automation.click(
+            ClickRequest(
+                values["capture_id"],
+                values["request_id"],
+                values["x"],
+                values["y"],
+                MouseButton(values.get("button", MouseButton.LEFT.value)),
+                values.get("click_count", 1),
+            )
+        )
+    else:
+        result = await _gui_automation.drag(
+            DragRequest(
+                values["capture_id"],
+                values["request_id"],
+                values["start_x"],
+                values["start_y"],
+                values["end_x"],
+                values["end_y"],
+                MouseButton(values.get("button", MouseButton.LEFT.value)),
+            )
+        )
+    return [_json_text(result.to_dict())]
+
+
 async def _handle_runtime_screenshot_view(arguments: Any) -> list:
     """Handle runtime_screenshot_view tool."""
     filename = arguments.get("filename")
@@ -4047,54 +4338,45 @@ async def _handle_runtime_screenshot_view(arguments: Any) -> list:
         await asyncio.to_thread(SCREENSHOT_DIR.mkdir, parents=True, exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = str(SCREENSHOT_DIR / f"debug_{timestamp}.png")
+    elif not _is_path_within(Path(filename), SCREENSHOT_DIR):
+        return _text_result("Error: Filename must be within the screenshots directory")
 
     try:
-        client = get_ipc_client()
-        success = await client.screenshot(filename)
-        if success:
-            screenshot_path = Path(filename)
-            if await asyncio.to_thread(screenshot_path.exists):
-                image_data = await asyncio.to_thread(screenshot_path.read_bytes)
-
-                # Detect format from magic bytes
-                # MCP ImageContent / most LLM vision APIs accept:
-                # image/jpeg, image/png, image/gif, image/webp
-                if image_data[:2] in (b"\xff\xd8",):
-                    mime_type = "image/jpeg"
-                elif image_data[:4] == b"GIF8":
-                    mime_type = "image/gif"
-                elif image_data[:4] == b"RIFF" and image_data[8:12] == b"WEBP":
-                    mime_type = "image/webp"
-                else:
-                    # Amiberry saves PNG format - default to image/png
-                    mime_type = "image/png"
-
-                b64_data = base64.b64encode(image_data).decode("utf-8")
-
-                if _HAS_IMAGE_CONTENT and _ImageContent is not None:
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Screenshot saved to: {filename}",
-                        ),
-                        _ImageContent(
-                            type="image",
-                            data=b64_data,
-                            mimeType=mime_type,
-                        ),
-                    ]
-                else:
-                    return _text_result(
-                        f"Screenshot saved to: {filename}\nUse the Read tool to view this image file."
-                    )
-            else:
-                return _text_result(
-                    f"Screenshot command succeeded but file not found at: {filename}"
-                )
-        else:
-            return _text_result("Failed to take screenshot.")
-    except IPCConnectionError as e:
-        return _text_result(f"Connection error: {str(e)}")
+        view = await _gui_automation.capture(filename)
+        path_content = TextContent(
+            type="text", text=f"Screenshot saved to: {view.path}"
+        )
+        metadata_content = _json_text(view.metadata_dict())
+        if _HAS_IMAGE_CONTENT and _ImageContent is not None:
+            return [
+                path_content,
+                _ImageContent(
+                    type="image",
+                    data=base64.b64encode(view.image_bytes).decode("utf-8"),
+                    mimeType=view.mime_type,
+                ),
+                metadata_content,
+            ]
+        return [
+            TextContent(
+                type="text",
+                text=(
+                    f"Screenshot saved to: {view.path}\n"
+                    "Use the Read tool to view this image file."
+                ),
+            ),
+            metadata_content,
+        ]
+    except CaptureError as e:
+        if "could not be read" in str(e) and not await asyncio.to_thread(
+            Path(filename).exists
+        ):
+            return _text_result(
+                f"Screenshot command succeeded but file not found at: {filename}"
+            )
+        if e.code is StableCode.RUNTIME_UNREACHABLE:
+            return _text_result(f"Connection error: {str(e)}")
+        return _text_result(f"Error: {str(e)}")
     except (FileNotFoundError, PermissionError, OSError) as e:
         return _text_result(f"Error: {str(e)}")
     except Exception as e:
@@ -4359,10 +4641,6 @@ async def _handle_health_check(arguments: Any) -> list:
 async def _handle_launch_and_wait_for_ipc(arguments: Any) -> list:
     """Handle launch_and_wait_for_ipc tool."""
 
-    # Kill existing process if running
-    if _state.process is not None and _state.process.poll() is None:
-        await asyncio.to_thread(terminate_process, _state.process)
-
     # Build command
     config = arguments.get("config")
     model = arguments.get("model")
@@ -4405,7 +4683,11 @@ async def _handle_launch_and_wait_for_ipc(arguments: Any) -> list:
     log_path = LOG_DIR / log_name
 
     try:
-        launch_and_store(cmd, log_path=log_path)
+        async with _state.reset_endpoint_transition(_state.active_instance):
+            # Kill existing process if running
+            if _state.process is not None and _state.process.poll() is None:
+                await asyncio.to_thread(terminate_process, _state.process)
+            launch_and_store(cmd, log_path=log_path)
     except (FileNotFoundError, PermissionError, OSError, ValueError) as e:
         _state.close_log_handle()
         return _text_result(f"Error launching Amiberry: {str(e)}")
@@ -4596,6 +4878,9 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "runtime_load_config": partial(_handle_arg_bool, "runtime_load_config"),
     "runtime_debug_step_over": partial(_handle_no_arg_bool, "runtime_debug_step_over"),
     "runtime_screenshot_view": _handle_runtime_screenshot_view,
+    "runtime_gui_move": partial(_handle_runtime_gui_action, GuiAction.MOVE),
+    "runtime_gui_click": partial(_handle_runtime_gui_action, GuiAction.CLICK),
+    "runtime_gui_drag": partial(_handle_runtime_gui_action, GuiAction.DRAG),
     "tail_log": _handle_tail_log,
     "wait_for_log_pattern": _handle_wait_for_log_pattern,
     "get_crash_info": _handle_get_crash_info,

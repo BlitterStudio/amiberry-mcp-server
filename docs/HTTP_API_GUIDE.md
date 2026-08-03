@@ -75,6 +75,7 @@ The API server provides these endpoints:
 
 **State Management**
 - `POST /runtime/screenshot` - Take a screenshot
+- `POST /runtime/screenshot-view` - Return exact screenshot bytes and actionable metadata
 - `POST /runtime/save-state` - Save state while running
 - `POST /runtime/load-state` - Load a savestate
 - `POST /runtime/quicksave` - Quick save to slot (0-9)
@@ -118,6 +119,9 @@ The API server provides these endpoints:
 - `POST /runtime/key` - Send keyboard input (keycode + state)
 - `POST /runtime/type` - Send a string of text character by character
 - `POST /runtime/mouse` - Send mouse input
+- `POST /runtime/gui/move` - Move or hover using pixels from a screenshot view
+- `POST /runtime/gui/click` - Click or double-click using pixels from a screenshot view
+- `POST /runtime/gui/drag` - Drag using pixels from a screenshot view
 - `POST /runtime/mouse-speed` - Set mouse sensitivity
 - `GET /runtime/mouse-speed` - Get current mouse sensitivity
 - `POST /runtime/mouse-grab` - Toggle mouse capture/grab
@@ -214,7 +218,7 @@ The API server provides these endpoints:
 - `POST /runtime/debug/step-over` - Step over subroutine calls (JSR/BSR)
 
 **Screenshot Analysis**
-- `POST /runtime/screenshot-view` - Take screenshot and return base64-encoded image data
+- `POST /runtime/screenshot-view` - Take a screenshot and return exact base64-encoded image data plus actionable metadata
 
 **Log Tailing**
 - `POST /logs/tail` - Get new log lines since last read (incremental)
@@ -225,6 +229,215 @@ The API server provides these endpoints:
 - `POST /launch-and-wait` - Launch Amiberry and wait until IPC socket is ready
 
 Full API documentation available at: `http://localhost:8080/docs`
+
+### Screenshot-driven GUI automation
+
+The GUI action API is screenshot-first. A coordinate is meaningful only with
+the exact screenshot that supplied it:
+
+1. `POST /runtime/screenshot-view`.
+2. Decode or display `data.base64`, then choose integer pixel coordinates
+   inside `data.actionable_bounds`.
+3. Send `data.capture_id` and a caller-generated `request_id` to one of the
+   `/runtime/gui/*` action endpoints.
+4. Read the action result and obey `next_action` and `recapture_required`.
+
+The controller reads and registers the immutable image before it returns the
+capture. Do not replace or recapture the file and assume the old coordinates
+still describe it.
+
+#### Capture
+
+```bash
+curl -sS -X POST http://localhost:8080/runtime/screenshot-view \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+The response uses the standard `success`, `message`, and `data` envelope. Its
+`data` object contains:
+
+```json
+{
+  "path": "/path/to/screenshots/debug_20260803_120000.png",
+  "base64": "<exact image bytes as base64>",
+  "mime_type": "image/png",
+  "size": 12345,
+  "schema_version": 1,
+  "controller_id": "ctrl_...",
+  "capture_id": "ctrl_...:cap_...",
+  "actionable": true,
+  "coordinate_space": "screenshot_pixels",
+  "image_width": 1280,
+  "image_height": 720,
+  "actionable_bounds": {
+    "x": 80,
+    "y": 45,
+    "width": 1120,
+    "height": 630
+  },
+  "next_action": "none"
+}
+```
+
+`actionable_bounds` is a half-open rectangle: valid points satisfy
+`x <= point_x < x + width` and `y <= point_y < y + height`. All public action
+coordinates use screenshot pixels. The controller owns the window, viewport,
+HiDPI, and monitor conversion; clients must not pre-scale the coordinates.
+
+An older Amiberry runtime can still return visible image data, but its metadata
+will contain `actionable=false`, `capture_id=null`,
+`actionable_bounds=null`, and `next_action="upgrade_runtime"`. Do not call an
+action endpoint with that image. There is no relative-coordinate fallback.
+
+Actionable capture currently requires Amiberry's SDL or OpenGL renderer. The
+Vulkan renderer still supports legacy screenshots, but screenshot-view returns
+an error for actionable capture because Vulkan cannot yet bind the saved pixels
+to the exact presented frame geometry.
+
+An optional `filename` may be supplied, but it must resolve inside the configured
+screenshot directory:
+
+```json
+{"filename": "/configured/screenshot/directory/menu.png"}
+```
+
+#### Actions
+
+Move or hover, optionally waiting at the destination for `dwell_ms`:
+
+```bash
+curl -sS -X POST http://localhost:8080/runtime/gui/move \
+  -H "Content-Type: application/json" \
+  -d '{
+    "capture_id": "ctrl_...:cap_...",
+    "request_id": "menu-hover-1",
+    "x": 410,
+    "y": 265,
+    "dwell_ms": 250
+  }'
+```
+
+Click or double-click:
+
+```bash
+curl -sS -X POST http://localhost:8080/runtime/gui/click \
+  -H "Content-Type: application/json" \
+  -d '{
+    "capture_id": "ctrl_...:cap_...",
+    "request_id": "menu-open-1",
+    "x": 410,
+    "y": 265,
+    "button": "left",
+    "click_count": 2
+  }'
+```
+
+Drag between two points from the same capture:
+
+```bash
+curl -sS -X POST http://localhost:8080/runtime/gui/drag \
+  -H "Content-Type: application/json" \
+  -d '{
+    "capture_id": "ctrl_...:cap_...",
+    "request_id": "icon-drag-1",
+    "start_x": 250,
+    "start_y": 180,
+    "end_x": 650,
+    "end_y": 420,
+    "button": "left"
+  }'
+```
+
+The request schemas are closed: unknown fields are rejected. Their exact
+fields and defaults are:
+
+| Endpoint | Required | Optional |
+|----------|----------|----------|
+| `/runtime/gui/move` | `capture_id`, `request_id`, `x`, `y` | `dwell_ms`: integer `0..5000`, default `0` |
+| `/runtime/gui/click` | `capture_id`, `request_id`, `x`, `y` | `button`: `left`, `right`, or `middle`, default `left`; `click_count`: `1` or `2`, default `1` |
+| `/runtime/gui/drag` | `capture_id`, `request_id`, `start_x`, `start_y`, `end_x`, `end_y` | `button`: `left`, `right`, or `middle`, default `left` |
+
+Coordinates are non-negative integers and are also checked against the exact
+capture's image and actionable bounds. `request_id` must be 1-128 characters
+from `A-Z`, `a-z`, `0-9`, `.`, `_`, `:`, or `-`.
+
+#### Results, retries, and recovery
+
+Every action endpoint returns the same versioned JSON result shape, including
+on a domain error:
+
+```json
+{
+  "schema_version": 1,
+  "ok": true,
+  "code": "ok",
+  "message": "GUI action completed",
+  "controller_id": "ctrl_...",
+  "request_id": "menu-open-1",
+  "action": "click",
+  "execution_state": "completed",
+  "failure_phase": null,
+  "next_action": "none",
+  "retryable": false,
+  "recapture_required": false,
+  "cleanup_state": "confirmed",
+  "cleanup_context": {},
+  "deduplicated": false,
+  "capture_id": "ctrl_...:cap_...",
+  "requested_coordinates": [{"x": 410, "y": 265}],
+  "applied_coordinates": [{"x": 512, "y": 333}],
+  "runtime_id": "...",
+  "geometry_revision": 42
+}
+```
+
+`requested_coordinates` are screenshot pixels; `applied_coordinates` are the
+window-logical points confirmed by Amiberry. These values are evidence, not
+coordinates to feed back into another public action.
+
+Use the response guidance rather than deriving a retry from the HTTP status:
+
+| `code` | Normal `next_action` | Required handling |
+|--------|----------------------|-------------------|
+| `ok` | `none` | Action completed. |
+| `unsupported_capability`, `capture_not_actionable` | `upgrade_runtime` | Upgrade Amiberry before attempting GUI actions. |
+| `capture_unknown`, `capture_evicted`, `capture_stale` | `recapture` | Take a new screenshot view and choose coordinates again. |
+| `capture_wrong_controller` | `recapture_here` | Capture through this controller process. |
+| `capture_wrong_instance` | `select_instance` | Select the intended instance, then capture there. |
+| `coordinate_out_of_bounds`, `action_rejected` | `correct_request` | Correct the request; if `execution_state` is `outcome_unknown`, follow the returned `reconcile` guidance instead. |
+| `automation_busy`, `action_in_progress` | `wait_then_retry` | Retry only when `retryable=true`, with the identical payload and ID. |
+| `request_id_conflict` | `new_request_id` | The ID is bound to different payload bytes; choose a new ID. |
+| `input_not_ready` | `restore_focus` | Restore focus/readiness, then follow the returned retry/recapture fields. |
+| `runtime_unreachable` | `retry` or `reconcile` | Retry only when the result says it is safe; reconcile an unknown outcome. |
+| `cleanup_unconfirmed` | `reconcile` | Treat the outcome as unknown and inspect the visible state. Never replay blindly. |
+
+`failure_phase`, `execution_state`, `cleanup_state`, and `cleanup_context` make
+partial click/drag outcomes explicit. `cleanup_unconfirmed` means release or
+temporary input-setting restoration could not be confirmed, even if an earlier
+phase may have applied. A new action is not a cleanup strategy.
+
+`request_id` provides bounded controller-local deduplication. An identical
+retained retry returns the original terminal result with `deduplicated=true`;
+the same ID with a changed payload returns `request_id_conflict`. The ledger is
+bounded, so this is not permanent global storage.
+
+`capture_id` is also bounded and controller-process scoped, and it is bound to
+the selected Amiberry instance. Reuse it only while the controller confirms the
+same runtime identity, geometry revision, and monitor; obey any recapture
+response. Run one controller process per runtime instance. Running the MCP and
+HTTP servers simultaneously against the same Amiberry instance is unsupported.
+
+The action API is supported on Linux and macOS. Automated tests cover the
+schemas, MCP/HTTP parity, geometry translation, stale guards, deduplication,
+and cleanup semantics. Live end-to-end Linux and macOS validation remains a
+separate release check; this documentation does not claim that matrix has run.
+
+HTTP action status mapping is `200` for `ok`, `404` for unknown/evicted
+captures, `422` for coordinate bounds failures, `501` for an unsupported
+runtime capability, `503` for runtime/cleanup uncertainty, and `409` for other
+domain conflicts. FastAPI envelope validation also returns its standard `422`
+response before an action starts.
 
 ---
 

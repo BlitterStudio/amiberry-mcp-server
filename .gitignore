@@ -89,3 +89,6 @@ dmypy.json
 
 # Ruff
 .ruff_cache/
+
+# Local planning artifacts
+docs/plans/

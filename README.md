@@ -20,6 +20,8 @@ An MCP (Model Context Protocol) server for controlling [Amiberry](https://github
 - **Disk Swapping**: Insert floppy/CD images into running emulation
 - **Live Configuration**: Query and modify config options at runtime
 - **Screenshots**: Capture screenshots from running emulation
+- **Screenshot-driven GUI Automation**: Move, click, double-click, and drag
+  safely using pixels from an exact screenshot
 - **Keyboard Input**: Send key presses or type text into the emulation
 - **Cross-platform**: Works on Linux, macOS, and FreeBSD
 
@@ -453,7 +455,10 @@ Try asking your assistant:
 ### Screenshot Analysis
 | Tool | Description |
 |------|-------------|
-| `runtime_screenshot_view` | Take screenshot and return image data for AI analysis |
+| `runtime_screenshot_view` | Return exact image data plus actionable capture metadata |
+| `runtime_gui_move` | Move or hover at a pixel from that capture |
+| `runtime_gui_click` | Click or double-click a named button at a captured pixel |
+| `runtime_gui_drag` | Drag a named button between two captured pixels |
 
 ### Log Tailing & Crash Detection
 | Tool | Description |
@@ -469,6 +474,55 @@ Try asking your assistant:
 | `launch_and_wait_for_ipc` | Launch Amiberry and wait until IPC socket is ready |
 
 > **Note:** Runtime control requires Amiberry built with `USE_IPC_SOCKET=ON`
+
+### Screenshot-driven GUI automation
+
+GUI automation is screenshot-first. Call `runtime_screenshot_view`, inspect the
+returned image, and use pixel coordinates from that exact image in one of
+`runtime_gui_move`, `runtime_gui_click`, or `runtime_gui_drag`. Pass the
+returned `capture_id` and a caller-generated `request_id` with every action.
+
+The screenshot metadata declares `coordinate_space="screenshot_pixels"`, the
+image dimensions, and a half-open `actionable_bounds` rectangle. Points must be
+integer screenshot pixels inside both the image and those bounds. The service
+performs scaling, HiDPI, viewport, and monitor translation; callers should not
+convert coordinates themselves.
+
+| Tool | Required fields | Optional fields |
+|------|-----------------|-----------------|
+| `runtime_gui_move` | `capture_id`, `request_id`, `x`, `y` | `dwell_ms` (default `0`, range `0..5000`) |
+| `runtime_gui_click` | `capture_id`, `request_id`, `x`, `y` | `button` (`left`, `right`, or `middle`; default `left`), `click_count` (`1` or `2`; default `1`) |
+| `runtime_gui_drag` | `capture_id`, `request_id`, `start_x`, `start_y`, `end_x`, `end_y` | `button` (`left`, `right`, or `middle`; default `left`) |
+
+`request_id` must be 1-128 characters from `A-Z`, `a-z`, `0-9`, `.`, `_`, `:`,
+or `-`. An identical retained retry returns the original result with
+`deduplicated=true`; reusing the same ID with a changed payload returns
+`request_id_conflict`. Retention is bounded, so an ID is an idempotency key for
+the controller's retained window, not a permanent global record.
+
+Every action returns a versioned result with `ok`, `code`, `message`,
+`controller_id`, `request_id`, `action`, `execution_state`, `failure_phase`,
+`next_action`, `retryable`, `recapture_required`, `cleanup_state`,
+`cleanup_context`, `deduplicated`, and capture/runtime/coordinate context. Treat
+`next_action` and `recapture_required` as mandatory recovery guidance. In
+particular, `cleanup_unconfirmed` means the action outcome is unknown: reconcile
+the visible state and do not blindly replay it.
+
+`capture_id` and `request_id` state belong to one controller process. A capture
+can only be reused while its selected instance, runtime identity, monitor, and
+geometry revision still match; recapture whenever directed. Run either the MCP
+server or the HTTP server as the controller for a given Amiberry instance.
+Simultaneous MCP and HTTP controller processes for the same runtime instance
+are unsupported.
+
+Older Amiberry builds can still return a visible screenshot, but its metadata
+has `actionable=false`, `capture_id=null`, and `next_action="upgrade_runtime"`.
+Actionable capture currently requires Amiberry's SDL or OpenGL renderer; Vulkan
+continues to support legacy screenshots but rejects coordinate automation until
+it can pair screenshot pixels with the exact presented frame geometry.
+There is deliberately no relative-coordinate fallback. Actionable GUI
+automation is supported on Linux and macOS; live platform validation remains a
+separate release check from the automated contract and geometry tests.
 
 ## Usage Examples
 
@@ -910,6 +964,7 @@ curl http://localhost:8080/runtime/ping
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/runtime/screenshot` | POST | Take a screenshot |
+| `/runtime/screenshot-view` | POST | Return exact screenshot bytes and actionable metadata |
 | `/runtime/save-state` | POST | Save state while running |
 | `/runtime/load-state` | POST | Load a savestate |
 | `/runtime/quicksave` | POST | Quick save to slot (0-9) |
@@ -1049,6 +1104,15 @@ curl http://localhost:8080/runtime/ping
 | `/runtime/type` | POST | Type a string of text character by character |
 | `/runtime/mouse` | POST | Send mouse input |
 | `/runtime/mouse-speed` | POST | Set mouse sensitivity |
+
+**Screenshot-driven GUI Automation**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/runtime/gui/move` | POST | Move or hover using screenshot pixels |
+| `/runtime/gui/click` | POST | Click or double-click using screenshot pixels |
+| `/runtime/gui/drag` | POST | Drag using screenshot pixels |
+
 **Utility**
 | Endpoint | Method | Description |
 |----------|--------|-------------|
