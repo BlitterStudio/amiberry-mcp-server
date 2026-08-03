@@ -19,11 +19,13 @@ import signal
 import subprocess
 from contextlib import asynccontextmanager as _asynccontextmanager
 from pathlib import Path
+from typing import Annotated, Literal
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 from .common import (
     _is_path_within,
@@ -54,6 +56,18 @@ from .config import (
     ensure_directories_exist,
     get_platform_info,
 )
+from .gui_automation import (
+    MAX_CAPTURE_ID_LENGTH,
+    MAX_DWELL_MS,
+    REQUEST_ID_PATTERN,
+    CaptureError,
+    ClickRequest,
+    DragRequest,
+    GuiAutomationService,
+    MouseButton,
+    MoveRequest,
+    StableCode,
+)
 from .ipc_client import (
     IPCConnectionError,
 )
@@ -66,7 +80,13 @@ from .savestate import (
     get_savestate_summary,
     inspect_savestate,
 )
-from .shared_state import get_ipc_client, get_state, launch_and_store
+from .shared_state import (
+    AutomationBusyError,
+    coordinated_runtime_operation,
+    get_ipc_client,
+    get_state,
+    launch_and_store,
+)
 from .uae_config import (
     create_config_from_template,
     get_config_summary,
@@ -75,20 +95,29 @@ from .uae_config import (
 )
 
 _state = get_state()
+_gui_automation = GuiAutomationService(_state)
 
 
 @_asynccontextmanager
-async def _ipc_context():
+async def _ipc_context(operation: str | None = None, option: str | None = None):
     """Async context manager for IPC calls with standardized error handling.
 
     Yields an IPC client. Maps IPC errors to appropriate HTTPExceptions.
     """
     try:
-        yield get_ipc_client()
+        if operation is None:
+            yield get_ipc_client()
+        else:
+            async with coordinated_runtime_operation(
+                operation, option, _state
+            ) as pinned:
+                yield pinned.client
     except IPCConnectionError as e:
         raise HTTPException(
             status_code=503, detail=f"IPC connection error: {str(e)}"
         ) from e
+    except AutomationBusyError as e:
+        raise HTTPException(status_code=409, detail=f"Automation busy: {str(e)}") from e
     except HTTPException:
         raise
     except Exception as e:
@@ -238,9 +267,10 @@ def _create_no_arg_ipc_endpoint(
     success_msg: str,
     failure_detail: str,
     method: str = "POST",
+    operation: str | None = None,
 ):
     async def handler():
-        async with _ipc_context() as client:
+        async with _ipc_context(operation) as client:
             success = await getattr(client, ipc_method)()
             return _ipc_success_or_raise(success, success_msg, failure_detail)
 
@@ -263,6 +293,22 @@ _PGREP_ARGS = (
 _AUTOFIRE_MODES = {0: "off", 1: "normal", 2: "toggle", 3: "always", 4: "toggle_noaf"}
 _DISPLAY_MODES = {0: "window", 1: "fullscreen", 2: "fullwindow"}
 _SOUND_MODES = {0: "off", 1: "normal", 2: "stereo", 3: "best"}
+
+_HTTP_LIFECYCLE_ROUTES = {
+    "/stop": "kill_amiberry",
+    "/launch": "launch_amiberry",
+    "/quick-launch/{model_or_config}": "launch_amiberry",
+    "/launch-lha": "launch_amiberry",
+    "/launch-with-logging": "launch_with_logging",
+    "/launch-whdload": "launch_whdload",
+    "/launch-cd": "launch_cd",
+    "/disk-swapper": "set_disk_swapper",
+    "/runtime/active-instance": "set_active_instance",
+    "/runtime/quit": "runtime_quit",
+    "/process/kill": "kill_amiberry",
+    "/process/restart": "restart_amiberry",
+    "/launch-and-wait": "launch_and_wait_for_ipc",
+}
 
 
 class ActiveInstanceRequest(BaseModel):
@@ -479,6 +525,61 @@ class RuntimeScreenshotViewRequest(BaseModel):
     filename: str | None = None
 
 
+_StrictCoordinate = Annotated[int, Field(strict=True, ge=0)]
+_CaptureId = Annotated[
+    str, Field(strict=True, min_length=1, max_length=MAX_CAPTURE_ID_LENGTH)
+]
+_RequestId = Annotated[
+    str,
+    Field(
+        strict=True,
+        min_length=1,
+        max_length=128,
+        pattern=REQUEST_ID_PATTERN.pattern,
+    ),
+]
+_ButtonName = Literal["left", "right", "middle"]
+
+
+class RuntimeGuiMoveRequest(BaseModel):
+    """Strict HTTP envelope for screenshot-pixel movement."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    capture_id: _CaptureId
+    request_id: _RequestId
+    x: _StrictCoordinate
+    y: _StrictCoordinate
+    dwell_ms: Annotated[int, Field(strict=True, ge=0, le=MAX_DWELL_MS)] = 0
+
+
+class RuntimeGuiClickRequest(BaseModel):
+    """Strict HTTP envelope for one named click or double-click."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    capture_id: _CaptureId
+    request_id: _RequestId
+    x: _StrictCoordinate
+    y: _StrictCoordinate
+    button: _ButtonName = "left"
+    click_count: Annotated[int, Field(strict=True, ge=1, le=2)] = 1
+
+
+class RuntimeGuiDragRequest(BaseModel):
+    """Strict HTTP envelope for a screenshot-pixel drag."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    capture_id: _CaptureId
+    request_id: _RequestId
+    start_x: _StrictCoordinate
+    start_y: _StrictCoordinate
+    end_x: _StrictCoordinate
+    end_y: _StrictCoordinate
+    button: _ButtonName = "left"
+
+
 class TailLogRequest(BaseModel):
     log_name: str
 
@@ -551,7 +652,12 @@ async def stop():
     if not await asyncio.to_thread(_is_amiberry_running):
         return StatusResponse(success=True, message="Amiberry is not running")
 
-    success = await asyncio.to_thread(_stop_amiberry)
+    async with _state.reset_endpoint_transition(_state.active_instance):
+        success = await asyncio.to_thread(_stop_amiberry)
+        if not success:
+            return _ipc_success_or_raise(
+                success, "Amiberry stopped successfully", "Failed to stop Amiberry"
+            )
     if success:
         # Wait a bit for process to terminate
         await asyncio.sleep(1)
@@ -697,8 +803,9 @@ async def launch_amiberry(request: LaunchRequest):
     )
 
     try:
-        # Launch in background
-        launch_and_store(cmd)
+        async with _state.reset_endpoint_transition(_state.active_instance):
+            # Launch in background
+            launch_and_store(cmd)
 
         if request.model:
             message = f"Launched Amiberry with model: {request.model}"
@@ -822,7 +929,8 @@ async def launch_with_logging(request: LaunchWithLoggingRequest):
     )
 
     try:
-        launch_and_store(cmd, log_path=log_path)
+        async with _state.reset_endpoint_transition(_state.active_instance):
+            launch_and_store(cmd, log_path=log_path)
 
         return StatusResponse(
             success=True,
@@ -1012,7 +1120,8 @@ async def launch_whdload(
     )
 
     try:
-        launch_and_store(cmd)
+        async with _state.reset_endpoint_transition(_state.active_instance):
+            launch_and_store(cmd)
 
         return StatusResponse(
             success=True,
@@ -1081,7 +1190,8 @@ async def launch_cd(request: LaunchCDRequest):
     )
 
     try:
-        launch_and_store(cmd)
+        async with _state.reset_endpoint_transition(_state.active_instance):
+            launch_and_store(cmd)
 
         return StatusResponse(
             success=True,
@@ -1140,7 +1250,8 @@ async def launch_with_disk_swapper(request: DiskSwapperRequest):
     )
 
     try:
-        launch_and_store(cmd)
+        async with _state.reset_endpoint_transition(_state.active_instance):
+            launch_and_store(cmd)
 
         return StatusResponse(
             success=True,
@@ -1380,14 +1491,14 @@ async def get_active_instance():
 async def set_active_instance(request: ActiveInstanceRequest):
     """Set the active Amiberry instance to control (e.g. 0, 1). Set to null to auto-discover."""
 
-    _state.active_instance = request.instance
+    await _state.select_instance(request.instance)
     status = (
         f"Active instance set to {request.instance}"
         if request.instance is not None
         else "Active instance set to auto-discover"
     )
     return StatusResponse(
-        success=True, message=status, data={"instance": _state.active_instance}
+        success=True, message=status, data={"instance": request.instance}
     )
 
 
@@ -1436,7 +1547,7 @@ async def reset_emulation(request: RuntimeResetRequest):
     Reset the running Amiberry emulation.
     Requires Amiberry to be running with IPC enabled.
     """
-    async with _ipc_context() as client:
+    async with _ipc_context("reset_emulation") as client:
         success = await client.reset(hard=request.hard)
         reset_type = "hard" if request.hard else "soft"
         return _ipc_success_or_raise(
@@ -1444,12 +1555,17 @@ async def reset_emulation(request: RuntimeResetRequest):
         )
 
 
-_create_no_arg_ipc_endpoint(
-    route="/runtime/quit",
-    ipc_method="quit",
-    success_msg="Amiberry quit command sent",
-    failure_detail="Failed to quit Amiberry",
-)
+@app.post("/runtime/quit")
+async def runtime_quit():
+    """Send quit while holding the endpoint lifecycle transition."""
+    async with _state.reset_endpoint_transition(_state.active_instance):
+        async with _ipc_context() as client:
+            success = await client.quit()
+            return _ipc_success_or_raise(
+                success,
+                "Amiberry quit command sent",
+                "Failed to quit Amiberry",
+            )
 
 
 @app.post("/runtime/screenshot")
@@ -1493,7 +1609,7 @@ async def runtime_load_state(request: RuntimeLoadStateRequest):
     Load a savestate into the running emulation.
     Requires Amiberry to be running with IPC enabled.
     """
-    async with _ipc_context() as client:
+    async with _ipc_context("runtime_load_state") as client:
         success = await client.load_state(request.state_file)
         return _ipc_success_or_raise(
             success,
@@ -1565,7 +1681,7 @@ async def runtime_set_config(request: RuntimeSetConfigRequest):
     Set a configuration option on the running emulation.
     Requires Amiberry to be running with IPC enabled.
     """
-    async with _ipc_context() as client:
+    async with _ipc_context("runtime_set_config", request.option) as client:
         success = await client.set_config(request.option, request.value)
         if not success:
             raise HTTPException(
@@ -1728,6 +1844,7 @@ _create_no_arg_ipc_endpoint(
     ipc_method="toggle_fullscreen",
     success_msg="Fullscreen toggled",
     failure_detail="Failed to toggle fullscreen",
+    operation="runtime_toggle_fullscreen",
 )
 
 
@@ -1863,7 +1980,7 @@ async def runtime_send_mouse(request: RuntimeSendMouseRequest):
     Buttons: bit0=Left, bit1=Right, bit2=Middle.
     Requires Amiberry to be running with IPC enabled.
     """
-    async with _ipc_context() as client:
+    async with _ipc_context("runtime_send_mouse") as client:
         success = await client.send_mouse(request.dx, request.dy, request.buttons)
         return _ipc_success_or_raise(
             success,
@@ -1881,7 +1998,7 @@ async def runtime_set_mouse_speed(request: RuntimeSetMouseSpeedRequest):
     """
     _validate_range(request.speed, 10, 200, "Speed")
 
-    async with _ipc_context() as client:
+    async with _ipc_context("runtime_set_mouse_speed") as client:
         success = await client.set_mouse_speed(request.speed)
         return _ipc_success_or_raise(
             success,
@@ -1920,7 +2037,7 @@ async def runtime_quickload(request: RuntimeQuickLoadRequest):
     """
     _validate_range(request.slot, 0, 9, "Slot")
 
-    async with _ipc_context() as client:
+    async with _ipc_context("runtime_quickload") as client:
         success = await client.quickload(request.slot)
         return _ipc_success_or_raise(
             success,
@@ -2078,7 +2195,7 @@ async def runtime_set_display_mode(request: RuntimeSetDisplayModeRequest):
     """
     _validate_range(request.mode, 0, 2, "Mode")
 
-    async with _ipc_context() as client:
+    async with _ipc_context("runtime_set_display_mode") as client:
         success = await client.set_display_mode(request.mode)
         return _ipc_success_or_raise(
             success,
@@ -2114,7 +2231,7 @@ async def runtime_set_ntsc(request: RuntimeSetNTSCRequest):
     Set video mode to PAL or NTSC.
     Requires Amiberry to be running with IPC enabled.
     """
-    async with _ipc_context() as client:
+    async with _ipc_context("runtime_set_ntsc") as client:
         success = await client.set_ntsc(request.enabled)
         mode = "NTSC" if request.enabled else "PAL"
         return _ipc_success_or_raise(
@@ -2172,6 +2289,7 @@ _create_no_arg_ipc_endpoint(
     ipc_method="toggle_mouse_grab",
     success_msg="Mouse grab toggled",
     failure_detail="Failed to toggle mouse grab",
+    operation="runtime_toggle_mouse_grab",
 )
 
 
@@ -2239,7 +2357,7 @@ async def runtime_toggle_rtg(request: RuntimeToggleRTGRequest | None = None):
     """
     if request is None:
         request = RuntimeToggleRTGRequest()
-    async with _ipc_context() as client:
+    async with _ipc_context("runtime_toggle_rtg") as client:
         result = await client.toggle_rtg(request.monid)
 
         if result:
@@ -2345,7 +2463,7 @@ async def runtime_toggle_status_line():
     Toggle on-screen status line (cycle: off/chipset/rtg/both).
     Requires Amiberry to be running with IPC enabled.
     """
-    async with _ipc_context() as client:
+    async with _ipc_context("runtime_toggle_status_line") as client:
         result = await client.toggle_status_line()
 
         if result:
@@ -2597,7 +2715,7 @@ async def runtime_set_window_size(request: RuntimeSetWindowSizeRequest):
     _validate_range(request.width, 320, 3840, "Width")
     _validate_range(request.height, 200, 2160, "Height")
 
-    async with _ipc_context() as client:
+    async with _ipc_context("runtime_set_window_size") as client:
         success = await client.set_window_size(request.width, request.height)
         return _ipc_success_or_raise(
             success,
@@ -2633,7 +2751,7 @@ async def runtime_set_scaling(request: RuntimeSetScalingRequest):
     _validate_range(request.mode, -1, 2, "Mode")
 
     mode_names = ["auto", "nearest", "linear", "integer"]
-    async with _ipc_context() as client:
+    async with _ipc_context("runtime_set_scaling") as client:
         success = await client.set_scaling(request.mode)
         mode_index = request.mode + 1  # -1..2 -> 0..3
         return _ipc_success_or_raise(
@@ -2670,7 +2788,7 @@ async def runtime_set_line_mode(request: RuntimeSetLineModeRequest):
     _validate_range(request.mode, 0, 2, "Mode")
 
     mode_names = ["single", "double", "scanlines"]
-    async with _ipc_context() as client:
+    async with _ipc_context("runtime_set_line_mode") as client:
         success = await client.set_line_mode(request.mode)
         return _ipc_success_or_raise(
             success,
@@ -2710,7 +2828,7 @@ async def runtime_set_resolution(request: RuntimeSetResolutionRequest):
     _validate_range(request.mode, 0, 2, "Mode")
 
     mode_names = ["lores", "hires", "superhires"]
-    async with _ipc_context() as client:
+    async with _ipc_context("runtime_set_resolution") as client:
         success = await client.set_resolution(request.mode)
         return _ipc_success_or_raise(
             success,
@@ -2746,7 +2864,7 @@ async def runtime_set_autocrop(request: RuntimeSetAutocropRequest):
     Enable or disable automatic display cropping.
     Requires Amiberry to be running with IPC enabled.
     """
-    async with _ipc_context() as client:
+    async with _ipc_context("runtime_set_autocrop") as client:
         success = await client.set_autocrop(request.enabled)
         return _ipc_success_or_raise(
             success,
@@ -3135,7 +3253,8 @@ async def kill_amiberry_process():
         )
 
     pid = _state.process.pid
-    await asyncio.to_thread(terminate_process, _state.process)
+    async with _state.reset_endpoint_transition(_state.active_instance):
+        await asyncio.to_thread(terminate_process, _state.process)
     return StatusResponse(
         success=True, message=f"Amiberry process (PID {pid}) terminated."
     )
@@ -3179,12 +3298,12 @@ async def restart_amiberry_process():
             success=False, message="No previous launch command stored."
         )
 
-    if _state.process is not None and _state.process.poll() is None:
-        await asyncio.to_thread(terminate_process, _state.process)
-
     cmd = _state.launch_cmd
     try:
-        launch_and_store(cmd, log_path=_state.log_path)
+        async with _state.reset_endpoint_transition(_state.active_instance):
+            if _state.process is not None and _state.process.poll() is None:
+                await asyncio.to_thread(terminate_process, _state.process)
+            launch_and_store(cmd, log_path=_state.log_path)
         return StatusResponse(
             success=True,
             message=f"Amiberry restarted (PID: {_state.process.pid})",
@@ -3252,7 +3371,7 @@ async def runtime_write_memory(request: RuntimeWriteMemoryRequest):
 @app.post("/runtime/load-config")
 async def runtime_load_config(request: RuntimeLoadConfigRequest):
     """Load a .uae configuration file into the running emulation."""
-    async with _ipc_context() as client:
+    async with _ipc_context("runtime_load_config") as client:
         success = await client.load_config(request.config_path)
         return _ipc_success_or_raise(
             success,
@@ -3272,6 +3391,93 @@ _create_no_arg_ipc_endpoint(
 # === Screenshot with Image Data ===
 
 
+_GUI_ACTION_RESPONSES = {
+    404: {"description": "Capture is unknown or was evicted"},
+    409: {"description": "Stable domain conflict or rejection"},
+    422: {"description": "Request validation or coordinate bounds failure"},
+    501: {"description": "Runtime lacks the required capability"},
+    503: {"description": "Runtime unreachable or cleanup unconfirmed"},
+}
+
+
+def _gui_action_status(code: StableCode) -> int:
+    """Map one stable domain code to HTTP transport metadata."""
+    if code is StableCode.OK:
+        return 200
+    if code in {StableCode.CAPTURE_UNKNOWN, StableCode.CAPTURE_EVICTED}:
+        return 404
+    if code is StableCode.COORDINATE_OUT_OF_BOUNDS:
+        return 422
+    if code is StableCode.UNSUPPORTED_CAPABILITY:
+        return 501
+    if code in {StableCode.RUNTIME_UNREACHABLE, StableCode.CLEANUP_UNCONFIRMED}:
+        return 503
+    return 409
+
+
+@app.post("/runtime/gui/move", responses=_GUI_ACTION_RESPONSES)
+async def runtime_gui_move(request: RuntimeGuiMoveRequest):
+    """Move using pixels and capture_id from the exact preceding screenshot-view.
+
+    Use pixels from that returned image and obey the result's next_action.
+    """
+    result = await _gui_automation.move(
+        MoveRequest(
+            request.capture_id,
+            request.request_id,
+            request.x,
+            request.y,
+            request.dwell_ms,
+        )
+    )
+    return JSONResponse(
+        status_code=_gui_action_status(result.code), content=result.to_dict()
+    )
+
+
+@app.post("/runtime/gui/click", responses=_GUI_ACTION_RESPONSES)
+async def runtime_gui_click(request: RuntimeGuiClickRequest):
+    """Click using pixels and capture_id from the exact preceding screenshot-view.
+
+    Use pixels from that returned image and obey the result's next_action.
+    """
+    result = await _gui_automation.click(
+        ClickRequest(
+            request.capture_id,
+            request.request_id,
+            request.x,
+            request.y,
+            MouseButton(request.button),
+            request.click_count,
+        )
+    )
+    return JSONResponse(
+        status_code=_gui_action_status(result.code), content=result.to_dict()
+    )
+
+
+@app.post("/runtime/gui/drag", responses=_GUI_ACTION_RESPONSES)
+async def runtime_gui_drag(request: RuntimeGuiDragRequest):
+    """Drag using pixels and capture_id from the exact preceding screenshot-view.
+
+    Use pixels from that returned image and obey the result's next_action.
+    """
+    result = await _gui_automation.drag(
+        DragRequest(
+            request.capture_id,
+            request.request_id,
+            request.start_x,
+            request.start_y,
+            request.end_x,
+            request.end_y,
+            MouseButton(request.button),
+        )
+    )
+    return JSONResponse(
+        status_code=_gui_action_status(result.code), content=result.to_dict()
+    )
+
+
 @app.post("/runtime/screenshot-view")
 async def runtime_screenshot_view(request: RuntimeScreenshotViewRequest):
     """Take a screenshot and return the image data as base64."""
@@ -3289,41 +3495,30 @@ async def runtime_screenshot_view(request: RuntimeScreenshotViewRequest):
                 detail="Filename must be within the screenshots directory",
             )
 
-    async with _ipc_context() as client:
-        success = await client.screenshot(filename)
-        if success:
-            screenshot_path = Path(filename)
-            if await asyncio.to_thread(screenshot_path.exists):
-                image_data = await asyncio.to_thread(screenshot_path.read_bytes)
-                b64_data = base64.b64encode(image_data).decode("utf-8")
-                # Detect format from magic bytes
-                # MCP ImageContent / most LLM vision APIs accept:
-                # image/jpeg, image/png, image/gif, image/webp
-                if image_data[:2] in (b"\xff\xd8",):
-                    mime_type = "image/jpeg"
-                elif image_data[:4] == b"GIF8":
-                    mime_type = "image/gif"
-                elif image_data[:4] == b"RIFF" and image_data[8:12] == b"WEBP":
-                    mime_type = "image/webp"
-                else:
-                    # Amiberry saves PNG format - default to image/png
-                    mime_type = "image/png"
-                return StatusResponse(
-                    success=True,
-                    message=f"Screenshot saved to: {filename}",
-                    data={
-                        "path": filename,
-                        "base64": b64_data,
-                        "mime_type": mime_type,
-                        "size": len(image_data),
-                    },
-                )
-            else:
-                raise HTTPException(
-                    status_code=500, detail=f"Screenshot file not found: {filename}"
-                )
+    try:
+        view = await _gui_automation.capture(filename)
+    except CaptureError as e:
+        if e.code is StableCode.RUNTIME_UNREACHABLE:
+            status = 503
+        elif e.code in {StableCode.AUTOMATION_BUSY, StableCode.CAPTURE_STALE}:
+            status = 409
         else:
-            raise HTTPException(status_code=500, detail="Failed to take screenshot")
+            status = 500
+        raise HTTPException(status_code=status, detail=str(e)) from e
+
+    image_data = view.image_bytes
+    data = {
+        "path": str(view.path),
+        "base64": base64.b64encode(image_data).decode("utf-8"),
+        "mime_type": view.mime_type,
+        "size": len(image_data),
+    }
+    data.update(view.metadata_dict())
+    return StatusResponse(
+        success=True,
+        message=f"Screenshot saved to: {view.path}",
+        data=data,
+    )
 
 
 # === Log Tailing and Crash Detection ===
@@ -3609,10 +3804,6 @@ async def launch_and_wait_for_ipc(request: LaunchAndWaitRequest):
             detail=f"Model must be one of: {', '.join(SUPPORTED_MODELS)}",
         )
 
-    # Kill existing process
-    if _state.process is not None and _state.process.poll() is None:
-        await asyncio.to_thread(terminate_process, _state.process)
-
     # Resolve config path if specified
     config_path = None
     if request.config:
@@ -3645,7 +3836,10 @@ async def launch_and_wait_for_ipc(request: LaunchAndWaitRequest):
     log_path = LOG_DIR / log_name
 
     try:
-        launch_and_store(cmd, log_path=log_path)
+        async with _state.reset_endpoint_transition(_state.active_instance):
+            if _state.process is not None and _state.process.poll() is None:
+                await asyncio.to_thread(terminate_process, _state.process)
+            launch_and_store(cmd, log_path=log_path)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error launching: {str(e)}") from e
 
