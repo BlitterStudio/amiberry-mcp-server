@@ -17,6 +17,7 @@ import platform
 import re
 import signal
 import subprocess
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager as _asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Literal
@@ -69,6 +70,7 @@ from .gui_automation import (
     StableCode,
 )
 from .ipc_client import (
+    AmiberryIPCClient,
     IPCConnectionError,
 )
 from .rom_manager import (
@@ -99,7 +101,9 @@ _gui_automation = GuiAutomationService(_state)
 
 
 @_asynccontextmanager
-async def _ipc_context(operation: str | None = None, option: str | None = None):
+async def _ipc_context(
+    operation: str | None = None, option: str | None = None
+) -> AsyncIterator[AmiberryIPCClient]:
     """Async context manager for IPC calls with standardized error handling.
 
     Yields an IPC client. Maps IPC errors to appropriate HTTPExceptions.
@@ -1556,7 +1560,7 @@ async def reset_emulation(request: RuntimeResetRequest):
 
 
 @app.post("/runtime/quit")
-async def runtime_quit():
+async def runtime_quit() -> StatusResponse:
     """Send quit while holding the endpoint lifecycle transition."""
     async with _state.reset_endpoint_transition(_state.active_instance):
         async with _ipc_context() as client:
@@ -1569,12 +1573,12 @@ async def runtime_quit():
 
 
 @app.post("/runtime/screenshot")
-async def runtime_screenshot(request: RuntimeScreenshotRequest):
+async def runtime_screenshot(request: RuntimeScreenshotRequest) -> StatusResponse:
     """
     Take a screenshot of the running emulation.
     Requires Amiberry to be running with IPC enabled.
     """
-    async with _ipc_context() as client:
+    async with _ipc_context("runtime_screenshot") as client:
         success = await client.screenshot(request.filename)
         return _ipc_success_or_raise(
             success,
@@ -3416,7 +3420,7 @@ def _gui_action_status(code: StableCode) -> int:
 
 
 @app.post("/runtime/gui/move", responses=_GUI_ACTION_RESPONSES)
-async def runtime_gui_move(request: RuntimeGuiMoveRequest):
+async def runtime_gui_move(request: RuntimeGuiMoveRequest) -> JSONResponse:
     """Move using pixels and capture_id from the exact preceding screenshot-view.
 
     Use pixels from that returned image and obey the result's next_action.
@@ -3436,7 +3440,7 @@ async def runtime_gui_move(request: RuntimeGuiMoveRequest):
 
 
 @app.post("/runtime/gui/click", responses=_GUI_ACTION_RESPONSES)
-async def runtime_gui_click(request: RuntimeGuiClickRequest):
+async def runtime_gui_click(request: RuntimeGuiClickRequest) -> JSONResponse:
     """Click using pixels and capture_id from the exact preceding screenshot-view.
 
     Use pixels from that returned image and obey the result's next_action.
@@ -3457,7 +3461,7 @@ async def runtime_gui_click(request: RuntimeGuiClickRequest):
 
 
 @app.post("/runtime/gui/drag", responses=_GUI_ACTION_RESPONSES)
-async def runtime_gui_drag(request: RuntimeGuiDragRequest):
+async def runtime_gui_drag(request: RuntimeGuiDragRequest) -> JSONResponse:
     """Drag using pixels and capture_id from the exact preceding screenshot-view.
 
     Use pixels from that returned image and obey the result's next_action.

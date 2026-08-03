@@ -516,6 +516,14 @@ class TestHTTPMutationCoordination:
         [
             ("/runtime/reset", {"hard": False}, "reset_emulation", None, "reset", True),
             (
+                "/runtime/screenshot",
+                {"filename": "capture.png"},
+                "runtime_screenshot",
+                None,
+                "screenshot",
+                True,
+            ),
+            (
                 "/runtime/load-state",
                 {"state_file": "state.uss"},
                 "runtime_load_state",
