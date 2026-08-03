@@ -448,6 +448,29 @@ class TestCoordinator:
         assert action_entered.is_set() is True
 
     @pytest.mark.asyncio
+    async def test_legacy_screenshot_waits_for_actionable_capture_lock(self):
+        """A legacy write cannot race an actionable capture's locked file read."""
+        state = ProcessState(active_instance=0)
+        legacy_screenshot_started = asyncio.Event()
+        legacy_screenshot_entered = asyncio.Event()
+
+        async def run_legacy_screenshot() -> None:
+            legacy_screenshot_started.set()
+            async with coordinated_runtime_operation(
+                "runtime_screenshot", state=state, timeout=1.0
+            ):
+                legacy_screenshot_entered.set()
+
+        async with pin_active_endpoint(state, timeout=1.0):
+            legacy_task = asyncio.create_task(run_legacy_screenshot())
+            await legacy_screenshot_started.wait()
+            await asyncio.sleep(0)
+            assert legacy_screenshot_entered.is_set() is False
+
+        await legacy_task
+        assert legacy_screenshot_entered.is_set() is True
+
+    @pytest.mark.asyncio
     async def test_failed_lifecycle_transition_retains_dirty_ownership(self):
         state = ProcessState(active_instance=0)
         endpoint = state.active_endpoint
@@ -495,6 +518,7 @@ class TestCoordinator:
 
     def test_mutation_impact_is_centralized(self):
         assert mutation_impact_for("runtime_gui_click") is MutationImpact.SERIALIZE
+        assert mutation_impact_for("runtime_screenshot") is MutationImpact.SERIALIZE
         assert (
             mutation_impact_for("runtime_set_config", "tablet_mode")
             is MutationImpact.SERIALIZE_GEOMETRY_INVALIDATE

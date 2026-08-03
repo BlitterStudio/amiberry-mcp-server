@@ -45,6 +45,7 @@ _SERIALIZED_OPERATIONS = frozenset(
         "runtime_gui_move",
         "runtime_gui_click",
         "runtime_gui_drag",
+        "runtime_screenshot",
         "runtime_send_mouse",
         "runtime_send_mouse_abs",
         "runtime_set_mouse_speed",
