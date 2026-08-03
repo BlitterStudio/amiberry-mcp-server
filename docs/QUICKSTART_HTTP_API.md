@@ -63,6 +63,58 @@ curl http://localhost:8080/roms
 curl http://localhost:8080/savestates/mysave.uss/inspect
 ```
 
+### Screenshot-driven GUI actions
+
+Always capture first, inspect the returned image, then act with coordinates
+from that exact image:
+
+```bash
+# 1. Returns data.base64, data.capture_id, and screenshot-pixel bounds
+curl -sS -X POST http://localhost:8080/runtime/screenshot-view \
+  -H "Content-Type: application/json" \
+  -d '{}'
+
+# 2. Use a pixel from that image and its exact capture_id
+curl -sS -X POST http://localhost:8080/runtime/gui/click \
+  -H "Content-Type: application/json" \
+  -d '{
+    "capture_id": "ctrl_...:cap_...",
+    "request_id": "quick-click-1",
+    "x": 410,
+    "y": 265,
+    "button": "left",
+    "click_count": 1
+  }'
+```
+
+The capture declares `coordinate_space="screenshot_pixels"`, image dimensions,
+and a half-open `actionable_bounds`; keep every point inside those bounds. The
+controller handles scaling and HiDPI conversion.
+
+| Action | Required fields | Defaults and limits |
+|--------|-----------------|---------------------|
+| `POST /runtime/gui/move` | `capture_id`, `request_id`, `x`, `y` | `dwell_ms=0`, range `0..5000` |
+| `POST /runtime/gui/click` | `capture_id`, `request_id`, `x`, `y` | `button=left` (`left`, `right`, `middle`); `click_count=1` (`1` or `2`) |
+| `POST /runtime/gui/drag` | `capture_id`, `request_id`, `start_x`, `start_y`, `end_x`, `end_y` | `button=left` (`left`, `right`, `middle`) |
+
+Use a 1-128 character `request_id` containing only letters, numbers, `.`, `_`,
+`:`, and `-`. An identical retained retry is deduplicated; the same ID with a
+changed payload is a conflict. Both request retention and capture retention are
+bounded and local to this controller process.
+
+Always obey the returned `next_action` and `recapture_required`. Recapture when
+directed or when changing controller/instance; captures are safe to reuse only
+while their runtime identity, monitor, and geometry revision still match. If
+`code="cleanup_unconfirmed"` or `execution_state="outcome_unknown"`, inspect and
+reconcile the visible state—never replay the action blindly.
+
+Legacy runtimes return the screenshot with `actionable=false`,
+`capture_id=null`, and `next_action="upgrade_runtime"`; there is no
+relative-coordinate fallback. This workflow supports Linux and macOS. Run one
+controller process per Amiberry runtime instance; simultaneous MCP and HTTP
+servers controlling the same instance are unsupported. Automated contract
+coverage does not replace the pending live Linux/macOS release check.
+
 ### Python
 
 ```python
@@ -174,6 +226,10 @@ rest_command:
 | `/runtime/insert-floppy` | POST | Insert floppy disk |
 | `/runtime/eject-floppy` | POST | Eject floppy |
 | `/runtime/screenshot` | POST | Take screenshot |
+| `/runtime/screenshot-view` | POST | Exact image plus actionable metadata |
+| `/runtime/gui/move` | POST | Move/hover with captured pixels |
+| `/runtime/gui/click` | POST | Click/double-click with captured pixels |
+| `/runtime/gui/drag` | POST | Drag with captured pixels |
 | `/runtime/quicksave` | POST | Quick save (slot 0-9) |
 | `/runtime/quickload` | POST | Quick load (slot 0-9) |
 | `/runtime/volume` | GET/POST | Get/set volume |
@@ -200,7 +256,6 @@ rest_command:
 |----------|--------|-------------|
 | `/logs/tail` | POST | Incremental log tailing |
 | `/logs/wait-for-pattern` | POST | Wait for regex in logs |
-| `/runtime/screenshot-view` | POST | Screenshot as base64 |
 | `/runtime/debug/activate` | POST | Activate debugger |
 | `/runtime/debug/step` | POST | Step one instruction |
 | `/runtime/cpu/regs` | GET | CPU register values |
