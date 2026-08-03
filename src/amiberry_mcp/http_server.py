@@ -3479,7 +3479,9 @@ async def runtime_gui_drag(request: RuntimeGuiDragRequest):
 
 
 @app.post("/runtime/screenshot-view")
-async def runtime_screenshot_view(request: RuntimeScreenshotViewRequest):
+async def runtime_screenshot_view(
+    request: RuntimeScreenshotViewRequest,
+) -> StatusResponse:
     """Take a screenshot and return the image data as base64."""
     filename = request.filename
     if not filename:
@@ -3488,8 +3490,7 @@ async def runtime_screenshot_view(request: RuntimeScreenshotViewRequest):
         filename = str(SCREENSHOT_DIR / f"debug_{timestamp}.png")
     else:
         # Validate user-provided filename stays within SCREENSHOT_DIR
-        screenshot_check = Path(filename).resolve()
-        if not screenshot_check.is_relative_to(SCREENSHOT_DIR.resolve()):
+        if not _is_path_within(Path(filename), SCREENSHOT_DIR):
             raise HTTPException(
                 status_code=400,
                 detail="Filename must be within the screenshots directory",
