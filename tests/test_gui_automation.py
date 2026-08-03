@@ -49,6 +49,7 @@ from amiberry_mcp.gui_automation import (
     MoveRequest,
     Point,
     StableCode,
+    _decode_image_dimensions,
     _desired_mouse_untrap,
     _desired_tablet_mode,
     translate_screenshot_point,
@@ -79,6 +80,49 @@ def _png(width: int, height: int, suffix: bytes = b"") -> bytes:
         + height.to_bytes(4, "big")
         + suffix
     )
+
+
+def _gif(width: int, height: int) -> bytes:
+    """Build a GIF89a header and logical screen descriptor."""
+    return (
+        b"GIF89a"
+        + width.to_bytes(2, "little")
+        + height.to_bytes(2, "little")
+        + b"\x00\x00\x00"
+    )
+
+
+def _webp(chunk_type: bytes, payload: bytes) -> bytes:
+    """Build one bounded RIFF WebP image chunk."""
+    padding = b"\x00" if len(payload) % 2 else b""
+    body = b"WEBP" + chunk_type + len(payload).to_bytes(4, "little") + payload + padding
+    return b"RIFF" + len(body).to_bytes(4, "little") + body
+
+
+def _webp_vp8(width: int, height: int) -> bytes:
+    """Build the key-frame prefix needed for VP8 canvas dimensions."""
+    payload = (
+        b"\x00\x00\x00\x9d\x01\x2a"
+        + width.to_bytes(2, "little")
+        + height.to_bytes(2, "little")
+    )
+    return _webp(b"VP8 ", payload)
+
+
+def _webp_vp8l(width: int, height: int) -> bytes:
+    """Build the lossless WebP prefix containing canvas dimensions."""
+    dimensions = (width - 1) | ((height - 1) << 14)
+    return _webp(b"VP8L", b"\x2f" + dimensions.to_bytes(4, "little"))
+
+
+def _webp_vp8x(width: int, height: int) -> bytes:
+    """Build an extended WebP canvas header."""
+    payload = (
+        b"\x00\x00\x00\x00"
+        + (width - 1).to_bytes(3, "little")
+        + (height - 1).to_bytes(3, "little")
+    )
+    return _webp(b"VP8X", payload)
 
 
 def _geometry(
@@ -165,6 +209,22 @@ def _guard(x: int, y: int, mask: int, config_revision: int = 7) -> GuardedInputR
         button_mask=mask,
         x=x,
         y=y,
+    )
+
+
+def _rejected_guard(reason: GuardedInputReason) -> GuardedInputResponse:
+    """Build a guarded-input rejection that confirms no mutation."""
+    return GuardedInputResponse(
+        schema_version=1,
+        applied=False,
+        reason=reason,
+        runtime_id="runtime-a",
+        geometry_revision=4,
+        monitor_id=0,
+        input_config_revision=7,
+        button_mask=0,
+        x=None,
+        y=None,
     )
 
 
@@ -262,7 +322,92 @@ def test_validation_error_uses_canonical_result_contract():
     assert payload["next_action"] == "correct_request"
 
 
+@pytest.mark.parametrize(
+    ("image_bytes", "expected"),
+    [
+        (b"GIF87a" + _gif(8, 6)[6:], ("image/gif", 8, 6)),
+        (_gif(8, 6), ("image/gif", 8, 6)),
+        (_webp_vp8(8, 6), ("image/webp", 8, 6)),
+        (_webp_vp8l(8, 6), ("image/webp", 8, 6)),
+        (_webp_vp8x(8, 6), ("image/webp", 8, 6)),
+    ],
+)
+def test_decodes_gif_and_webp_dimensions(image_bytes, expected):
+    assert _decode_image_dimensions(image_bytes) == expected
+
+
+@pytest.mark.parametrize(
+    "image_bytes",
+    [
+        b"GIF89a\x08\x00",
+        _gif(0, 6),
+        b"RIFF\x20\x00\x00\x00WEBPVP8 \x0a\x00\x00\x00",
+        _webp_vp8(0, 6),
+        _webp(b"VP8L", b"\x00\x00\x00\x00\x00"),
+        _webp(b"VP8X", b"\x00" * 9),
+    ],
+)
+def test_rejects_malformed_gif_and_webp_dimensions(image_bytes):
+    with pytest.raises(CaptureError):
+        _decode_image_dimensions(image_bytes)
+
+
 class TestCaptureTransaction:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("image_bytes", "mime_type"),
+        [
+            (_gif(8, 6), "image/gif"),
+            (_webp_vp8(8, 6), "image/webp"),
+            (_webp_vp8l(8, 6), "image/webp"),
+            (_webp_vp8x(8, 6), "image/webp"),
+        ],
+    )
+    async def test_preserves_supported_gif_and_webp_bytes(
+        self, tmp_path, image_bytes, mime_type
+    ):
+        path = tmp_path / "capture.image"
+        geometry = _geometry(str(path))
+        state = ProcessState()
+        client = _client()
+
+        async def capture(filename):
+            path.write_bytes(image_bytes)
+            return ActionableScreenshotResult(filename, geometry)
+
+        client.capture_actionable_screenshot = AsyncMock(side_effect=capture)
+        state.ipc_client_cache = (None, client)
+
+        view = await GuiAutomationService(state).capture(str(path))
+
+        assert view.image_bytes == image_bytes
+        assert view.mime_type == mime_type
+        assert view.capture_id in state.captures
+
+    @pytest.mark.asyncio
+    async def test_legacy_capture_is_exact_non_actionable_and_unregistered(
+        self, tmp_path
+    ):
+        path = tmp_path / "legacy.gif"
+        image_bytes = _gif(8, 6)
+        state = ProcessState()
+        client = _client()
+
+        async def capture(filename):
+            path.write_bytes(image_bytes)
+            return ActionableScreenshotResult(filename, None)
+
+        client.capture_actionable_screenshot = AsyncMock(side_effect=capture)
+        state.ipc_client_cache = (None, client)
+
+        view = await GuiAutomationService(state).capture(str(path))
+
+        assert view.image_bytes == image_bytes
+        assert view.mime_type == "image/gif"
+        assert view.actionable is False
+        assert view.capture_id is None
+        assert not state.captures
+
     @pytest.mark.asyncio
     async def test_registers_only_validated_exact_bytes(self, tmp_path):
         path = tmp_path / "capture.png"
@@ -390,6 +535,87 @@ class TestActionSequences:
         assert first.code is StableCode.OK
         assert second.deduplicated is True
         assert client._send_mouse_abs_guarded.await_count == call_count
+
+    @pytest.mark.asyncio
+    async def test_concurrent_identical_request_reports_in_progress_without_replay(
+        self,
+    ):
+        service, _state_obj, client, capture_id = _registered_service()
+        input_started = asyncio.Event()
+        allow_input = asyncio.Event()
+
+        async def delayed_guard(x, y, mask, *_args):
+            input_started.set()
+            await allow_input.wait()
+            return _guard(x, y, mask, _args[-1])
+
+        client._send_mouse_abs_guarded = AsyncMock(side_effect=delayed_guard)
+        request = MoveRequest(capture_id, "move-concurrent", 3, 2)
+        first_task = asyncio.create_task(service.move(request))
+        await input_started.wait()
+
+        duplicate = await service.move(request)
+
+        assert duplicate.code is StableCode.ACTION_IN_PROGRESS
+        assert duplicate.deduplicated is True
+        assert client._send_mouse_abs_guarded.await_count == 1
+
+        allow_input.set()
+        first = await first_task
+        assert first.code is StableCode.OK
+
+    @pytest.mark.asyncio
+    async def test_applied_contradiction_is_outcome_unknown_and_not_replayed(self):
+        service, _state_obj, client, capture_id = _registered_service()
+        client._send_mouse_abs_guarded = AsyncMock(
+            return_value=GuardedInputResponse(
+                schema_version=1,
+                applied=True,
+                reason=GuardedInputReason.NONE,
+                runtime_id="contradictory-runtime",
+                geometry_revision=4,
+                monitor_id=0,
+                input_config_revision=7,
+                button_mask=0,
+                x=15,
+                y=23,
+            )
+        )
+        request = MoveRequest(capture_id, "move-contradiction", 3, 2)
+
+        first = await service.move(request)
+        duplicate = await service.move(request)
+
+        assert first.execution_state is ExecutionState.OUTCOME_UNKNOWN
+        assert duplicate.execution_state is ExecutionState.OUTCOME_UNKNOWN
+        assert duplicate.deduplicated is True
+        assert client._send_mouse_abs_guarded.await_count == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("reason", "expected_code"),
+        [
+            (GuardedInputReason.RUNTIME_MISMATCH, StableCode.CAPTURE_STALE),
+            (GuardedInputReason.FOCUS_NOT_READY, StableCode.INPUT_NOT_READY),
+            (
+                GuardedInputReason.COORDINATE_OUT_OF_BOUNDS,
+                StableCode.COORDINATE_OUT_OF_BOUNDS,
+            ),
+        ],
+    )
+    async def test_guarded_rejections_classify_without_claiming_mutation(
+        self, reason, expected_code
+    ):
+        service, _state_obj, client, capture_id = _registered_service()
+        client._send_mouse_abs_guarded = AsyncMock(return_value=_rejected_guard(reason))
+
+        result = await service.move(
+            MoveRequest(capture_id, f"rejected-{reason.value}", 3, 2)
+        )
+
+        assert result.code is expected_code
+        assert result.execution_state is ExecutionState.NOT_STARTED
+        assert result.applied_coordinates == ()
 
     @pytest.mark.asyncio
     async def test_changed_payload_conflicts(self):
@@ -585,3 +811,53 @@ class TestReadinessOwnership:
         assert outcome.state.value == "unconfirmed"
         assert outcome.context["restore"] == "ownership_lost_external_value_preserved"
         client._set_gui_automation_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rejected_restoration_retains_dirty_ownership_and_reports_cleanup(
+        self,
+    ):
+        original = _state(tablet=TabletMode.OFF, untrap=MouseUntrapMode.MIDDLE)
+        owned = _state(
+            tablet=TabletMode.MOUSEHACK,
+            untrap=MouseUntrapMode.BOTH,
+            config_revision=8,
+        )
+        service, state, client, capture_id = _registered_service(
+            state_response=original
+        )
+        client._get_gui_automation_state = AsyncMock(
+            side_effect=[original, owned, owned]
+        )
+        client._set_gui_automation_config = AsyncMock(
+            side_effect=[
+                AutomationConfigResponse(
+                    1,
+                    True,
+                    ConfigUpdateReason.NONE,
+                    TabletMode.MOUSEHACK,
+                    TabletMode.OFF,
+                    MouseUntrapMode.BOTH,
+                    MouseUntrapMode.MIDDLE,
+                    True,
+                    8,
+                ),
+                AutomationConfigResponse(
+                    1,
+                    False,
+                    ConfigUpdateReason.INPUT_CONFIG_CONFLICT,
+                    TabletMode.MOUSEHACK,
+                    TabletMode.MOUSEHACK,
+                    MouseUntrapMode.BOTH,
+                    MouseUntrapMode.BOTH,
+                    False,
+                    8,
+                ),
+            ]
+        )
+
+        result = await service.move(MoveRequest(capture_id, "restore-rejected", 3, 2))
+
+        assert result.code is StableCode.CLEANUP_UNCONFIRMED
+        assert result.cleanup_state.value == "unconfirmed"
+        assert result.cleanup_context["restore"] == "not_confirmed"
+        assert state.active_endpoint in state.dirty_ownership
