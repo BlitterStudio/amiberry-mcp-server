@@ -290,6 +290,11 @@ will contain `actionable=false`, `capture_id=null`,
 `actionable_bounds=null`, and `next_action="upgrade_runtime"`. Do not call an
 action endpoint with that image. There is no relative-coordinate fallback.
 
+Actionable capture currently requires Amiberry's SDL or OpenGL renderer. The
+Vulkan renderer still supports legacy screenshots, but screenshot-view returns
+an error for actionable capture because Vulkan cannot yet bind the saved pixels
+to the exact presented frame geometry.
+
 An optional `filename` may be supplied, but it must resolve inside the configured
 screenshot directory:
 
