@@ -419,6 +419,20 @@ class TestAutomationIPCMethods:
                 "GET_GUI_AUTOMATION_STATE", retry_after_write=True
             )
 
+    @pytest.mark.asyncio
+    async def test_scoped_missing_socket_opens_directly_without_preflight(self, client):
+        with (
+            patch("os.path.exists", side_effect=AssertionError("unexpected preflight")),
+            patch(
+                "asyncio.open_unix_connection",
+                AsyncMock(side_effect=FileNotFoundError("missing")),
+            ) as open_connection,
+            pytest.raises(IPCConnectionError, match="Socket not found at"),
+        ):
+            await client._get_gui_automation_state()
+
+        open_connection.assert_awaited_once()
+
 
 class TestPersistentCancellation:
     """Cancellation cannot leave a late response on a reusable socket."""
