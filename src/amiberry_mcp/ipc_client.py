@@ -958,11 +958,7 @@ class AmiberryIPCClient:
 
     async def _close_socket_connection(self) -> None:
         if self._writer is not None:
-            try:
-                self._writer.close()
-                await self._writer.wait_closed()
-            except OSError:
-                pass
+            await self._close_command_writer(self._writer)
 
         self._writer = None
         self._reader = None
@@ -1102,7 +1098,7 @@ class AmiberryIPCClient:
         try:
             writer.close()
             await writer.wait_closed()
-        except (OSError, ConnectionError):
+        except OSError:
             pass
 
     async def _send_scoped_socket_command(
@@ -1118,12 +1114,6 @@ class AmiberryIPCClient:
         safe queries and idempotent operations into retry after an ambiguous
         write. A guarded input mutation never opts in, so it cannot be replayed.
         """
-        if not await asyncio.to_thread(os.path.exists, self._socket_path):
-            raise IPCConnectionError(
-                f"Socket not found at {self._socket_path}. "
-                "Is Amiberry running with USE_IPC_SOCKET?"
-            )
-
         safe_args = [self._validate_automation_arg(argument) for argument in args]
         message = "\t".join([command.upper(), *safe_args]) + "\n"
         retryable_errors = (
@@ -1187,6 +1177,9 @@ class AmiberryIPCClient:
                         await self._close_command_writer(writer)
                         writer = None
                     raise
+                except FileNotFoundError as e:
+                    last_error = e
+                    break
                 except retryable_errors as e:
                     if first_error is None:
                         first_error = e
@@ -1202,6 +1195,11 @@ class AmiberryIPCClient:
 
             if isinstance(last_error, IPCConnectionError):
                 raise last_error
+            if isinstance(last_error, FileNotFoundError):
+                raise IPCConnectionError(
+                    f"Socket not found at {self._socket_path}. "
+                    "Is Amiberry running with USE_IPC_SOCKET?"
+                ) from last_error
             error_detail = str(last_error or first_error or "unknown failure")
             if first_error is not None and last_error is not first_error:
                 error_detail = f"{first_error}; retry failed: {error_detail}"
