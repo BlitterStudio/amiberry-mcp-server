@@ -189,13 +189,24 @@ class TestRuntimeScreenshot:
 class TestRuntimeScreenshotView:
     """Tests for the runtime_screenshot_view tool (returns image content)."""
 
+    @pytest.fixture(autouse=True)
+    def screenshot_dir(self, tmp_path):
+        """Keep screenshot-view paths inside its configured output directory."""
+        from amiberry_mcp import server
+
+        directory = tmp_path / "screenshots"
+        with patch.object(server, "SCREENSHOT_DIR", directory):
+            yield directory
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("actionable", [True, False])
-    async def test_preserves_exact_bytes_order_and_metadata(self, tmp_path, actionable):
+    async def test_preserves_exact_bytes_order_and_metadata(
+        self, screenshot_dir, actionable
+    ):
         """Path and exact image bytes precede pure JSON capture metadata."""
         from amiberry_mcp.server import call_tool
 
-        screenshot_file = tmp_path / "immutable.png"
+        screenshot_file = screenshot_dir / "immutable.png"
         exact_bytes = _MINIMAL_PNG + b"immutable-suffix"
         view = _capture_view(
             screenshot_file, actionable=actionable, image_bytes=exact_bytes
@@ -231,11 +242,12 @@ class TestRuntimeScreenshotView:
         capture.assert_awaited_once_with(str(screenshot_file))
 
     @pytest.mark.asyncio
-    async def test_screenshot_view_generates_file(self, tmp_path):
+    async def test_screenshot_view_generates_file(self, screenshot_dir):
         """The tool writes a real file and returns image content."""
         from amiberry_mcp.server import call_tool
 
-        screenshot_file = tmp_path / "view_shot.png"
+        screenshot_file = screenshot_dir / "view_shot.png"
+        screenshot_dir.mkdir()
         # Pre-create the file to simulate Amiberry writing it
         screenshot_file.write_bytes(_MINIMAL_PNG)
 
@@ -250,11 +262,12 @@ class TestRuntimeScreenshotView:
         assert any(str(screenshot_file) in t.text for t in texts)
 
     @pytest.mark.asyncio
-    async def test_screenshot_view_returns_valid_png(self, tmp_path):
+    async def test_screenshot_view_returns_valid_png(self, screenshot_dir):
         """The returned base64 data decodes to a valid PNG."""
         from amiberry_mcp.server import call_tool
 
-        screenshot_file = tmp_path / "valid.png"
+        screenshot_file = screenshot_dir / "valid.png"
+        screenshot_dir.mkdir()
         screenshot_file.write_bytes(_MINIMAL_PNG)
 
         mock_client = _make_ipc_client_mock(success=True)
@@ -273,11 +286,12 @@ class TestRuntimeScreenshotView:
             assert len(raw) > 8, "PNG file is essentially empty"
 
     @pytest.mark.asyncio
-    async def test_screenshot_view_nonempty_base64(self, tmp_path):
+    async def test_screenshot_view_nonempty_base64(self, screenshot_dir):
         """The base64 payload is not empty."""
         from amiberry_mcp.server import call_tool
 
-        screenshot_file = tmp_path / "nonempty.png"
+        screenshot_file = screenshot_dir / "nonempty.png"
+        screenshot_dir.mkdir()
         screenshot_file.write_bytes(_MINIMAL_PNG)
 
         mock_client = _make_ipc_client_mock(success=True)
@@ -291,11 +305,12 @@ class TestRuntimeScreenshotView:
             assert len(images[0].data) > 0, "Base64 data is empty"
 
     @pytest.mark.asyncio
-    async def test_screenshot_view_detects_jpeg(self, tmp_path):
+    async def test_screenshot_view_detects_jpeg(self, screenshot_dir):
         """JPEG files are detected and labelled with the correct MIME type."""
         from amiberry_mcp.server import call_tool
 
-        screenshot_file = tmp_path / "shot.jpg"
+        screenshot_file = screenshot_dir / "shot.jpg"
+        screenshot_dir.mkdir()
         screenshot_file.write_bytes(_JPEG_BYTES)
 
         mock_client = _make_ipc_client_mock(success=True)
@@ -309,11 +324,12 @@ class TestRuntimeScreenshotView:
         assert images[0].mimeType == "image/jpeg"
 
     @pytest.mark.asyncio
-    async def test_screenshot_view_rejects_invalid_image_bytes(self, tmp_path):
+    async def test_screenshot_view_rejects_invalid_image_bytes(self, screenshot_dir):
         """Invalid image bytes cannot produce trustworthy capture metadata."""
         from amiberry_mcp.server import call_tool
 
-        screenshot_file = tmp_path / "shot.bin"
+        screenshot_file = screenshot_dir / "shot.bin"
+        screenshot_dir.mkdir()
         # Write some arbitrary bytes that aren't JPEG, GIF, or WebP
         screenshot_file.write_bytes(b"\x00\x01\x02\x03" * 64)
 
@@ -329,7 +345,7 @@ class TestRuntimeScreenshotView:
         assert "format is invalid" in result[0].text
 
     @pytest.mark.asyncio
-    async def test_screenshot_view_auto_generates_filename(self):
+    async def test_screenshot_view_auto_generates_filename(self, screenshot_dir):
         """When no filename is given, the tool auto-generates one under SCREENSHOT_DIR."""
         from amiberry_mcp.server import call_tool
 
@@ -352,6 +368,7 @@ class TestRuntimeScreenshotView:
         assert saved_filename is not None, "screenshot() was never called"
         assert "debug_" in saved_filename
         assert saved_filename.endswith(".png")
+        assert Path(saved_filename).resolve().is_relative_to(screenshot_dir.resolve())
 
         # Cleanup
         try:
@@ -360,11 +377,11 @@ class TestRuntimeScreenshotView:
             pass
 
     @pytest.mark.asyncio
-    async def test_screenshot_view_file_not_found(self, tmp_path):
+    async def test_screenshot_view_file_not_found(self, screenshot_dir):
         """If the IPC succeeds but the file doesn't appear, report the problem."""
         from amiberry_mcp.server import call_tool
 
-        nonexistent = tmp_path / "ghost.png"
+        nonexistent = screenshot_dir / "ghost.png"
 
         mock_client = _make_ipc_client_mock(success=True)
         with _patch_ipc_client(mock_client):
@@ -376,21 +393,22 @@ class TestRuntimeScreenshotView:
         assert any("not found" in t.text.lower() for t in texts)
 
     @pytest.mark.asyncio
-    async def test_screenshot_view_ipc_failure(self):
+    async def test_screenshot_view_ipc_failure(self, screenshot_dir):
         """If the IPC call itself fails, a failure message is returned."""
         from amiberry_mcp.server import call_tool
 
         mock_client = _make_ipc_client_mock(success=False)
         with _patch_ipc_client(mock_client):
             result = await call_tool(
-                "runtime_screenshot_view", {"filename": "/tmp/nope.png"}
+                "runtime_screenshot_view",
+                {"filename": str(screenshot_dir / "nope.png")},
             )
 
         texts = [r for r in result if r.type == "text"]
         assert any("failed" in t.text.lower() for t in texts)
 
     @pytest.mark.asyncio
-    async def test_screenshot_view_ipc_connection_error(self):
+    async def test_screenshot_view_ipc_connection_error(self, screenshot_dir):
         """An IPC connection error is caught and reported."""
         from amiberry_mcp.ipc_client import IPCConnectionError
         from amiberry_mcp.server import call_tool
@@ -399,8 +417,28 @@ class TestRuntimeScreenshotView:
         mock_client.screenshot = AsyncMock(side_effect=IPCConnectionError("no socket"))
         with _patch_ipc_client(mock_client):
             result = await call_tool(
-                "runtime_screenshot_view", {"filename": "/tmp/err.png"}
+                "runtime_screenshot_view",
+                {"filename": str(screenshot_dir / "err.png")},
             )
 
         texts = [r for r in result if r.type == "text"]
         assert any("error" in t.text.lower() for t in texts)
+
+    @pytest.mark.asyncio
+    async def test_screenshot_view_rejects_path_escape(self, tmp_path, screenshot_dir):
+        """A caller-provided path cannot escape the screenshot directory."""
+        from amiberry_mcp import server
+        from amiberry_mcp.server import call_tool
+
+        escaped = screenshot_dir / ".." / "outside.png"
+        with patch.object(
+            server._gui_automation, "capture", new=AsyncMock()
+        ) as capture:
+            result = await call_tool(
+                "runtime_screenshot_view", {"filename": str(escaped)}
+            )
+
+        assert escaped.resolve() == (tmp_path / "outside.png").resolve()
+        assert len(result) == 1
+        assert "within the screenshots directory" in result[0].text
+        capture.assert_not_awaited()

@@ -30,6 +30,7 @@ except ImportError:
     _HAS_IMAGE_CONTENT = False
 
 from .common import (
+    _is_path_within,
     build_launch_command,
     detect_amiberry_version,
     format_log_timestamp,
@@ -4337,6 +4338,8 @@ async def _handle_runtime_screenshot_view(arguments: Any) -> list:
         await asyncio.to_thread(SCREENSHOT_DIR.mkdir, parents=True, exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = str(SCREENSHOT_DIR / f"debug_{timestamp}.png")
+    elif not _is_path_within(Path(filename), SCREENSHOT_DIR):
+        return _text_result("Error: Filename must be within the screenshots directory")
 
     try:
         view = await _gui_automation.capture(filename)
