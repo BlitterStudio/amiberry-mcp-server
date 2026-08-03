@@ -12,7 +12,11 @@ import asyncio
 import importlib
 import os
 import sys
+from dataclasses import dataclass
+from enum import Enum
 from typing import Any
+
+_MAX_RESPONSE_SIZE = 1024 * 1024
 
 if not hasattr(asyncio, "open_unix_connection"):
 
@@ -88,6 +92,506 @@ class CommandError(IPCError):
     """Command execution failed."""
 
     pass
+
+
+class DisplayMode(str, Enum):
+    """Display source represented by an actionable screenshot."""
+
+    NATIVE = "native"
+    RTG = "rtg"
+
+
+class Renderer(str, Enum):
+    """Renderer that produced an actionable screenshot."""
+
+    SDL = "sdl"
+    OPENGL = "opengl"
+    VULKAN = "vulkan"
+
+
+class TabletMode(str, Enum):
+    """Amiberry tablet-mode preference values."""
+
+    OFF = "off"
+    MOUSEHACK = "mousehack"
+    REAL = "real"
+
+
+class MouseUntrapMode(str, Enum):
+    """Amiberry mouse-untrap preference values."""
+
+    OFF = "off"
+    MIDDLE = "middle"
+    MAGIC = "magic"
+    BOTH = "both"
+
+
+class GuardedInputReason(str, Enum):
+    """Stable guarded-input result reasons from Amiberry."""
+
+    NONE = "none"
+    GEOMETRY_INVALID = "geometry_invalid"
+    RUNTIME_MISMATCH = "runtime_mismatch"
+    GEOMETRY_REVISION_MISMATCH = "geometry_revision_mismatch"
+    MONITOR_MISMATCH = "monitor_mismatch"
+    INPUT_CONFIG_REVISION_MISMATCH = "input_config_revision_mismatch"
+    FOCUS_NOT_READY = "focus_not_ready"
+    SETTINGS_INCOMPATIBLE = "settings_incompatible"
+    COORDINATE_OUT_OF_BOUNDS = "coordinate_out_of_bounds"
+    UNSUPPORTED_BUTTON_MASK = "unsupported_button_mask"
+    INPUT_REJECTED = "input_rejected"
+    MALFORMED_REQUEST = "malformed_request"
+
+
+class ConfigUpdateReason(str, Enum):
+    """Stable compare-and-set input configuration result reasons."""
+
+    NONE = "none"
+    INPUT_CONFIG_CONFLICT = "input_config_conflict"
+    MALFORMED_REQUEST = "malformed_request"
+
+
+@dataclass(frozen=True)
+class ActionableCaptureGeometry:
+    """Geometry and identity bound to one actionable screenshot image."""
+
+    schema_version: int
+    path: str
+    runtime_id: str
+    capture_nonce: str
+    geometry_revision: int
+    monitor_id: int
+    display_mode: DisplayMode
+    renderer: Renderer
+    image_width: int
+    image_height: int
+    source_x: int
+    source_y: int
+    source_width: int
+    source_height: int
+    viewport_x: int
+    viewport_y: int
+    viewport_width: int
+    viewport_height: int
+    window_width: int
+    window_height: int
+
+
+@dataclass(frozen=True)
+class ActionableScreenshotResult:
+    """Screenshot result with optional actionable geometry for old Amiberry."""
+
+    path: str
+    geometry: ActionableCaptureGeometry | None
+
+    @property
+    def actionable(self) -> bool:
+        """Return whether strict actionable geometry accompanied the image."""
+        return self.geometry is not None
+
+
+@dataclass(frozen=True)
+class AutomationState:
+    """Current GUI automation capability, geometry, input, and focus state."""
+
+    schema_version: int
+    runtime_id: str
+    geometry_revision: int
+    monitor_id: int
+    geometry_valid: bool
+    pending_tablet_mode: TabletMode
+    effective_tablet_mode: TabletMode
+    pending_mouse_untrap: MouseUntrapMode
+    effective_mouse_untrap: MouseUntrapMode
+    pending_effective_diverged: bool
+    input_config_revision: int
+    focus_ready: bool
+    supported_button_mask: int
+    button_mask: int
+
+
+@dataclass(frozen=True)
+class AutomationConfigResponse:
+    """Result and observed state of a configuration compare-and-set."""
+
+    schema_version: int
+    applied: bool
+    reason: ConfigUpdateReason
+    pending_tablet_mode: TabletMode
+    effective_tablet_mode: TabletMode
+    pending_mouse_untrap: MouseUntrapMode
+    effective_mouse_untrap: MouseUntrapMode
+    pending_effective_diverged: bool
+    input_config_revision: int
+
+
+@dataclass(frozen=True)
+class GuardedInputResponse:
+    """Result of an identity-guarded complete mouse-state assignment."""
+
+    schema_version: int
+    applied: bool
+    reason: GuardedInputReason
+    runtime_id: str
+    geometry_revision: int
+    monitor_id: int
+    input_config_revision: int
+    button_mask: int
+    x: int | None
+    y: int | None
+
+
+@dataclass(frozen=True)
+class ReleaseMouseButtonsResponse:
+    """Observed mouse-button mask after an unconditional release attempt."""
+
+    schema_version: int
+    confirmed: bool
+    button_mask: int
+
+
+_CAPTURE_FIELDS = frozenset(
+    {
+        "schema_version",
+        "path",
+        "runtime_id",
+        "capture_nonce",
+        "geometry_revision",
+        "monitor_id",
+        "display_mode",
+        "renderer",
+        "image_width",
+        "image_height",
+        "source_x",
+        "source_y",
+        "source_width",
+        "source_height",
+        "viewport_x",
+        "viewport_y",
+        "viewport_width",
+        "viewport_height",
+        "window_width",
+        "window_height",
+    }
+)
+_INPUT_CONFIG_FIELDS = frozenset(
+    {
+        "pending_tablet_mode",
+        "effective_tablet_mode",
+        "pending_mouse_untrap",
+        "effective_mouse_untrap",
+        "pending_effective_diverged",
+        "input_config_revision",
+    }
+)
+_AUTOMATION_STATE_FIELDS = frozenset(
+    {
+        "schema_version",
+        "runtime_id",
+        "geometry_revision",
+        "monitor_id",
+        "geometry_valid",
+        *_INPUT_CONFIG_FIELDS,
+        "focus_ready",
+        "supported_button_mask",
+        "button_mask",
+    }
+)
+_GUARDED_INPUT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "applied",
+        "reason",
+        "runtime_id",
+        "geometry_revision",
+        "monitor_id",
+        "input_config_revision",
+        "button_mask",
+    }
+)
+
+
+def _parse_strict_fields(
+    data: list[str],
+    required: frozenset[str],
+    optional: frozenset[str] = frozenset(),
+) -> dict[str, str]:
+    """Parse a fixed key/value schema without silently accepting drift."""
+    fields: dict[str, str] = {}
+    allowed = required | optional
+    for item in data:
+        if "=" not in item:
+            raise CommandError(f"Malformed IPC response field: {item!r}")
+        key, value = item.split("=", 1)
+        if key not in allowed:
+            raise CommandError(f"Unknown IPC response field: {key!r}")
+        if key in fields:
+            raise CommandError(f"Duplicate IPC response field: {key!r}")
+        fields[key] = value
+
+    missing = required - fields.keys()
+    if missing:
+        raise CommandError(f"Missing IPC response fields: {', '.join(sorted(missing))}")
+    return fields
+
+
+def _parse_schema_version(fields: dict[str, str]) -> int:
+    """Require the only currently supported automation schema version."""
+    if fields["schema_version"] != "1":
+        raise CommandError(
+            f"Unsupported IPC schema version: {fields['schema_version']!r}"
+        )
+    return 1
+
+
+def _parse_strict_int(
+    fields: dict[str, str],
+    name: str,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    """Parse an ASCII decimal integer and enforce its protocol bounds."""
+    value = fields[name]
+    unsigned = value
+    if value.startswith("-"):
+        unsigned = value[1:]
+    if not unsigned or not unsigned.isascii() or not unsigned.isdecimal():
+        raise CommandError(f"Invalid integer for {name}: {value!r}")
+    parsed = int(value)
+    if minimum is not None and parsed < minimum:
+        raise CommandError(f"{name} is below its minimum of {minimum}")
+    if maximum is not None and parsed > maximum:
+        raise CommandError(f"{name} exceeds its maximum of {maximum}")
+    return parsed
+
+
+def _parse_bool(fields: dict[str, str], name: str) -> bool:
+    """Parse the protocol's canonical lowercase boolean values."""
+    value = fields[name]
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise CommandError(f"Invalid boolean for {name}: {value!r}")
+
+
+def _parse_enum(enum_type: type[Enum], fields: dict[str, str], name: str) -> Any:
+    """Parse a fixed string enum, translating enum drift into a protocol error."""
+    try:
+        return enum_type(fields[name])
+    except ValueError as e:
+        raise CommandError(f"Invalid value for {name}: {fields[name]!r}") from e
+
+
+def _require_nonempty(fields: dict[str, str], name: str) -> str:
+    """Return a nonempty protocol value without ASCII control characters."""
+    value = fields[name]
+    if not value or any(character in value for character in "\t\r\n"):
+        raise CommandError(f"Invalid empty or controlled value for {name}")
+    return value
+
+
+def _parse_actionable_capture(data: list[str]) -> ActionableCaptureGeometry:
+    """Parse and validate a complete actionable screenshot response."""
+    fields = _parse_strict_fields(data, _CAPTURE_FIELDS)
+    schema_version = _parse_schema_version(fields)
+    geometry_revision = _parse_strict_int(
+        fields, "geometry_revision", minimum=0, maximum=2**64 - 1
+    )
+    int_max = 2**31 - 1
+    monitor_id = _parse_strict_int(fields, "monitor_id", minimum=0, maximum=int_max)
+    image_width = _parse_strict_int(fields, "image_width", minimum=1, maximum=int_max)
+    image_height = _parse_strict_int(fields, "image_height", minimum=1, maximum=int_max)
+    source_x = _parse_strict_int(fields, "source_x", minimum=0, maximum=int_max)
+    source_y = _parse_strict_int(fields, "source_y", minimum=0, maximum=int_max)
+    source_width = _parse_strict_int(fields, "source_width", minimum=1, maximum=int_max)
+    source_height = _parse_strict_int(
+        fields, "source_height", minimum=1, maximum=int_max
+    )
+    viewport_x = _parse_strict_int(fields, "viewport_x", minimum=0, maximum=int_max)
+    viewport_y = _parse_strict_int(fields, "viewport_y", minimum=0, maximum=int_max)
+    viewport_width = _parse_strict_int(
+        fields, "viewport_width", minimum=1, maximum=int_max
+    )
+    viewport_height = _parse_strict_int(
+        fields, "viewport_height", minimum=1, maximum=int_max
+    )
+    window_width = _parse_strict_int(fields, "window_width", minimum=1, maximum=int_max)
+    window_height = _parse_strict_int(
+        fields, "window_height", minimum=1, maximum=int_max
+    )
+
+    if source_x + source_width > image_width or source_y + source_height > image_height:
+        raise CommandError("Actionable source rectangle exceeds the image bounds")
+    if (
+        viewport_x + viewport_width > window_width
+        or viewport_y + viewport_height > window_height
+    ):
+        raise CommandError("Actionable viewport exceeds the window bounds")
+
+    return ActionableCaptureGeometry(
+        schema_version=schema_version,
+        path=_require_nonempty(fields, "path"),
+        runtime_id=_require_nonempty(fields, "runtime_id"),
+        capture_nonce=_require_nonempty(fields, "capture_nonce"),
+        geometry_revision=geometry_revision,
+        monitor_id=monitor_id,
+        display_mode=_parse_enum(DisplayMode, fields, "display_mode"),
+        renderer=_parse_enum(Renderer, fields, "renderer"),
+        image_width=image_width,
+        image_height=image_height,
+        source_x=source_x,
+        source_y=source_y,
+        source_width=source_width,
+        source_height=source_height,
+        viewport_x=viewport_x,
+        viewport_y=viewport_y,
+        viewport_width=viewport_width,
+        viewport_height=viewport_height,
+        window_width=window_width,
+        window_height=window_height,
+    )
+
+
+def _parse_input_config_fields(
+    fields: dict[str, str],
+) -> tuple[TabletMode, TabletMode, MouseUntrapMode, MouseUntrapMode, bool, int]:
+    """Parse the six shared input-configuration fields and invariants."""
+    pending_tablet = _parse_enum(TabletMode, fields, "pending_tablet_mode")
+    effective_tablet = _parse_enum(TabletMode, fields, "effective_tablet_mode")
+    pending_untrap = _parse_enum(MouseUntrapMode, fields, "pending_mouse_untrap")
+    effective_untrap = _parse_enum(MouseUntrapMode, fields, "effective_mouse_untrap")
+    diverged = _parse_bool(fields, "pending_effective_diverged")
+    expected_diverged = (
+        pending_tablet != effective_tablet or pending_untrap != effective_untrap
+    )
+    if diverged != expected_diverged:
+        raise CommandError("Contradictory pending/effective divergence flag")
+    revision = _parse_strict_int(
+        fields, "input_config_revision", minimum=0, maximum=2**64 - 1
+    )
+    return (
+        pending_tablet,
+        effective_tablet,
+        pending_untrap,
+        effective_untrap,
+        diverged,
+        revision,
+    )
+
+
+def _parse_automation_state(data: list[str]) -> AutomationState:
+    """Parse a complete GUI automation state response."""
+    fields = _parse_strict_fields(data, _AUTOMATION_STATE_FIELDS)
+    input_fields = _parse_input_config_fields(fields)
+    supported_button_mask = _parse_strict_int(
+        fields, "supported_button_mask", minimum=0
+    )
+    if supported_button_mask != 7:
+        raise CommandError(
+            f"Unsupported GUI button mask capability: {supported_button_mask}"
+        )
+    button_mask = _parse_strict_int(fields, "button_mask", minimum=0, maximum=7)
+    monitor_id = _parse_strict_int(fields, "monitor_id", minimum=-1, maximum=2**31 - 1)
+    geometry_valid = _parse_bool(fields, "geometry_valid")
+    if geometry_valid and monitor_id < 0:
+        raise CommandError("Valid automation geometry requires an active monitor")
+
+    return AutomationState(
+        schema_version=_parse_schema_version(fields),
+        runtime_id=_require_nonempty(fields, "runtime_id"),
+        geometry_revision=_parse_strict_int(
+            fields, "geometry_revision", minimum=0, maximum=2**64 - 1
+        ),
+        monitor_id=monitor_id,
+        geometry_valid=geometry_valid,
+        pending_tablet_mode=input_fields[0],
+        effective_tablet_mode=input_fields[1],
+        pending_mouse_untrap=input_fields[2],
+        effective_mouse_untrap=input_fields[3],
+        pending_effective_diverged=input_fields[4],
+        input_config_revision=input_fields[5],
+        focus_ready=_parse_bool(fields, "focus_ready"),
+        supported_button_mask=supported_button_mask,
+        button_mask=button_mask,
+    )
+
+
+def _parse_automation_config_response(
+    success: bool, data: list[str]
+) -> AutomationConfigResponse:
+    """Parse a configuration compare-and-set response and status."""
+    required = frozenset({"schema_version", "reason", *_INPUT_CONFIG_FIELDS})
+    fields = _parse_strict_fields(data, required)
+    input_fields = _parse_input_config_fields(fields)
+    reason = _parse_enum(ConfigUpdateReason, fields, "reason")
+    if success != (reason is ConfigUpdateReason.NONE):
+        raise CommandError("Configuration status contradicts its result reason")
+    return AutomationConfigResponse(
+        schema_version=_parse_schema_version(fields),
+        applied=success,
+        reason=reason,
+        pending_tablet_mode=input_fields[0],
+        effective_tablet_mode=input_fields[1],
+        pending_mouse_untrap=input_fields[2],
+        effective_mouse_untrap=input_fields[3],
+        pending_effective_diverged=input_fields[4],
+        input_config_revision=input_fields[5],
+    )
+
+
+def _parse_guarded_input_response(
+    success: bool, data: list[str]
+) -> GuardedInputResponse:
+    """Parse a guarded input response with conditional applied coordinates."""
+    fields = _parse_strict_fields(data, _GUARDED_INPUT_FIELDS, frozenset({"x", "y"}))
+    applied = _parse_bool(fields, "applied")
+    reason = _parse_enum(GuardedInputReason, fields, "reason")
+    if success != applied:
+        raise CommandError("Guarded input status contradicts its applied field")
+    if applied != (reason is GuardedInputReason.NONE):
+        raise CommandError("Guarded input applied field contradicts its reason")
+    has_x = "x" in fields
+    has_y = "y" in fields
+    if applied != (has_x and has_y) or has_x != has_y:
+        raise CommandError("Guarded input coordinates contradict its applied status")
+    x = _parse_strict_int(fields, "x", minimum=0) if has_x else None
+    y = _parse_strict_int(fields, "y", minimum=0) if has_y else None
+    return GuardedInputResponse(
+        schema_version=_parse_schema_version(fields),
+        applied=applied,
+        reason=reason,
+        runtime_id=_require_nonempty(fields, "runtime_id"),
+        geometry_revision=_parse_strict_int(
+            fields, "geometry_revision", minimum=0, maximum=2**64 - 1
+        ),
+        monitor_id=_parse_strict_int(
+            fields, "monitor_id", minimum=0, maximum=2**31 - 1
+        ),
+        input_config_revision=_parse_strict_int(
+            fields, "input_config_revision", minimum=0, maximum=2**64 - 1
+        ),
+        button_mask=_parse_strict_int(fields, "button_mask", minimum=0, maximum=7),
+        x=x,
+        y=y,
+    )
+
+
+def _parse_release_response(
+    success: bool, data: list[str]
+) -> ReleaseMouseButtonsResponse:
+    """Parse release confirmation without treating an error as cleanup."""
+    fields = _parse_strict_fields(data, frozenset({"schema_version", "button_mask"}))
+    button_mask = _parse_strict_int(fields, "button_mask", minimum=0, maximum=7)
+    confirmed = success and button_mask == 0
+    if success != (button_mask == 0):
+        raise CommandError("Release status contradicts the observed button mask")
+    return ReleaseMouseButtonsResponse(
+        schema_version=_parse_schema_version(fields),
+        confirmed=confirmed,
+        button_mask=button_mask,
+    )
 
 
 def _safe_int(value: str, default: int = 0) -> int:
@@ -521,6 +1025,7 @@ class AmiberryIPCClient:
             first_reconnect_error: Exception | None = None
 
             for _attempt in range(2):
+                command_written = False
                 try:
                     await self._ensure_socket_connection(timeout)
 
@@ -529,13 +1034,16 @@ class AmiberryIPCClient:
 
                     # Send command
                     self._writer.write(message.encode("utf-8"))
+                    command_written = True
                     await self._writer.drain()
 
                     # Read response (limit to 1MB to prevent memory exhaustion)
-                    _MAX_RESPONSE_SIZE = 1024 * 1024
                     response = await asyncio.wait_for(
                         self._reader.readline(), timeout=timeout
                     )
+                    if not response:
+                        await self._close_socket_connection()
+                        return False, ["Empty response"]
                     if len(response) > _MAX_RESPONSE_SIZE:
                         response = response[:_MAX_RESPONSE_SIZE]
 
@@ -550,6 +1058,10 @@ class AmiberryIPCClient:
 
                     return success, data
 
+                except asyncio.CancelledError:
+                    if command_written:
+                        await self._close_socket_connection()
+                    raise
                 except reconnect_errors as e:
                     await self._close_socket_connection()
 
@@ -575,6 +1087,127 @@ class AmiberryIPCClient:
                     raise IPCConnectionError(f"Socket error: {e}") from e
 
         raise IPCConnectionError("Socket command failed")
+
+    @staticmethod
+    def _validate_automation_arg(argument: str) -> str:
+        """Reject protocol delimiters instead of changing automation identity."""
+        value = str(argument)
+        if any(character in value for character in "\t\r\n"):
+            raise ValueError("Automation IPC arguments cannot contain tabs or newlines")
+        return value
+
+    @staticmethod
+    async def _close_command_writer(writer: asyncio.StreamWriter | Any) -> None:
+        """Close one command-scoped writer, tolerating disconnect races."""
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except (OSError, ConnectionError):
+            pass
+
+    async def _send_scoped_socket_command(
+        self,
+        command: str,
+        *args: str,
+        timeout: float = 5.0,
+        retry_after_write: bool = False,
+    ) -> tuple[bool, list[str]]:
+        """Run one automation exchange and close it before returning.
+
+        Every failure before ``write`` may retry once. Callers explicitly opt
+        safe queries and idempotent operations into retry after an ambiguous
+        write. A guarded input mutation never opts in, so it cannot be replayed.
+        """
+        if not await asyncio.to_thread(os.path.exists, self._socket_path):
+            raise IPCConnectionError(
+                f"Socket not found at {self._socket_path}. "
+                "Is Amiberry running with USE_IPC_SOCKET?"
+            )
+
+        safe_args = [self._validate_automation_arg(argument) for argument in args]
+        message = "\t".join([command.upper(), *safe_args]) + "\n"
+        retryable_errors = (
+            BrokenPipeError,
+            ConnectionResetError,
+            ConnectionError,
+            asyncio.IncompleteReadError,
+            asyncio.TimeoutError,
+            OSError,
+        )
+
+        async with self._connection_lock:
+            # An idle persistent connection keeps Amiberry's handler polling.
+            # Drop it before opening a one-command exchange so the emulator can
+            # return to its event loop after this response is consumed.
+            await self._close_socket_connection()
+            first_error: BaseException | None = None
+            last_error: BaseException | None = None
+
+            for attempt in range(2):
+                reader: asyncio.StreamReader | None = None
+                writer: asyncio.StreamWriter | Any | None = None
+                command_written = False
+                try:
+                    reader, writer = await asyncio.wait_for(
+                        asyncio.open_unix_connection(self._socket_path),
+                        timeout=timeout,
+                    )
+                    writer.write(message.encode("utf-8"))
+                    command_written = True
+                    await writer.drain()
+                    response = await asyncio.wait_for(
+                        reader.readline(), timeout=timeout
+                    )
+                    if not response:
+                        raise asyncio.IncompleteReadError(b"", None)
+                    if len(response) > _MAX_RESPONSE_SIZE:
+                        raise IPCConnectionError(
+                            "Automation IPC response exceeds 1 MiB"
+                        )
+
+                    try:
+                        response_str = response.decode("utf-8").rstrip("\n\r")
+                    except UnicodeDecodeError as e:
+                        raise IPCConnectionError(
+                            "Automation IPC response is not valid UTF-8"
+                        ) from e
+                    if not response_str:
+                        raise IPCConnectionError("Empty automation IPC response")
+                    response_parts = response_str.split("\t")
+                    if response_parts[0] not in {"OK", "ERROR"}:
+                        raise IPCConnectionError(
+                            f"Invalid automation IPC status: {response_parts[0]!r}"
+                        )
+                    return response_parts[0] == "OK", response_parts[1:]
+                except asyncio.CancelledError:
+                    # The local writer is always closed. The explicit branch
+                    # documents that a post-write cancellation is ambiguous and
+                    # must never be replayed by this exchange.
+                    if command_written and writer is not None:
+                        await self._close_command_writer(writer)
+                        writer = None
+                    raise
+                except retryable_errors as e:
+                    if first_error is None:
+                        first_error = e
+                    last_error = e
+                    may_retry = attempt == 0 and (
+                        not command_written or retry_after_write
+                    )
+                    if not may_retry:
+                        break
+                finally:
+                    if writer is not None:
+                        await self._close_command_writer(writer)
+
+            if isinstance(last_error, IPCConnectionError):
+                raise last_error
+            error_detail = str(last_error or first_error or "unknown failure")
+            if first_error is not None and last_error is not first_error:
+                error_detail = f"{first_error}; retry failed: {error_detail}"
+            raise IPCConnectionError(
+                f"Automation socket error: {error_detail}"
+            ) from last_error
 
     async def _send_dbus_command(
         self, method: str, *args: Any, timeout: float = 5.0
@@ -666,6 +1299,150 @@ class AmiberryIPCClient:
         """
         success, _ = await self._send_command("SCREENSHOT", filename)
         return success
+
+    async def capture_actionable_screenshot(
+        self, filename: str
+    ) -> ActionableScreenshotResult:
+        """Capture an image with strict geometry when Amiberry supports it.
+
+        Older Amiberry versions return one legacy path token even though they
+        ignore the optional mode. Once a recognized metadata field appears, the
+        complete schema is mandatory; partial metadata is never downgraded.
+        """
+        requested_path = self._validate_automation_arg(filename)
+        if not requested_path:
+            raise ValueError("Screenshot filename cannot be empty")
+        success, data = await self._send_scoped_socket_command(
+            "SCREENSHOT",
+            requested_path,
+            "ACTIONABLE",
+            retry_after_write=True,
+        )
+        if not success:
+            detail = "\t".join(data) if data else "unknown error"
+            raise CommandError(f"Actionable screenshot failed: {detail}")
+
+        if data == [requested_path]:
+            legacy_path = data[0]
+            if not legacy_path or any(
+                character in legacy_path for character in "\t\r\n"
+            ):
+                raise CommandError("Malformed legacy screenshot path")
+            return ActionableScreenshotResult(path=legacy_path, geometry=None)
+
+        geometry = _parse_actionable_capture(data)
+        if geometry.path != requested_path:
+            raise CommandError("Actionable screenshot path differs from the request")
+        return ActionableScreenshotResult(path=geometry.path, geometry=geometry)
+
+    @staticmethod
+    def _automation_int(
+        value: int,
+        name: str,
+        *,
+        minimum: int,
+        maximum: int = 2**31 - 1,
+    ) -> str:
+        """Validate a caller-supplied integer before serializing it."""
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{name} must be an integer")
+        if not minimum <= value <= maximum:
+            raise ValueError(f"{name} must be between {minimum} and {maximum}")
+        return str(value)
+
+    async def _get_gui_automation_state(self) -> AutomationState:
+        """Query automation state using a safely replayable scoped exchange."""
+        success, data = await self._send_scoped_socket_command(
+            "GET_GUI_AUTOMATION_STATE", retry_after_write=True
+        )
+        if not success:
+            detail = "\t".join(data) if data else "unknown error"
+            raise CommandError(f"Failed to get GUI automation state: {detail}")
+        return _parse_automation_state(data)
+
+    async def _set_gui_automation_config(
+        self,
+        expected_tablet_mode: TabletMode,
+        expected_mouse_untrap: MouseUntrapMode,
+        expected_input_config_revision: int,
+        desired_tablet_mode: TabletMode,
+        desired_mouse_untrap: MouseUntrapMode,
+    ) -> AutomationConfigResponse:
+        """Compare-and-set pending automation settings.
+
+        Replaying this command is mutation-safe: its expected values and
+        revision prevent a second write from overwriting intervening state.
+        The returned response remains authoritative for whether this exchange
+        acquired ownership.
+        """
+        try:
+            expected_tablet = TabletMode(expected_tablet_mode)
+            expected_untrap = MouseUntrapMode(expected_mouse_untrap)
+            desired_tablet = TabletMode(desired_tablet_mode)
+            desired_untrap = MouseUntrapMode(desired_mouse_untrap)
+        except ValueError as e:
+            raise ValueError("Invalid GUI automation configuration enum") from e
+        revision = self._automation_int(
+            expected_input_config_revision,
+            "expected_input_config_revision",
+            minimum=0,
+            maximum=2**64 - 1,
+        )
+        success, data = await self._send_scoped_socket_command(
+            "SET_GUI_AUTOMATION_CONFIG",
+            expected_tablet.value,
+            expected_untrap.value,
+            revision,
+            desired_tablet.value,
+            desired_untrap.value,
+            retry_after_write=False,
+        )
+        return _parse_automation_config_response(success, data)
+
+    async def _send_mouse_abs_guarded(
+        self,
+        x: int,
+        y: int,
+        button_mask: int,
+        runtime_id: str,
+        geometry_revision: int,
+        monitor_id: int,
+        input_config_revision: int,
+    ) -> GuardedInputResponse:
+        """Assign complete pointer/button state without replaying ambiguity."""
+        runtime = self._validate_automation_arg(runtime_id)
+        if not runtime:
+            raise ValueError("runtime_id cannot be empty")
+        args = (
+            self._automation_int(x, "x", minimum=0),
+            self._automation_int(y, "y", minimum=0),
+            self._automation_int(button_mask, "button_mask", minimum=0, maximum=7),
+            runtime,
+            self._automation_int(
+                geometry_revision,
+                "geometry_revision",
+                minimum=0,
+                maximum=2**64 - 1,
+            ),
+            self._automation_int(monitor_id, "monitor_id", minimum=0),
+            self._automation_int(
+                input_config_revision,
+                "input_config_revision",
+                minimum=0,
+                maximum=2**64 - 1,
+            ),
+        )
+        success, data = await self._send_scoped_socket_command(
+            "SEND_MOUSE_ABS_GUARDED", *args, retry_after_write=False
+        )
+        return _parse_guarded_input_response(success, data)
+
+    async def _release_mouse_buttons(self) -> ReleaseMouseButtonsResponse:
+        """Release all buttons using an idempotent, safely replayable command."""
+        success, data = await self._send_scoped_socket_command(
+            "RELEASE_MOUSE_BUTTONS", retry_after_write=True
+        )
+        return _parse_release_response(success, data)
 
     async def save_state(self, state_file: str, config_file: str) -> bool:
         """
