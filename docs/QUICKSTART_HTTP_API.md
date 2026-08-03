@@ -215,7 +215,7 @@ rest_command:
 |----------|--------|-------------|
 | `/savestates/{name}/inspect` | GET | Savestate metadata |
 | `/roms` | GET | List identified ROMs |
-| `/roms/identify` | POST | Identify ROM |
+| `/roms/identify` | GET | Identify ROM by `rom_path` |
 | `/version` | GET | Amiberry version |
 
 ### Runtime Control Endpoints (requires IPC)

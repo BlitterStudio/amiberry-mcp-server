@@ -54,9 +54,9 @@ amiberry-mcp = "amiberry_mcp.server:main"
 amiberry-http = "amiberry_mcp.http_server:main"
 
 [project.urls]
-Homepage = "https://github.com/midwan/amiberry-mcp-server"
-Repository = "https://github.com/midwan/amiberry-mcp-server"
-Issues = "https://github.com/midwan/amiberry-mcp-server/issues"
+Homepage = "https://github.com/BlitterStudio/amiberry-mcp-server"
+Repository = "https://github.com/BlitterStudio/amiberry-mcp-server"
+Issues = "https://github.com/BlitterStudio/amiberry-mcp-server/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/amiberry_mcp"]

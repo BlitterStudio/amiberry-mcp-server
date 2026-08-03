@@ -8,10 +8,12 @@ Python 3.10+ project using `hatchling` build system with `ruff` for linting/form
 **Source layout**: `src/amiberry_mcp/` (package), `tests/` (flat test dir), `scripts/` (shell installers).
 
 Key modules:
-- `server.py` — MCP server with 130+ tools, data-driven handler dispatch (~4600 lines)
-- `http_server.py` — FastAPI REST API with endpoint factories (~3700 lines)
-- `ipc_client.py` — Unix socket / D-Bus IPC client with persistent connections (~2100 lines)
-- `shared_state.py` — Process state, IPC client caching, launch helpers
+- `server.py` — MCP server with 133 tools, data-driven handler dispatch (~4900 lines)
+- `http_server.py` — FastAPI REST API with endpoint factories (~3900 lines)
+- `ipc_client.py` — Unix socket / D-Bus IPC client with persistent connections (~2900 lines)
+- `gui_automation.py` — Screenshot-driven GUI action service: owns the action contract,
+  screenshot-pixel translation, and the readiness/input/cleanup transaction (~1600 lines)
+- `shared_state.py` — Process state, IPC client caching, capture registry, launch helpers
 - `common.py` — Shared helpers (launch, scan with TTL caching, validation)
 - `config.py` — Platform detection, path constants
 - `uae_config.py` — .uae config file parser/generator
@@ -159,7 +161,12 @@ async def _ipc_bool_call(method_name, *args, success_msg, failure_msg) -> list[T
 - **IPC connection reuse**: `AmiberryIPCClient` maintains persistent Unix socket connections with `asyncio.Lock`-protected access and automatic reconnect on `BrokenPipeError`/`ConnectionResetError`.
 - **Scan caching**: `common.py` caches `scan_disk_images()` results with a 60-second TTL. Use `clear_scan_cache()` to force refresh.
 - **MCP tools**: Registered as `@app.call_tool()` handlers returning `list[TextContent]`
-- **Platform support**: macOS + Linux with platform-specific paths in `config.py`. `RuntimeError` on unsupported platforms.
+- **GUI automation**: `gui_automation.py` is the single source of truth for the action
+  contract; `server.py` and `http_server.py` are thin transport adapters that validate
+  their envelope and serialize the immutable result. Coordinates are always screenshot
+  pixels tied to a `capture_id`; `request_id` is the idempotency key over a bounded
+  retention window. One controller process per Amiberry instance.
+- **Platform support**: macOS + Linux with platform-specific paths in `config.py`. `RuntimeError` on unsupported platforms. `AMIBERRY_HOME_DIR` overrides the Amiberry home.
 - **IPC transport**: Prefers Unix socket, falls back to D-Bus on Linux. Socket paths support multiple instances.
 - **Security**: Path traversal prevention on all user-supplied paths. IPC argument sanitization (tab/newline stripping).
 - **Optional deps**: `fastapi`/`uvicorn` for HTTP, `jeepney` for D-Bus — guarded by try/except ImportError

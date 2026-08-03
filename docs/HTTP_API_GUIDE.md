@@ -23,6 +23,7 @@ The Amiberry HTTP API is a REST API server that works on both macOS and Linux. I
 The API server provides these endpoints:
 
 ### Core Endpoints
+- `GET /` - API name, version, platform and status
 - `GET /status` - Check if Amiberry is running
 - `POST /stop` - Stop Amiberry
 - `GET /configs` - List all configurations
@@ -34,6 +35,7 @@ The API server provides these endpoints:
 - `GET /platform` - Get platform information
 
 ### Configuration Endpoints
+- `GET /configs/{name}` - Get raw config file contents
 - `GET /configs/{name}/parsed` - Get parsed config as JSON
 - `POST /configs/create/{name}` - Create new config from template
 - `PATCH /configs/{name}` - Modify existing config
@@ -52,7 +54,7 @@ The API server provides these endpoints:
 ### Analysis Endpoints
 - `GET /savestates/{name}/inspect` - Get savestate metadata
 - `GET /roms` - List identified ROMs
-- `POST /roms/identify` - Identify ROM by path
+- `GET /roms/identify?rom_path=...` - Identify a ROM by path (must be inside the Amiberry home directory)
 - `GET /version` - Get Amiberry version
 
 ### Runtime Control Endpoints
@@ -1021,10 +1023,8 @@ curl http://localhost:8080/savestates/mysave.uss/inspect
 # List all identified ROMs
 curl http://localhost:8080/roms
 
-# Identify specific ROM
-curl -X POST http://localhost:8080/roms/identify \
-  -H "Content-Type: application/json" \
-  -d '{"path": "/path/to/kick.rom"}'
+# Identify specific ROM (path must be inside the Amiberry home directory)
+curl "http://localhost:8080/roms/identify?rom_path=$HOME/Amiberry/kickstarts/kick13.rom"
 ```
 
 ### Version Info
