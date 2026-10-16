@@ -464,11 +464,11 @@ Read-only queries work while the guest runs, except guest-RAM reads when
 `cpu_threaded=true`. These actions change debugger state and need `PAUSE` or
 a stopped native debugger: watch add/range/remove/clear-events, DMA watch
 add/remove, condition add/remove, exception mask, history on/off, guest-output
-on/off/clear, and process-break name/address/clear. A watch, exception, or
-process entry stops in the native debugger. `runtime_debug_status` then reports
-`stopped=1` and `reason=` (`T05awatch:...`, `T05winuae-exception:...`,
-`T05winuae-entry:...`). `DEBUG_CONTINUE` resumes. `step-over`, `checkpoint`,
-and `input sequence` are refused.
+on/off/clear, and process-break name/address/clear. A watch, condition,
+exception, or process entry stops in the native debugger. `runtime_debug_status`
+then reports `stopped=1` and `reason=` (`T05awatch:...`, `T05breakpoint:N;`,
+`T05winuae-exception:...`, `T05winuae-entry:...`). `DEBUG_CONTINUE` resumes.
+`step-over`, `checkpoint`, and `input sequence` are refused.
 
 | Tool | Actions |
 |------|---------|

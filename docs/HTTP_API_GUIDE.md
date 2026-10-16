@@ -182,7 +182,7 @@ The API server provides these endpoints:
 - `POST /runtime/debug/step` - Step one instruction
 - `POST /runtime/debug/step-over` - Step over subroutine calls
 - `POST /runtime/debug/continue` - Continue execution
-- `POST /runtime/debug/monitor` - Run one GDB monitor command. Body is `{"text":"tasks"}`. State-changing commands need the emulator paused or the debugger stopped. The reply `reason` on `GET /runtime/debug/status` is present only while `stopped=1`.
+- `POST /runtime/debug/monitor` - Run one GDB monitor command. Body is `{"text":"tasks"}`. State-changing commands need the emulator paused or the debugger stopped. The reply `reason` on `GET /runtime/debug/status` is present only while `stopped=1` (watch, condition, exception, or process-entry stops).
 - `GET /runtime/cpu/regs` - Get CPU register values
 - `GET /runtime/custom/regs` - Get custom chipset register values
 - `POST /runtime/disassemble` - Disassemble memory at address
