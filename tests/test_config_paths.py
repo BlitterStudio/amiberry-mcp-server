@@ -131,6 +131,23 @@ class TestResolveAmiberryPaths:
             paths.home / "HardDrives",
             paths.home / "LHA",
         )
+        assert paths.legacy_rom_dirs == (
+            paths.home / "kickstarts",
+            paths.home / "Kickstarts",
+            paths.home / "roms",
+            paths.home / "Roms",
+        )
+        assert paths.legacy_savestate_dirs == (
+            paths.home / "savestates",
+            paths.home / "Savestates",
+        )
+        assert paths.legacy_disk_dirs == (
+            paths.home / "floppies",
+            paths.home / "harddrives",
+            paths.home / "Harddrives",
+            paths.home / "lha",
+            paths.home / "Lha",
+        )
         assert paths.portable is False
 
     def test_freebsd_matches_linux(self, tmp_path):

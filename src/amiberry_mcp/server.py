@@ -33,9 +33,13 @@ from .common import (
     _is_path_within,
     build_launch_command,
     detect_amiberry_version,
+    disk_search_dirs,
     format_log_timestamp,
     format_signal_info,
+    iter_files_by_suffix,
     normalize_log_path,
+    rom_search_dirs,
+    savestate_search_dirs,
     scan_disk_images,
     terminate_process,
 )
@@ -48,7 +52,6 @@ from .common import (
 from .config import (
     CD_DIR,
     CONFIG_DIR,
-    DISK_IMAGE_DIRS,
     LOG_DIR,
     ROM_DIR,
     SAVESTATE_DIR,
@@ -2403,7 +2406,7 @@ async def _handle_list_disk_images(arguments: Any) -> list:
     image_type = arguments.get("image_type", "all")
 
     images = await asyncio.to_thread(
-        scan_disk_images, DISK_IMAGE_DIRS, image_type, search_term
+        scan_disk_images, disk_search_dirs(), image_type, search_term
     )
 
     if not images:
@@ -2487,9 +2490,7 @@ async def _handle_list_savestates(arguments: Any) -> list:
 
     def _scan_savestates():
         results = []
-        if not SAVESTATE_DIR.exists():
-            return results
-        for state in SAVESTATE_DIR.glob("**/*.uss"):
+        for state in iter_files_by_suffix(savestate_search_dirs(), (".uss",)):
             if not search_term or search_term in state.name.lower():
                 try:
                     mtime = state.stat().st_mtime
@@ -2717,7 +2718,7 @@ async def _handle_launch_whdload(arguments: Any) -> list:
     elif search_term:
         # Search for the LHA file using scan_disk_images for consistency
         def _scan_lha_files():
-            images = scan_disk_images(DISK_IMAGE_DIRS, "lha", search_term)
+            images = scan_disk_images(disk_search_dirs(), "lha", search_term)
             return [Path(img["path"]) for img in images]
 
         lha_files = await asyncio.to_thread(_scan_lha_files)
@@ -2777,7 +2778,7 @@ async def _handle_launch_cd(arguments: Any) -> list:
     elif search_term:
         # Search for CD images using scan_disk_images for consistency
         def _scan_cd_files():
-            search_dirs = [*DISK_IMAGE_DIRS, CD_DIR]
+            search_dirs = disk_search_dirs(CD_DIR)
             images = scan_disk_images(search_dirs, "cd", search_term)
             return [Path(img["path"]) for img in images]
 
@@ -2879,7 +2880,7 @@ async def _handle_list_cd_images(arguments: Any) -> list:
     """Handle list_cd_images tool."""
     search_term = arguments.get("search_term", "")
 
-    search_dirs = [*DISK_IMAGE_DIRS, CD_DIR]
+    search_dirs = disk_search_dirs(CD_DIR)
 
     cd_files = await asyncio.to_thread(scan_disk_images, search_dirs, "cd", search_term)
 
@@ -3003,24 +3004,36 @@ async def _handle_list_roms(arguments: Any) -> list:
     directory = arguments.get("directory")
 
     if directory:
-        rom_dir = Path(directory)
+        rom_dirs = [Path(directory)]
     else:
-        rom_dir = ROM_DIR
+        rom_dirs = rom_search_dirs()
 
-    if not await asyncio.to_thread(rom_dir.exists):
+    if not rom_dirs:
         return _text_result(
-            f"ROM directory not found: {rom_dir}\n\nCreate this directory and add your Kickstart ROMs."
+            f"ROM directory not found: {ROM_DIR}\n\n"
+            "Create this directory and add your Kickstart ROMs."
         )
 
     try:
-        roms = await asyncio.to_thread(scan_rom_directory, rom_dir)
+        roms = []
+        seen: set[str] = set()
+        for rom_dir in rom_dirs:
+            for rom in await asyncio.to_thread(scan_rom_directory, rom_dir):
+                key = rom.get("file", rom.get("filename", ""))
+                if key in seen:
+                    continue
+                seen.add(key)
+                roms.append(rom)
 
         if not roms:
+            locations = ", ".join(str(path) for path in rom_dirs)
             return _text_result(
-                f"No ROM files found in {rom_dir}\n\nAdd Kickstart ROM files (.rom, .bin) to this directory."
+                f"No ROM files found in {locations}\n\n"
+                "Add Kickstart ROM files (.rom, .bin) to this directory."
             )
 
-        result = f"Found {len(roms)} ROM file(s) in {rom_dir}:\n\n"
+        locations = ", ".join(str(path) for path in rom_dirs)
+        result = f"Found {len(roms)} ROM file(s) in {locations}:\n\n"
         for rom in sorted(roms, key=lambda x: x.get("filename", "").lower()):
             if rom.get("error"):
                 result += f"- {rom['filename']}: Error - {rom['error']}\n"

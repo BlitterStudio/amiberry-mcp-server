@@ -8,18 +8,25 @@ import datetime
 import signal
 import subprocess
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 from .config import (
     CD_EXTENSIONS,
     CONFIG_DIR,
+    DISK_IMAGE_DIRS,
     EMULATOR_BINARY,
     FLOPPY_EXTENSIONS,
     HARDFILE_EXTENSIONS,
     LEGACY_CONFIG_DIRS,
+    LEGACY_DISK_DIRS,
+    LEGACY_ROM_DIRS,
+    LEGACY_SAVESTATE_DIRS,
     LHA_EXTENSIONS,
     LOG_DIR,
+    ROM_DIR,
+    SAVESTATE_DIR,
 )
 
 # TTL-based cache for scan_disk_images results
@@ -60,6 +67,67 @@ def iter_config_files() -> list[tuple[str, str, Path]]:
         if not directory.exists():
             continue
         found.extend((path.name, source, path) for path in directory.glob("*.uae"))
+    return found
+
+
+def unique_existing_dirs(directories: Iterable[Path]) -> list[Path]:
+    """Return existing directories, collapsing spellings that are one directory.
+
+    On a case-insensitive filesystem, ``Floppies`` and ``floppies`` stat as the
+    same inode. Searching both would list each file twice.
+    """
+    seen: set[tuple[int, int]] = set()
+    found: list[Path] = []
+    for directory in directories:
+        try:
+            if not directory.is_dir():
+                continue
+            stat = directory.stat()
+        except OSError:
+            continue
+        key = (stat.st_dev, stat.st_ino)
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(directory)
+    return found
+
+
+def rom_search_dirs() -> list[Path]:
+    """Canonical ROM directory plus pre-8.4 kickstart and rom spellings."""
+    return unique_existing_dirs([ROM_DIR, *LEGACY_ROM_DIRS])
+
+
+def savestate_search_dirs() -> list[Path]:
+    """Canonical savestate directory plus pre-8.4 spellings."""
+    return unique_existing_dirs([SAVESTATE_DIR, *LEGACY_SAVESTATE_DIRS])
+
+
+def disk_search_dirs(*extra: Path) -> list[Path]:
+    """Canonical media directories plus pre-8.4 spellings and any extras."""
+    return unique_existing_dirs([*DISK_IMAGE_DIRS, *LEGACY_DISK_DIRS, *extra])
+
+
+def iter_files_by_suffix(
+    directories: Iterable[Path], suffixes: Iterable[str]
+) -> list[Path]:
+    """List files under directories, once per inode, matching suffixes."""
+    suffix_set = {suffix.lower() for suffix in suffixes}
+    seen: set[tuple[int, int]] = set()
+    found: list[Path] = []
+    for directory in unique_existing_dirs(directories):
+        for path in directory.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in suffix_set:
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            key = (stat.st_dev, stat.st_ino)
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append(path)
     return found
 
 
@@ -230,32 +298,30 @@ def scan_disk_images(
     ext_set = {e.lower() for e in extensions}
     search_lower = search_term.lower() if search_term else ""
 
-    seen: set[str] = set()
+    seen: set[tuple[int, int]] = set()
     images: list[dict[str, Any]] = []
 
-    for search_dir in search_dirs:
-        if not search_dir.exists():
-            continue
+    for search_dir in unique_existing_dirs(search_dirs):
         for ext in ext_set:
             for img_path in search_dir.rglob(f"*{ext}"):
                 if not img_path.is_file():
                     continue
-                path_str = str(img_path)
-                if path_str in seen:
-                    continue
                 if search_lower and search_lower not in img_path.name.lower():
                     continue
-                seen.add(path_str)
                 try:
-                    file_size = img_path.stat().st_size
+                    file_stat = img_path.stat()
                 except OSError:
                     continue
+                key = (file_stat.st_dev, file_stat.st_ino)
+                if key in seen:
+                    continue
+                seen.add(key)
                 images.append(
                     {
                         "name": img_path.name,
-                        "path": path_str,
+                        "path": str(img_path),
                         "type": classify_image_type(img_path.suffix),
-                        "size": file_size,
+                        "size": file_stat.st_size,
                     }
                 )
 

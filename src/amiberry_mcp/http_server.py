@@ -32,9 +32,13 @@ from .common import (
     _is_path_within,
     build_launch_command,
     detect_amiberry_version,
+    disk_search_dirs,
     format_log_timestamp,
     format_signal_info,
+    iter_files_by_suffix,
     normalize_log_path,
+    rom_search_dirs,
+    savestate_search_dirs,
     scan_disk_images,
     terminate_process,
 )
@@ -48,11 +52,9 @@ from .config import (
     AMIBERRY_HOME,
     CD_DIR,
     CONFIG_DIR,
-    DISK_IMAGE_DIRS,
     EMULATOR_BINARY,
     IS_MACOS,
     LOG_DIR,
-    ROM_DIR,
     SAVESTATE_DIR,
     SCREENSHOT_DIR,
     SUPPORTED_MODELS,
@@ -726,7 +728,7 @@ async def get_config(config_name: str):
 async def list_disk_images(search: str | None = None, type: str = "all"):
     """List available disk images."""
     results = await asyncio.to_thread(
-        scan_disk_images, DISK_IMAGE_DIRS, type, search or ""
+        scan_disk_images, disk_search_dirs(), type, search or ""
     )
     return [DiskImage(name=r["name"], type=r["type"], path=r["path"]) for r in results]
 
@@ -738,14 +740,13 @@ async def list_savestates(search: str | None = None):
 
     def _scan_savestates() -> list[Savestate]:
         savestates = []
-        if SAVESTATE_DIR.exists():
-            for state in SAVESTATE_DIR.glob("**/*.uss"):
-                if not search_term or search_term in state.name.lower():
-                    mtime = state.stat().st_mtime
-                    timestamp = format_log_timestamp(mtime)
-                    savestates.append(
-                        Savestate(name=state.name, modified=timestamp, path=str(state))
-                    )
+        for state in iter_files_by_suffix(savestate_search_dirs(), (".uss",)):
+            if not search_term or search_term in state.name.lower():
+                mtime = state.stat().st_mtime
+                timestamp = format_log_timestamp(mtime)
+                savestates.append(
+                    Savestate(name=state.name, modified=timestamp, path=str(state))
+                )
         return savestates
 
     savestates = await asyncio.to_thread(_scan_savestates)
@@ -1080,7 +1081,7 @@ async def launch_whdload(
         def _scan_lha_files() -> list[Path]:
             seen: set[str] = set()
             results: list[Path] = []
-            for directory in DISK_IMAGE_DIRS:
+            for directory in disk_search_dirs():
                 if directory.exists():
                     for pattern in ["**/*.lha", "**/*.LHA"]:
                         for lha in directory.glob(pattern):
@@ -1153,7 +1154,7 @@ async def launch_cd(request: LaunchCDRequest):
                 status_code=404, detail=f"CD image not found: {request.cd_image}"
             )
     elif request.search_term:
-        search_dirs = [*DISK_IMAGE_DIRS, CD_DIR]
+        search_dirs = disk_search_dirs(CD_DIR)
 
         def _scan_cd_files() -> list[Path]:
             images = scan_disk_images(search_dirs, "cd", request.search_term)
@@ -1206,7 +1207,7 @@ async def launch_cd(request: LaunchCDRequest):
 @app.get("/cd-images", response_model=list[CDImage])
 async def list_cd_images(search: str | None = None):
     """List available CD images."""
-    search_dirs = [*DISK_IMAGE_DIRS, CD_DIR]
+    search_dirs = disk_search_dirs(CD_DIR)
 
     results = await asyncio.to_thread(scan_disk_images, search_dirs, "cd", search or "")
     return [CDImage(name=r["name"], type=r["type"], path=r["path"]) for r in results]
@@ -1371,7 +1372,6 @@ async def inspect_savestate_endpoint(savestate_name: str):
 @app.get("/roms", response_model=list[RomInfo])
 async def list_roms(directory: str | None = None):
     """List and identify ROM files in the ROMs directory."""
-    rom_dir = ROM_DIR
     if directory:
         candidate = Path(directory).resolve()
         if not _is_path_within(candidate, AMIBERRY_HOME):
@@ -1379,14 +1379,26 @@ async def list_roms(directory: str | None = None):
                 status_code=400,
                 detail="ROM directory must be within the Amiberry home directory",
             )
-        rom_dir = candidate
+        rom_dirs = [candidate]
+    else:
+        rom_dirs = rom_search_dirs()
 
-    if not await asyncio.to_thread(rom_dir.exists):
+    if not rom_dirs:
         return []
 
     try:
-        roms = await asyncio.to_thread(scan_rom_directory, rom_dir)
-        return [RomInfo(**rom) for rom in roms if not rom.get("error")]
+        roms = []
+        seen: set[str] = set()
+        for rom_dir in rom_dirs:
+            for rom in await asyncio.to_thread(scan_rom_directory, rom_dir):
+                if rom.get("error"):
+                    continue
+                key = rom.get("file", rom.get("filename", ""))
+                if key in seen:
+                    continue
+                seen.add(key)
+                roms.append(rom)
+        return [RomInfo(**rom) for rom in roms]
     except PermissionError as e:
         raise HTTPException(
             status_code=403,

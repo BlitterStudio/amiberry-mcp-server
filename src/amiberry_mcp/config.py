@@ -55,6 +55,9 @@ class AmiberryPaths:
     rom_dir: Path
     cd_dir: Path
     disk_image_dirs: tuple[Path, ...]
+    legacy_rom_dirs: tuple[Path, ...]
+    legacy_savestate_dirs: tuple[Path, ...]
+    legacy_disk_dirs: tuple[Path, ...]
     portable: bool
     portable_root: Path | None
 
@@ -65,6 +68,36 @@ def _nonempty(environ: Mapping[str, str], name: str) -> str | None:
     if value:
         return value
     return None
+
+
+def _legacy_content_dirs(
+    content_root: Path,
+) -> tuple[tuple[Path, ...], tuple[Path, ...], tuple[Path, ...]]:
+    """Pre-8.4 content directories this server used or Amiberry still migrates.
+
+    Amiberry rewrites ``roms``/``Roms``, ``savestates``/``Savestates``,
+    ``floppies``, ``harddrives``/``Harddrives``, and ``lha``/``Lha`` into the
+    title-case names. It does not move ``kickstarts``/``Kickstarts``, which
+    this server used as the ROM directory before 8.4.
+    """
+    roms = (
+        content_root / "kickstarts",
+        content_root / "Kickstarts",
+        content_root / "roms",
+        content_root / "Roms",
+    )
+    savestates = (
+        content_root / "savestates",
+        content_root / "Savestates",
+    )
+    disks = (
+        content_root / "floppies",
+        content_root / "harddrives",
+        content_root / "Harddrives",
+        content_root / "lha",
+        content_root / "Lha",
+    )
+    return roms, savestates, disks
 
 
 def portable_marker_root(platform_name: str, emulator_path: Path | None) -> Path | None:
@@ -108,12 +141,14 @@ def resolve_amiberry_paths(
         config_dir = portable_root / "Configurations"
         settings_dir = portable_root / "Settings"
         legacy = (portable_root / "conf",)
+        legacy_roms, legacy_saves, legacy_disks = _legacy_content_dirs(content_root)
     elif platform_name == "Darwin":
         env_home = _nonempty(environ, "AMIBERRY_HOME_DIR")
         content_root = Path(env_home) if env_home else home / "Documents" / "Amiberry"
         config_dir = content_root / "Configurations"
         settings_dir = home / "Library" / "Application Support" / "Amiberry"
         legacy = ()
+        legacy_roms, legacy_saves, legacy_disks = _legacy_content_dirs(content_root)
     else:
         env_home = _nonempty(environ, "AMIBERRY_HOME_DIR")
         env_config = _nonempty(environ, "AMIBERRY_CONFIG_DIR")
@@ -124,6 +159,7 @@ def resolve_amiberry_paths(
             Path(xdg_config) if xdg_config else home / ".config"
         ) / "amiberry"
         legacy = (content_root / "conf",)
+        legacy_roms, legacy_saves, legacy_disks = _legacy_content_dirs(content_root)
 
     return AmiberryPaths(
         home=content_root,
@@ -139,6 +175,9 @@ def resolve_amiberry_paths(
             content_root / "HardDrives",
             content_root / "LHA",
         ),
+        legacy_rom_dirs=legacy_roms,
+        legacy_savestate_dirs=legacy_saves,
+        legacy_disk_dirs=legacy_disks,
         portable=portable_root is not None,
         portable_root=portable_root,
     )
@@ -169,6 +208,9 @@ SCREENSHOT_DIR = _PATHS.screenshot_dir
 ROM_DIR = _PATHS.rom_dir
 CD_DIR = _PATHS.cd_dir
 DISK_IMAGE_DIRS = list(_PATHS.disk_image_dirs)
+LEGACY_ROM_DIRS = list(_PATHS.legacy_rom_dirs)
+LEGACY_SAVESTATE_DIRS = list(_PATHS.legacy_savestate_dirs)
+LEGACY_DISK_DIRS = list(_PATHS.legacy_disk_dirs)
 PORTABLE_MODE = _PATHS.portable
 
 # Captured launch logs owned by this server, not Amiberry's Amiberry.log.
