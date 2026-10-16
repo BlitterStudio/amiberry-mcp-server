@@ -42,18 +42,18 @@ from .common import (
 from .common import (
     find_config_path as _find_config_path,
 )
+from .common import (
+    iter_config_files as _iter_config_files,
+)
 from .config import (
-    AMIBERRY_HOME,
+    CD_DIR,
     CONFIG_DIR,
     DISK_IMAGE_DIRS,
-    IS_LINUX,
-    IS_MACOS,
     LOG_DIR,
     ROM_DIR,
     SAVESTATE_DIR,
     SCREENSHOT_DIR,
     SUPPORTED_MODELS,
-    SYSTEM_CONFIG_DIR,
     get_platform_info,
 )
 from .gui_automation import (
@@ -446,9 +446,9 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "include_system": {
+                    "include_legacy": {
                         "type": "boolean",
-                        "description": "On Linux, also include system configs from XDG_CONFIG_HOME (default: false)",
+                        "description": "Ignored. Pre-8.4 conf/ files are listed when present.",
                     }
                 },
             },
@@ -498,7 +498,7 @@ async def list_tools() -> list[Tool]:
                     "model": {
                         "type": "string",
                         "enum": SUPPORTED_MODELS,
-                        "description": "Launch with a specific model configuration (A500, A1200, or CD32). If specified, this overrides the config file.",
+                        "description": "Quickstart model. If set, this overrides the config file.",
                     },
                     "disk_image": {
                         "type": "string",
@@ -550,7 +550,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "model": {
                         "type": "string",
-                        "enum": SUPPORTED_MODELS + ["A500P", "A600", "A4000", "CDTV"],
+                        "enum": SUPPORTED_MODELS,
                         "description": "Launch with a specific model configuration",
                     },
                     "disk_image": {
@@ -2270,16 +2270,8 @@ async def list_tools() -> list[Tool]:
                     },
                     "model": {
                         "type": "string",
-                        "description": "Amiga model (A500, A500P, A600, A1200, A4000, CD32, CDTV)",
-                        "enum": [
-                            "A500",
-                            "A500P",
-                            "A600",
-                            "A1200",
-                            "A4000",
-                            "CD32",
-                            "CDTV",
-                        ],
+                        "description": "Quickstart model",
+                        "enum": SUPPORTED_MODELS,
                     },
                     "disk_image": {
                         "type": "string",
@@ -2316,23 +2308,11 @@ async def _handle_get_platform_info(arguments: Any) -> list:
 
 async def _handle_list_configs(arguments: Any) -> list:
     """Handle list_configs tool."""
-    include_system = arguments.get("include_system", False)
-
     def _scan_configs():
-        configs = []
-        # User configs
-        if CONFIG_DIR.exists():
-            user_configs = [(f.name, "user", str(f)) for f in CONFIG_DIR.glob("*.uae")]
-            configs.extend(user_configs)
-
-        # System configs (Linux only)
-        if IS_LINUX and include_system:
-            if SYSTEM_CONFIG_DIR and SYSTEM_CONFIG_DIR.exists():
-                sys_configs = [
-                    (f.name, "system", str(f)) for f in SYSTEM_CONFIG_DIR.glob("*.uae")
-                ]
-                configs.extend(sys_configs)
-        return configs
+        return [
+            (name, source, str(path))
+            for name, source, path in _iter_config_files()
+        ]
 
     configs = await asyncio.to_thread(_scan_configs)
 
@@ -2743,9 +2723,7 @@ async def _handle_launch_cd(arguments: Any) -> list:
     elif search_term:
         # Search for CD images using scan_disk_images for consistency
         def _scan_cd_files():
-            search_dirs = DISK_IMAGE_DIRS + [AMIBERRY_HOME / "CD"]
-            if IS_MACOS:
-                search_dirs.append(AMIBERRY_HOME / "CDs")
+            search_dirs = [*DISK_IMAGE_DIRS, CD_DIR]
             images = scan_disk_images(search_dirs, "cd", search_term)
             return [Path(img["path"]) for img in images]
 
@@ -2847,9 +2825,7 @@ async def _handle_list_cd_images(arguments: Any) -> list:
     """Handle list_cd_images tool."""
     search_term = arguments.get("search_term", "")
 
-    search_dirs = DISK_IMAGE_DIRS + [AMIBERRY_HOME / "CD"]
-    if IS_MACOS:
-        search_dirs.append(AMIBERRY_HOME / "CDs")
+    search_dirs = [*DISK_IMAGE_DIRS, CD_DIR]
 
     cd_files = await asyncio.to_thread(scan_disk_images, search_dirs, "cd", search_term)
 

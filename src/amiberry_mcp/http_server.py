@@ -41,19 +41,21 @@ from .common import (
 from .common import (
     find_config_path as _find_config_path,
 )
+from .common import (
+    iter_config_files as _iter_config_files,
+)
 from .config import (
     AMIBERRY_HOME,
+    CD_DIR,
     CONFIG_DIR,
     DISK_IMAGE_DIRS,
     EMULATOR_BINARY,
-    IS_LINUX,
     IS_MACOS,
     LOG_DIR,
     ROM_DIR,
     SAVESTATE_DIR,
     SCREENSHOT_DIR,
     SUPPORTED_MODELS,
-    SYSTEM_CONFIG_DIR,
     ensure_directories_exist,
     get_platform_info,
 )
@@ -671,28 +673,18 @@ async def stop():
 
 
 @app.get("/configs", response_model=list[ConfigInfo])
-async def list_configs(include_system: bool = False):
+async def list_configs():
     """List available Amiberry configuration files."""
 
     def _scan_configs() -> list[ConfigInfo]:
-        configs = []
-        # User configs
-        if CONFIG_DIR.exists():
-            for f in CONFIG_DIR.glob("*.uae"):
-                configs.append(ConfigInfo(name=f.name, source="user", path=str(f)))
-        # System configs (Linux only)
-        if (
-            IS_LINUX
-            and include_system
-            and SYSTEM_CONFIG_DIR
-            and SYSTEM_CONFIG_DIR.exists()
-        ):
-            for f in SYSTEM_CONFIG_DIR.glob("*.uae"):
-                configs.append(ConfigInfo(name=f.name, source="system", path=str(f)))
-        return configs
+        return [
+            ConfigInfo(name=name, source=source, path=str(path))
+            for name, source, path in _iter_config_files()
+        ]
 
     configs = await asyncio.to_thread(_scan_configs)
-    return sorted(configs, key=lambda x: x.name)
+    return sorted(configs, key=lambda item: item.name)
+
 
 
 @app.get("/configs/{config_name}")
@@ -1156,9 +1148,7 @@ async def launch_cd(request: LaunchCDRequest):
                 status_code=404, detail=f"CD image not found: {request.cd_image}"
             )
     elif request.search_term:
-        search_dirs = DISK_IMAGE_DIRS + [AMIBERRY_HOME / "CD"]
-        if IS_MACOS:
-            search_dirs.append(AMIBERRY_HOME / "CDs")
+        search_dirs = [*DISK_IMAGE_DIRS, CD_DIR]
 
         def _scan_cd_files() -> list[Path]:
             images = scan_disk_images(search_dirs, "cd", request.search_term)
@@ -1211,9 +1201,7 @@ async def launch_cd(request: LaunchCDRequest):
 @app.get("/cd-images", response_model=list[CDImage])
 async def list_cd_images(search: str | None = None):
     """List available CD images."""
-    search_dirs = DISK_IMAGE_DIRS + [AMIBERRY_HOME / "CD"]
-    if IS_MACOS:
-        search_dirs.append(AMIBERRY_HOME / "CDs")
+    search_dirs = [*DISK_IMAGE_DIRS, CD_DIR]
 
     results = await asyncio.to_thread(scan_disk_images, search_dirs, "cd", search or "")
     return [CDImage(name=r["name"], type=r["type"], path=r["path"]) for r in results]

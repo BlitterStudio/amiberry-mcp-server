@@ -150,11 +150,14 @@ class TestGetPlatformInfo:
             "emulator_binary",
             "amiberry_home",
             "config_dir",
+            "settings_dir",
             "savestate_dir",
             "screenshot_dir",
             "log_dir",
             "rom_dir",
+            "cd_dir",
             "disk_image_dirs",
+            "portable_mode",
         ]
         for field in required:
             assert field in info, f"Missing field: {field}"

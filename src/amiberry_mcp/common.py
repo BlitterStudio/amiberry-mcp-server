@@ -17,10 +17,9 @@ from .config import (
     EMULATOR_BINARY,
     FLOPPY_EXTENSIONS,
     HARDFILE_EXTENSIONS,
-    IS_LINUX,
     LHA_EXTENSIONS,
+    LEGACY_CONFIG_DIRS,
     LOG_DIR,
-    SYSTEM_CONFIG_DIR,
 )
 
 # TTL-based cache for scan_disk_images results
@@ -38,17 +37,30 @@ def _is_path_within(path: Path, parent: Path) -> bool:
 
 
 def find_config_path(config_name: str) -> Path | None:
-    """Find a configuration file by name, checking user and system directories."""
-    config_path = (CONFIG_DIR / config_name).resolve()
-    if _is_path_within(config_path, CONFIG_DIR) and config_path.exists():
-        return config_path
-
-    if IS_LINUX and SYSTEM_CONFIG_DIR:
-        config_path = (SYSTEM_CONFIG_DIR / config_name).resolve()
-        if _is_path_within(config_path, SYSTEM_CONFIG_DIR) and config_path.exists():
+    """Find a configuration file by name in the current and legacy directories."""
+    for directory in (CONFIG_DIR, *LEGACY_CONFIG_DIRS):
+        config_path = (directory / config_name).resolve()
+        if _is_path_within(config_path, directory) and config_path.exists():
             return config_path
-
     return None
+
+
+def iter_config_files() -> list[tuple[str, str, Path]]:
+    """Return ``(name, source, path)`` for ``.uae`` files Amiberry would see.
+
+    ``source`` is ``user`` for ``Configurations`` and ``legacy`` for the
+    pre-8.4 ``conf`` directory that Amiberry still migrates on startup.
+    """
+    found: list[tuple[str, str, Path]] = []
+    searches = [
+        (CONFIG_DIR, "user"),
+        *((path, "legacy") for path in LEGACY_CONFIG_DIRS),
+    ]
+    for directory, source in searches:
+        if not directory.exists():
+            continue
+        found.extend((path.name, source, path) for path in directory.glob("*.uae"))
+    return found
 
 
 def classify_image_type(suffix: str) -> str:
@@ -329,6 +341,10 @@ async def detect_amiberry_version() -> dict[str, Any]:
             features.append("model_presets")
         if "--cdimage" in output or "cdimage" in output:
             features.append("cd_image_support")
+        if "--dump-paths" in output:
+            features.append("dump_paths")
+        if "--dump-config" in output:
+            features.append("dump_config")
         if "lua" in output.lower():
             features.append("lua_scripting")
 
