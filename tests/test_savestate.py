@@ -4,6 +4,7 @@ Unit tests for the savestate module.
 """
 
 import struct
+import zlib
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,23 @@ from amiberry_mcp.savestate import (
     inspect_savestate,
     list_savestate_chunks,
 )
+
+
+def _iff_chunk(name: bytes, payload: bytes) -> bytes:
+    """Build one uncompressed Amiberry savestate chunk, including padding."""
+    size = 12 + len(payload)
+    pad = 4 - (len(payload) & 3)
+    return name + struct.pack(">II", size, 0) + payload + (b"\x00" * pad)
+
+
+def _asf_chunk(
+    version: int, emulator: str, emu_version: str, description: str
+) -> bytes:
+    payload = struct.pack(">I", version)
+    payload += emulator.encode("latin-1") + b"\x00"
+    payload += emu_version.encode("latin-1") + b"\x00"
+    payload += description.encode("latin-1") + b"\x00"
+    return _iff_chunk(ASF_MAGIC, payload)
 
 
 class TestHelperFunctions:
@@ -79,79 +97,23 @@ class TestInspectSavestate:
     def _create_minimal_savestate(self, tmpdir) -> Path:
         """Create a minimal valid savestate file for testing."""
         path = Path(tmpdir) / "test.uss"
-
-        # Build a minimal ASF file
-        data = bytearray()
-
-        # Magic header
-        data.extend(ASF_MAGIC)
-
-        # Version (4 bytes big-endian)
-        data.extend(struct.pack(">I", 1))
-
-        # Emulator name (null-terminated)
-        data.extend(b"Amiberry\x00")
-
-        # Emulator version (null-terminated)
-        data.extend(b"v5.7\x00")
-
-        # Description (null-terminated)
-        data.extend(b"Test savestate\x00")
-
-        # Add an END chunk
-        data.extend(b"END ")
-        data.extend(struct.pack(">I", 8))  # chunk size
-
-        path.write_bytes(bytes(data))
+        data = _asf_chunk(0, "UAE", "8.4.1", "Test savestate")
+        data += b"END " + struct.pack(">I", 8)
+        path.write_bytes(data)
         return path
 
     def _create_savestate_with_cpu(self, tmpdir) -> Path:
-        """Create a savestate with CPU chunk."""
+        """Create a savestate with CPU, chipset, and chip-RAM chunks."""
         path = Path(tmpdir) / "cpu.uss"
-
-        data = bytearray()
-
-        # Header
-        data.extend(ASF_MAGIC)
-        data.extend(struct.pack(">I", 1))  # version
-        data.extend(b"Amiberry\x00")
-        data.extend(b"v5.7\x00")
-        data.extend(b"CPU test\x00")
-
-        # CPU chunk (68020)
-        cpu_data = bytearray()
-        cpu_data.extend(struct.pack(">I", 20))  # CPU model (68020)
-        cpu_data.extend(struct.pack(">I", 0))  # flags
-        chunk_size = 8 + len(cpu_data)
-
-        data.extend(b"CPU ")
-        data.extend(struct.pack(">I", chunk_size))
-        data.extend(cpu_data)
-
-        # CHIP chunk (AGA)
-        chip_data = bytearray()
-        chip_data.extend(struct.pack(">I", 4))  # AGA flag
-        chunk_size = 8 + len(chip_data)
-
-        data.extend(b"CHIP")
-        data.extend(struct.pack(">I", chunk_size))
-        data.extend(chip_data)
-
-        # CRAM chunk (2MB chip RAM)
-        cram_data = bytearray()
-        cram_data.extend(struct.pack(">I", 0))  # start
-        cram_data.extend(struct.pack(">I", 2097152))  # size (2MB)
-        chunk_size = 8 + len(cram_data)
-
-        data.extend(b"CRAM")
-        data.extend(struct.pack(">I", chunk_size))
-        data.extend(cram_data)
-
-        # END chunk
-        data.extend(b"END ")
-        data.extend(struct.pack(">I", 8))
-
-        path.write_bytes(bytes(data))
+        data = _asf_chunk(0, "UAE", "8.4.1", "CPU test")
+        data += _iff_chunk(b"CPU ", struct.pack(">II", 68020, 0))
+        data += _iff_chunk(b"FPU ", struct.pack(">I", 68881))
+        data += _iff_chunk(b"CHIP", struct.pack(">I", 4))
+        # Bytes 4-7 look like a size field. They are RAM contents.
+        ram = b"\x00\x00\x00\x00\xff\xff\xff\xff" + (b"\x00" * (1024 - 8))
+        data += _iff_chunk(b"CRAM", ram)
+        data += b"END " + struct.pack(">I", 8)
+        path.write_bytes(data)
         return path
 
     def test_inspect_minimal_savestate(self, tmp_path):
@@ -161,10 +123,10 @@ class TestInspectSavestate:
         metadata = inspect_savestate(path)
 
         assert metadata["filename"] == "test.uss"
-        assert metadata["emulator"] == "Amiberry"
-        assert metadata["emulator_version"] == "v5.7"
+        assert metadata["emulator"] == "UAE"
+        assert metadata["emulator_version"] == "8.4.1"
         assert metadata["description"] == "Test savestate"
-        assert metadata["version"] == 1
+        assert metadata["version"] == 0
         assert "END " in metadata["chunks"]
 
     def test_inspect_savestate_with_cpu(self, tmp_path):
@@ -175,10 +137,44 @@ class TestInspectSavestate:
 
         assert "cpu" in metadata
         assert metadata["cpu"]["model"] == "68020"
-        assert metadata["cpu"]["chipset"] == "AGA"
+        assert metadata["cpu"]["fpu"] == "68881"
 
         assert "memory" in metadata
-        assert metadata["memory"]["chip"] == 2048  # 2MB in KB
+        assert metadata["memory"]["chip"] == 1  # payload length, not offset 4
+
+    def test_cpu_and_fpu_numbers_are_not_prefixed(self, tmp_path):
+        """A raw 68020 must not become 6868020, and FPU 0 is none."""
+        path = tmp_path / "models.uss"
+        data = _asf_chunk(0, "UAE", "8.4.1", "models")
+        data += _iff_chunk(b"CPU ", struct.pack(">II", 68020, 0))
+        data += _iff_chunk(b"FPU ", struct.pack(">I", 0))
+        data += b"END " + struct.pack(">I", 8)
+        path.write_bytes(data)
+
+        metadata = inspect_savestate(path)
+
+        assert metadata["cpu"]["model"] == "68020"
+        assert metadata["cpu"]["fpu"] == "none"
+        assert "FPU" not in get_savestate_summary(metadata)
+
+    def test_compressed_ram_uses_uncompressed_length(self, tmp_path):
+        """A zlib RAM bank reports the bank size, not the compressed size."""
+        bank = b"\xff" * 2048
+        stored = struct.pack(">I", len(bank)) + zlib.compress(bank)
+        size = 12 + len(stored)
+        pad = 4 - (len(stored) & 3)
+        chunk = b"FRAM" + struct.pack(">II", size, 1) + stored + (b"\x00" * pad)
+        path = tmp_path / "fast.uss"
+        path.write_bytes(
+            _asf_chunk(0, "UAE", "8.4.1", "fast")
+            + chunk
+            + b"END "
+            + struct.pack(">I", 8)
+        )
+
+        metadata = inspect_savestate(path)
+
+        assert metadata["memory"]["fast"] == 2
 
     def test_inspect_nonexistent_file(self, tmp_path):
         """Test inspecting a file that doesn't exist."""
@@ -309,27 +305,11 @@ class TestListSavestateChunks:
     def _create_multi_chunk_savestate(self, tmpdir) -> Path:
         """Create a savestate with multiple chunks."""
         path = Path(tmpdir) / "chunks.uss"
-
-        data = bytearray()
-
-        # Header
-        data.extend(ASF_MAGIC)
-        data.extend(struct.pack(">I", 1))
-        data.extend(b"Test\x00")
-        data.extend(b"1.0\x00")
-        data.extend(b"\x00")
-
-        # Multiple chunks
-        for name in [b"CPU ", b"FPU ", b"CHIP", b"CRAM", b"END "]:
-            chunk_data = b"\x00" * 8  # 8 bytes of dummy data
-            chunk_size = 8 + len(chunk_data)
-            data.extend(name)
-            data.extend(struct.pack(">I", chunk_size))
-            data.extend(chunk_data)
-            if name == b"END ":
-                break
-
-        path.write_bytes(bytes(data))
+        data = _asf_chunk(0, "UAE", "8.4.1", "chunks")
+        for name in (b"CPU ", b"FPU ", b"CHIP", b"CRAM"):
+            data += _iff_chunk(name, b"\x00" * 8)
+        data += b"END " + struct.pack(">I", 8)
+        path.write_bytes(data)
         return path
 
     def test_list_chunks(self, tmp_path):

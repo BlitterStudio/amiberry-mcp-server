@@ -8,11 +8,20 @@ Covers:
 """
 
 import subprocess
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from amiberry_mcp.common import classify_image_type, terminate_process
+from amiberry_mcp.common import (
+    classify_image_type,
+    disk_search_dirs,
+    iter_files_by_suffix,
+    rom_search_dirs,
+    savestate_search_dirs,
+    scan_disk_images,
+    terminate_process,
+    unique_existing_dirs,
+)
 
 
 class TestTerminateProcess:
@@ -118,6 +127,55 @@ class TestClassifyImageType:
         assert classify_image_type(".HDF") == "hardfile"
         assert classify_image_type(".LHA") == "lha"
         assert classify_image_type(".ISO") == "cd"
+
+
+class TestLegacyContentSearch:
+    """Pre-8.4 content trees are searched, without listing one file twice."""
+
+    def test_legacy_rom_and_savestate_dirs_are_searched(self, tmp_path):
+        kickstarts = tmp_path / "kickstarts"
+        kickstarts.mkdir()
+        (kickstarts / "kick.rom").write_bytes(b"rom")
+        saves = tmp_path / "savestates"
+        saves.mkdir()
+        (saves / "game.uss").write_bytes(b"uss")
+
+        with (
+            patch("amiberry_mcp.common.ROM_DIR", tmp_path / "ROMs"),
+            patch("amiberry_mcp.common.LEGACY_ROM_DIRS", [kickstarts]),
+            patch("amiberry_mcp.common.SAVESTATE_DIR", tmp_path / "SaveStates"),
+            patch("amiberry_mcp.common.LEGACY_SAVESTATE_DIRS", [saves]),
+        ):
+            roms = iter_files_by_suffix(rom_search_dirs(), (".rom",))
+            states = iter_files_by_suffix(savestate_search_dirs(), (".uss",))
+
+        assert [path.name for path in roms] == ["kick.rom"]
+        assert [path.name for path in states] == ["game.uss"]
+
+    def test_legacy_disk_dirs_are_scanned(self, tmp_path):
+        floppies = tmp_path / "floppies"
+        floppies.mkdir()
+        (floppies / "game.adf").write_bytes(b"adf")
+
+        with (
+            patch("amiberry_mcp.common.DISK_IMAGE_DIRS", [tmp_path / "Floppies"]),
+            patch("amiberry_mcp.common.LEGACY_DISK_DIRS", [floppies]),
+        ):
+            images = scan_disk_images(disk_search_dirs(), "floppy")
+
+        assert [image["name"] for image in images] == ["game.adf"]
+
+    def test_same_inode_is_listed_once(self, tmp_path):
+        real = tmp_path / "Floppies"
+        real.mkdir()
+        (real / "game.adf").write_bytes(b"adf")
+        alias = tmp_path / "floppies"
+        alias.symlink_to(real, target_is_directory=True)
+
+        images = scan_disk_images([real, alias], "floppy")
+
+        assert [image["name"] for image in images] == ["game.adf"]
+        assert len(unique_existing_dirs([real, alias])) == 1
 
 
 if __name__ == "__main__":

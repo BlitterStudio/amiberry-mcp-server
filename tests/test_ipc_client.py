@@ -724,5 +724,62 @@ class TestResponseSizeLimit:
             assert data == ["normal response"]
 
 
+class TestBreakpointAndDiskSwap:
+    """SET_BREAKPOINT slot and QUERYDISKSWAP reply handling."""
+
+    @pytest.fixture
+    def client(self):
+        return AmiberryIPCClient(prefer_dbus=False, instance=0)
+
+    @pytest.mark.asyncio
+    async def test_set_breakpoint_omits_slot_and_parses_reply(self, client):
+        client._send_command = AsyncMock(
+            return_value=(True, ["Breakpoint set at 00000400 in slot 3"])
+        )
+
+        used = await client.set_breakpoint(0x400)
+
+        assert used == 3
+        client._send_command.assert_awaited_once_with("SET_BREAKPOINT", "0x400")
+
+    @pytest.mark.asyncio
+    async def test_set_breakpoint_sends_slot(self, client):
+        client._send_command = AsyncMock(
+            return_value=(True, ["Breakpoint set at 00000400 in slot 7"])
+        )
+
+        used = await client.set_breakpoint("0x400", 7)
+
+        assert used == 7
+        client._send_command.assert_awaited_once_with("SET_BREAKPOINT", "0x400", "7")
+
+    @pytest.mark.asyncio
+    async def test_set_breakpoint_rejects_out_of_range_slot(self, client):
+        with pytest.raises(ValueError, match="0-19"):
+            await client.set_breakpoint(0x400, 20)
+
+    @pytest.mark.asyncio
+    async def test_query_disk_swap_returns_negative_when_not_in_list(self, client):
+        client._send_command = AsyncMock(return_value=(True, ["-1"]))
+
+        assert await client.query_disk_swap(1) == -1
+
+    @pytest.mark.asyncio
+    async def test_query_disk_swap_raises_on_failure(self, client):
+        client._send_command = AsyncMock(
+            return_value=(False, ["Drive number must be 0-3"])
+        )
+
+        with pytest.raises(CommandError, match="Drive number"):
+            await client.query_disk_swap(0)
+
+    @pytest.mark.asyncio
+    async def test_help_raises_when_command_fails(self, client):
+        client._send_command = AsyncMock(return_value=(False, ["HELP failed"]))
+
+        with pytest.raises(CommandError, match="HELP failed"):
+            await client.help()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

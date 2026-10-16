@@ -33,27 +33,30 @@ from .common import (
     _is_path_within,
     build_launch_command,
     detect_amiberry_version,
+    disk_search_dirs,
     format_log_timestamp,
     format_signal_info,
+    iter_files_by_suffix,
     normalize_log_path,
+    rom_search_dirs,
+    savestate_search_dirs,
     scan_disk_images,
     terminate_process,
 )
 from .common import (
     find_config_path as _find_config_path,
 )
+from .common import (
+    iter_config_files as _iter_config_files,
+)
 from .config import (
-    AMIBERRY_HOME,
+    CD_DIR,
     CONFIG_DIR,
-    DISK_IMAGE_DIRS,
-    IS_LINUX,
-    IS_MACOS,
     LOG_DIR,
     ROM_DIR,
     SAVESTATE_DIR,
     SCREENSHOT_DIR,
     SUPPORTED_MODELS,
-    SYSTEM_CONFIG_DIR,
     get_platform_info,
 )
 from .gui_automation import (
@@ -72,6 +75,13 @@ from .gui_automation import (
 from .ipc_client import (
     IPCConnectionError,
     resolve_key_name,
+)
+from .monitor import (
+    MonitorError,
+    build_tool_command,
+    format_reply,
+    state_changing,
+    validate_monitor_text,
 )
 from .rom_manager import (
     get_rom_summary,
@@ -238,6 +248,13 @@ _ARG_BOOL_HANDLERS: dict[str, tuple[str, tuple[str, ...], dict[str, Any], str, s
         "Inserted CD: {image_name}",
         "Failed to insert CD.",
     ),
+    "runtime_disk_swap": (
+        "disk_swap",
+        ("disk_num", "drive"),
+        {},
+        "Swapped disk {disk_num} into DF{drive}:.",
+        "Failed to swap disk {disk_num} into DF{drive}:.",
+    ),
     "runtime_set_config": (
         "set_config",
         ("option", "value"),
@@ -335,13 +352,6 @@ _ARG_BOOL_HANDLERS: dict[str, tuple[str, tuple[str, ...], dict[str, Any], str, s
         {"count": 1},
         "Stepped {count} instruction(s).",
         "Failed to step. Debugger may not be active.",
-    ),
-    "runtime_set_breakpoint": (
-        "set_breakpoint",
-        ("address",),
-        {},
-        "Breakpoint set at {address}.",
-        "Failed to set breakpoint. Maximum 20 breakpoints allowed.",
     ),
     "runtime_load_config": (
         "load_config",
@@ -446,9 +456,9 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "include_system": {
+                    "include_legacy": {
                         "type": "boolean",
-                        "description": "On Linux, also include system configs from XDG_CONFIG_HOME (default: false)",
+                        "description": "Ignored. Pre-8.4 conf/ files are listed when present.",
                     }
                 },
             },
@@ -498,7 +508,7 @@ async def list_tools() -> list[Tool]:
                     "model": {
                         "type": "string",
                         "enum": SUPPORTED_MODELS,
-                        "description": "Launch with a specific model configuration (A500, A1200, or CD32). If specified, this overrides the config file.",
+                        "description": "Quickstart model. If set, this overrides the config file.",
                     },
                     "disk_image": {
                         "type": "string",
@@ -550,7 +560,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "model": {
                         "type": "string",
-                        "enum": SUPPORTED_MODELS + ["A500P", "A600", "A4000", "CDTV"],
+                        "enum": SUPPORTED_MODELS,
                         "description": "Launch with a specific model configuration",
                     },
                     "disk_image": {
@@ -928,6 +938,44 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="runtime_disk_swap",
+            description="Insert a disk from the swapper list into a floppy drive. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "disk_num": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 19,
+                        "description": "Index in the disk swapper list (0-19)",
+                    },
+                    "drive": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 3,
+                        "description": "Target floppy drive (0-3)",
+                    },
+                },
+                "required": ["disk_num", "drive"],
+            },
+        ),
+        Tool(
+            name="runtime_query_disk_swap",
+            description="Query which swapper-list disk is in a floppy drive. -1 means the inserted disk is not from the swapper. Requires IPC.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "drive": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 3,
+                        "description": "Floppy drive number (0-3)",
+                    }
+                },
+                "required": ["drive"],
+            },
+        ),
+        Tool(
             name="get_runtime_status",
             description="Get the current status of a running Amiberry emulation (paused state, loaded config, mounted disks). Requires Amiberry to be running with IPC enabled.",
             inputSchema={
@@ -1195,6 +1243,241 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {},
             },
+        ),
+        Tool(
+            name="runtime_help",
+            description="List the IPC commands the running Amiberry instance accepts.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="runtime_monitor",
+            description=(
+                "Send one GDB monitor command over IPC. JSON replies are one line. "
+                "State-changing commands need PAUSE or a stopped debugger. "
+                "Do not send step-over, checkpoint, or input sequence."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Monitor command text, for example 'tasks' or 'watch list'.",
+                    }
+                },
+                "required": ["text"],
+            },
+        ),
+        Tool(
+            name="runtime_execution_status",
+            description="Read CPU, host-pause, frame, and beam state without stopping the guest.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="runtime_tasks",
+            description="List current, ready, and waiting Exec tasks. Reports truncated if the reply was cut.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="runtime_segments",
+            description="List loaded AmigaDOS segments for the current process, or for a process address.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "process": {
+                        "type": "integer",
+                        "description": "Optional process address. Omit for the current process. Must be longword aligned.",
+                    }
+                },
+            },
+        ),
+        Tool(
+            name="runtime_memory",
+            description="Read the debugger memory map, or check that a physical range is writable chip or fast RAM.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["map", "check"]},
+                    "address": {"type": "integer"},
+                    "length": {
+                        "type": "integer",
+                        "description": "Bytes to check, 1..8MiB.",
+                    },
+                },
+                "required": ["action"],
+            },
+        ),
+        Tool(
+            name="runtime_exception",
+            description=(
+                "Read the exception mask and last captured exception, or set the mask. "
+                "Setting the mask requires PAUSE or a stopped debugger. "
+                "Vectors 0 and 1 cannot be selected."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["status", "mask"]},
+                    "mask": {
+                        "type": ["integer", "string"],
+                        "description": "64-bit hex mask. Bits 0 and 1 must be clear.",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="runtime_watch",
+            description=(
+                "CPU/DMA watch predicates. add and range take nine hex fields: "
+                "address, size, access (1 read, 2 write, 3 both; range also bit 2 fetch), "
+                "source mask, value enabled, value, value mask, change-only, log-only. "
+                "add, range, remove, and clear-events require PAUSE or a stopped debugger."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "add",
+                            "range",
+                            "list",
+                            "remove",
+                            "events",
+                            "last",
+                            "clear-events",
+                        ],
+                    },
+                    "id": {"type": "integer", "minimum": 0, "maximum": 19},
+                    "address": {"type": "integer"},
+                    "size": {"type": "integer"},
+                    "access": {"type": "integer"},
+                    "sources": {"type": "integer"},
+                    "value_enabled": {"type": "integer", "enum": [0, 1]},
+                    "value": {"type": "integer"},
+                    "value_mask": {"type": "integer"},
+                    "change_only": {"type": "integer", "enum": [0, 1]},
+                    "log_only": {"type": "integer", "enum": [0, 1]},
+                },
+                "required": ["action"],
+            },
+        ),
+        Tool(
+            name="runtime_dma_watch",
+            description=(
+                "DMA watches. add takes address, length, mode (1 read, 2 write, 3 both), "
+                "and a non-CPU source mask. add and remove require PAUSE or a stopped debugger."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["add", "list", "remove"]},
+                    "id": {"type": "integer", "minimum": 0, "maximum": 19},
+                    "address": {"type": "integer"},
+                    "length": {"type": "integer"},
+                    "mode": {"type": "integer"},
+                    "mask": {"type": "integer"},
+                },
+                "required": ["action"],
+            },
+        ),
+        Tool(
+            name="runtime_condition",
+            description=(
+                "Conditional breakpoints on D0-A7, USP, MSP, ISP, VBR, or SR. "
+                "Operators are ==, !=, <, >, <=, and >=. "
+                "add and remove require PAUSE or a stopped debugger."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["add", "list", "remove"]},
+                    "id": {"type": "integer", "minimum": 0, "maximum": 19},
+                    "register": {"type": ["string", "integer"]},
+                    "operator": {"type": ["string", "integer"]},
+                    "value": {"type": "integer"},
+                    "mask": {"type": "integer"},
+                    "signed": {"type": "integer", "enum": [0, 1]},
+                },
+                "required": ["action"],
+            },
+        ),
+        Tool(
+            name="runtime_history",
+            description=(
+                "Turn debugger execution history on or off, or read up to 128 entries. "
+                "on and off require PAUSE or a stopped debugger."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["on", "off", "read"]},
+                    "count": {"type": "integer", "minimum": 1, "maximum": 128},
+                },
+                "required": ["action"],
+            },
+        ),
+        Tool(
+            name="runtime_guest_output",
+            description=(
+                "Capture uaelib debug messages. on, off, and clear require PAUSE "
+                "or a stopped debugger. read works while the guest runs."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["on", "off", "read", "clear"],
+                    },
+                },
+                "required": ["action"],
+            },
+        ),
+        Tool(
+            name="runtime_process_break",
+            description=(
+                "Arm a one-shot stop at an AmigaDOS program entry by name or task address. "
+                "name, address, and clear require PAUSE or a stopped debugger."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["name", "address", "status", "clear"],
+                    },
+                    "name": {"type": "string"},
+                    "address": {"type": "integer"},
+                },
+                "required": ["action"],
+            },
+        ),
+        Tool(
+            name="runtime_input",
+            description=(
+                "Inject one keyboard, relative mouse, or joystick event, or release held input. "
+                "kind 0 is a key, 1 is a mouse axis, 2 is a joystick control. "
+                "input sequence is refused."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["event", "release", "status"],
+                    },
+                    "kind": {"type": "integer"},
+                    "port": {"type": "integer"},
+                    "code": {"type": "integer"},
+                    "value": {"type": "integer"},
+                },
+                "required": ["action"],
+            },
+        ),
+        Tool(
+            name="runtime_quit",
+            description="Ask the running Amiberry instance to quit through IPC. This is a graceful quit, not a process kill.",
+            inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
             name="set_active_instance",
@@ -1828,7 +2111,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="runtime_debug_status",
-            description="Get debugger status (active/inactive).",
+            description="Get debugger status. reason is present only while stopped=1.",
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -1900,6 +2183,12 @@ async def list_tools() -> list[Tool]:
                     "address": {
                         "type": "string",
                         "description": "Memory address (hex e.g., '0x400' or decimal)",
+                    },
+                    "slot": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 19,
+                        "description": "Breakpoint slot (0-19). Omit to use the first free slot.",
                     },
                 },
                 "required": ["address"],
@@ -2270,16 +2559,8 @@ async def list_tools() -> list[Tool]:
                     },
                     "model": {
                         "type": "string",
-                        "description": "Amiga model (A500, A500P, A600, A1200, A4000, CD32, CDTV)",
-                        "enum": [
-                            "A500",
-                            "A500P",
-                            "A600",
-                            "A1200",
-                            "A4000",
-                            "CD32",
-                            "CDTV",
-                        ],
+                        "description": "Quickstart model",
+                        "enum": SUPPORTED_MODELS,
                     },
                     "disk_image": {
                         "type": "string",
@@ -2316,23 +2597,11 @@ async def _handle_get_platform_info(arguments: Any) -> list:
 
 async def _handle_list_configs(arguments: Any) -> list:
     """Handle list_configs tool."""
-    include_system = arguments.get("include_system", False)
 
     def _scan_configs():
-        configs = []
-        # User configs
-        if CONFIG_DIR.exists():
-            user_configs = [(f.name, "user", str(f)) for f in CONFIG_DIR.glob("*.uae")]
-            configs.extend(user_configs)
-
-        # System configs (Linux only)
-        if IS_LINUX and include_system:
-            if SYSTEM_CONFIG_DIR and SYSTEM_CONFIG_DIR.exists():
-                sys_configs = [
-                    (f.name, "system", str(f)) for f in SYSTEM_CONFIG_DIR.glob("*.uae")
-                ]
-                configs.extend(sys_configs)
-        return configs
+        return [
+            (name, source, str(path)) for name, source, path in _iter_config_files()
+        ]
 
     configs = await asyncio.to_thread(_scan_configs)
 
@@ -2369,7 +2638,7 @@ async def _handle_list_disk_images(arguments: Any) -> list:
     image_type = arguments.get("image_type", "all")
 
     images = await asyncio.to_thread(
-        scan_disk_images, DISK_IMAGE_DIRS, image_type, search_term
+        scan_disk_images, disk_search_dirs(), image_type, search_term
     )
 
     if not images:
@@ -2453,9 +2722,7 @@ async def _handle_list_savestates(arguments: Any) -> list:
 
     def _scan_savestates():
         results = []
-        if not SAVESTATE_DIR.exists():
-            return results
-        for state in SAVESTATE_DIR.glob("**/*.uss"):
+        for state in iter_files_by_suffix(savestate_search_dirs(), (".uss",)):
             if not search_term or search_term in state.name.lower():
                 try:
                     mtime = state.stat().st_mtime
@@ -2683,7 +2950,7 @@ async def _handle_launch_whdload(arguments: Any) -> list:
     elif search_term:
         # Search for the LHA file using scan_disk_images for consistency
         def _scan_lha_files():
-            images = scan_disk_images(DISK_IMAGE_DIRS, "lha", search_term)
+            images = scan_disk_images(disk_search_dirs(), "lha", search_term)
             return [Path(img["path"]) for img in images]
 
         lha_files = await asyncio.to_thread(_scan_lha_files)
@@ -2743,9 +3010,7 @@ async def _handle_launch_cd(arguments: Any) -> list:
     elif search_term:
         # Search for CD images using scan_disk_images for consistency
         def _scan_cd_files():
-            search_dirs = DISK_IMAGE_DIRS + [AMIBERRY_HOME / "CD"]
-            if IS_MACOS:
-                search_dirs.append(AMIBERRY_HOME / "CDs")
+            search_dirs = disk_search_dirs(CD_DIR)
             images = scan_disk_images(search_dirs, "cd", search_term)
             return [Path(img["path"]) for img in images]
 
@@ -2847,9 +3112,7 @@ async def _handle_list_cd_images(arguments: Any) -> list:
     """Handle list_cd_images tool."""
     search_term = arguments.get("search_term", "")
 
-    search_dirs = DISK_IMAGE_DIRS + [AMIBERRY_HOME / "CD"]
-    if IS_MACOS:
-        search_dirs.append(AMIBERRY_HOME / "CDs")
+    search_dirs = disk_search_dirs(CD_DIR)
 
     cd_files = await asyncio.to_thread(scan_disk_images, search_dirs, "cd", search_term)
 
@@ -2973,24 +3236,36 @@ async def _handle_list_roms(arguments: Any) -> list:
     directory = arguments.get("directory")
 
     if directory:
-        rom_dir = Path(directory)
+        rom_dirs = [Path(directory)]
     else:
-        rom_dir = ROM_DIR
+        rom_dirs = rom_search_dirs()
 
-    if not await asyncio.to_thread(rom_dir.exists):
+    if not rom_dirs:
         return _text_result(
-            f"ROM directory not found: {rom_dir}\n\nCreate this directory and add your Kickstart ROMs."
+            f"ROM directory not found: {ROM_DIR}\n\n"
+            "Create this directory and add your Kickstart ROMs."
         )
 
     try:
-        roms = await asyncio.to_thread(scan_rom_directory, rom_dir)
+        roms = []
+        seen: set[str] = set()
+        for rom_dir in rom_dirs:
+            for rom in await asyncio.to_thread(scan_rom_directory, rom_dir):
+                key = rom.get("file", rom.get("filename", ""))
+                if key in seen:
+                    continue
+                seen.add(key)
+                roms.append(rom)
 
         if not roms:
+            locations = ", ".join(str(path) for path in rom_dirs)
             return _text_result(
-                f"No ROM files found in {rom_dir}\n\nAdd Kickstart ROM files (.rom, .bin) to this directory."
+                f"No ROM files found in {locations}\n\n"
+                "Add Kickstart ROM files (.rom, .bin) to this directory."
             )
 
-        result = f"Found {len(roms)} ROM file(s) in {rom_dir}:\n\n"
+        locations = ", ".join(str(path) for path in rom_dirs)
+        result = f"Found {len(roms)} ROM file(s) in {locations}:\n\n"
         for rom in sorted(roms, key=lambda x: x.get("filename", "").lower()):
             if rom.get("error"):
                 result += f"- {rom['filename']}: Error - {rom['error']}\n"
@@ -4745,6 +5020,96 @@ async def _handle_launch_and_wait_for_ipc(arguments: Any) -> list:
         )
 
 
+async def _handle_runtime_query_disk_swap(arguments: Any) -> list:
+    """Handle runtime_query_disk_swap tool."""
+    drive = arguments["drive"]
+
+    async def _cb(client):
+        disk = await client.query_disk_swap(int(drive))
+        if disk < 0:
+            return f"DF{drive}: disk is not from the swapper list."
+        return f"DF{drive}: swapper disk {disk}."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_help(arguments: Any) -> list:
+    """Handle runtime_help tool."""
+
+    async def _cb(client):
+        lines = await client.help()
+        return "\n".join(lines) if lines else "No commands reported."
+
+    return await _ipc_call(_cb)
+
+
+_MONITOR_TOOLS = (
+    "runtime_execution_status",
+    "runtime_tasks",
+    "runtime_segments",
+    "runtime_memory",
+    "runtime_exception",
+    "runtime_watch",
+    "runtime_dma_watch",
+    "runtime_condition",
+    "runtime_history",
+    "runtime_guest_output",
+    "runtime_process_break",
+    "runtime_input",
+)
+
+
+async def _handle_runtime_monitor(arguments: Any) -> list:
+    """Send raw monitor text and return the result lines."""
+    text = validate_monitor_text(str(arguments.get("text", "")))
+
+    async def _cb(client):
+        lines = await client.monitor(text)
+        return format_reply(text, lines)
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_monitor_tool(tool: str, arguments: Any) -> list:
+    """Build, send, and format one typed monitor command."""
+    try:
+        command = build_tool_command(tool, arguments)
+    except MonitorError as exc:
+        return _text_result(f"Invalid argument: {exc}")
+    note = ""
+    if state_changing(tool, arguments.get("action")):
+        note = "\nRequires PAUSE or a stopped debugger."
+
+    async def _cb(client):
+        lines = await client.monitor(command)
+        return format_reply(command, lines) + note
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_quit(arguments: Any) -> list:
+    """Send IPC QUIT while holding the endpoint lifecycle transition."""
+    async with _state.reset_endpoint_transition(_state.active_instance):
+        return await _ipc_bool_call(
+            "quit",
+            success_msg="Quit command sent.",
+            failure_msg="Failed to quit Amiberry.",
+            operation="runtime_quit",
+        )
+
+
+async def _handle_runtime_set_breakpoint(arguments: Any) -> list:
+    """Handle runtime_set_breakpoint tool."""
+    address = arguments["address"]
+    slot = arguments.get("slot")
+
+    async def _cb(client):
+        used = await client.set_breakpoint(address, slot)
+        return f"Breakpoint set at {address} in slot {used}."
+
+    return await _ipc_call(_cb, operation="runtime_set_breakpoint")
+
+
 # Tool dispatch dictionary
 _TOOL_DISPATCH: dict[str, Any] = {
     "get_platform_info": _handle_get_platform_info,
@@ -4775,6 +5140,8 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "runtime_load_state": partial(_handle_arg_bool, "runtime_load_state"),
     "runtime_insert_floppy": partial(_handle_arg_bool, "runtime_insert_floppy"),
     "runtime_insert_cd": partial(_handle_arg_bool, "runtime_insert_cd"),
+    "runtime_disk_swap": partial(_handle_arg_bool, "runtime_disk_swap"),
+    "runtime_query_disk_swap": _handle_runtime_query_disk_swap,
     "get_runtime_status": _handle_get_runtime_status,
     "runtime_get_config": _handle_runtime_get_config,
     "runtime_set_config": partial(_handle_arg_bool, "runtime_set_config"),
@@ -4799,6 +5166,10 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "runtime_send_key": _handle_runtime_send_key,
     "runtime_send_text": _handle_runtime_send_text,
     "runtime_ping": partial(_handle_no_arg_bool, "runtime_ping"),
+    "runtime_help": _handle_runtime_help,
+    "runtime_monitor": _handle_runtime_monitor,
+    **{name: partial(_handle_monitor_tool, name) for name in _MONITOR_TOOLS},
+    "runtime_quit": _handle_runtime_quit,
     "set_active_instance": _handle_set_active_instance,
     "get_active_instance": _handle_get_active_instance,
     "runtime_quicksave": partial(_handle_arg_bool, "runtime_quicksave"),
@@ -4860,7 +5231,7 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "runtime_get_cpu_regs": _handle_runtime_get_cpu_regs,
     "runtime_get_custom_regs": _handle_runtime_get_custom_regs,
     "runtime_disassemble": _handle_runtime_disassemble,
-    "runtime_set_breakpoint": partial(_handle_arg_bool, "runtime_set_breakpoint"),
+    "runtime_set_breakpoint": _handle_runtime_set_breakpoint,
     "runtime_clear_breakpoint": _handle_runtime_clear_breakpoint,
     "runtime_list_breakpoints": _handle_runtime_list_breakpoints,
     "runtime_get_copper_state": _handle_runtime_get_copper_state,

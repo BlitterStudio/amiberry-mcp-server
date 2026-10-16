@@ -63,26 +63,20 @@ echo -e "${GREEN}Dependencies installed${NC}"
 echo "Setting up Amiberry directories..."
 
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    # macOS
-    AMIBERRY_HOME="$HOME/Amiberry"
-    mkdir -p "$AMIBERRY_HOME/Configurations"
-    mkdir -p "$AMIBERRY_HOME/Savestates"
-    mkdir -p "$AMIBERRY_HOME/Screenshots"
-    mkdir -p "$AMIBERRY_HOME/Floppies"
-    mkdir -p "$AMIBERRY_HOME/Harddrives"
-    mkdir -p "$AMIBERRY_HOME/Lha"
-    echo -e "${GREEN}Created directories in $AMIBERRY_HOME${NC}"
+    AMIBERRY_HOME="$HOME/Documents/Amiberry"
 else
-    # Linux
+    # Linux and FreeBSD
     AMIBERRY_HOME="$HOME/Amiberry"
-    mkdir -p "$AMIBERRY_HOME/conf"
-    mkdir -p "$AMIBERRY_HOME/savestates"
-    mkdir -p "$AMIBERRY_HOME/screenshots"
-    mkdir -p "$AMIBERRY_HOME/floppies"
-    mkdir -p "$AMIBERRY_HOME/harddrives"
-    mkdir -p "$AMIBERRY_HOME/lha"
-    echo -e "${GREEN}Created directories in $AMIBERRY_HOME${NC}"
 fi
+mkdir -p "$AMIBERRY_HOME/Configurations"
+mkdir -p "$AMIBERRY_HOME/SaveStates"
+mkdir -p "$AMIBERRY_HOME/Screenshots"
+mkdir -p "$AMIBERRY_HOME/Floppies"
+mkdir -p "$AMIBERRY_HOME/HardDrives"
+mkdir -p "$AMIBERRY_HOME/LHA"
+mkdir -p "$AMIBERRY_HOME/CDROMs"
+mkdir -p "$AMIBERRY_HOME/ROMs"
+echo -e "${GREEN}Created directories in $AMIBERRY_HOME${NC}"
 
 # Create a launch script for the API server
 echo "Creating launch script..."

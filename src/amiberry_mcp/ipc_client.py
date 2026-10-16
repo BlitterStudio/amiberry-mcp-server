@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from .monitor import apply_debug_status, parse_json_reply, validate_monitor_text
+
 _MAX_RESPONSE_SIZE = 1024 * 1024
 
 if not hasattr(asyncio, "open_unix_connection"):
@@ -1487,30 +1489,46 @@ class AmiberryIPCClient:
         return success
 
     async def disk_swap(self, disk_num: int, drive_num: int) -> bool:
-        """
-        Swap a disk from the disk swapper list into a drive.
+        """Swap a disk from the disk swapper list into a drive.
 
         Args:
-            disk_num: Index in the disk swapper list
+            disk_num: Index in the disk swapper list (0-19)
             drive_num: Target drive number (0-3)
+
+        Raises:
+            ValueError: If the disk or drive number is out of range.
         """
+        if disk_num < 0 or disk_num >= 20:
+            raise ValueError("Disk number must be 0-19")
+        if drive_num < 0 or drive_num > 3:
+            raise ValueError("Drive number must be 0-3")
         success, _ = await self._send_command("DISKSWAP", str(disk_num), str(drive_num))
         return success
 
     async def query_disk_swap(self, drive_num: int) -> int:
-        """
-        Query which disk from the swapper list is in a drive.
+        """Query which disk from the swapper list is in a drive.
 
         Args:
             drive_num: Drive number to query (0-3)
 
         Returns:
-            Disk index in swapper list, or -1 if not from swapper
+            Disk index in the swapper list, or -1 if the inserted disk is
+            not from the swapper.
+
+        Raises:
+            ValueError: If the drive number is out of range.
+            CommandError: If Amiberry rejects the query.
         """
+        if drive_num < 0 or drive_num > 3:
+            raise ValueError("Drive number must be 0-3")
         success, data = await self._send_command("QUERYDISKSWAP", str(drive_num))
-        if success and data:
-            return _safe_int(data[0], -1)
-        return -1
+        if not success or not data:
+            detail = data[0] if data else "QUERYDISKSWAP failed"
+            raise CommandError(detail)
+        try:
+            return int(data[0])
+        except ValueError as exc:
+            raise CommandError(f"Invalid QUERYDISKSWAP reply: {data[0]!r}") from exc
 
     async def get_status(self) -> dict[str, Any]:
         """
@@ -1879,15 +1897,38 @@ class AmiberryIPCClient:
         success, data = await self._send_command("PING")
         return bool(success and data and data[0] == "PONG")
 
-    async def help(self) -> list[str]:
+    async def monitor(self, text: str) -> list[str]:
+        """Run one GDB monitor command and return the raw result lines.
+
+        The text is one IPC argument. D-Bus has no MONITOR command, so this
+        always uses the Unix socket. JSON replies are one line. ``disasm`` is
+        one line per instruction.
         """
-        Get list of available commands from the server.
+        command = validate_monitor_text(text)
+        success, data = await self._send_socket_command("MONITOR", command)
+        if not success:
+            detail = data[0] if data else "MONITOR failed"
+            raise CommandError(detail)
+        return data
+
+    async def monitor_json(self, text: str) -> Any:
+        """Run a monitor command whose reply is one JSON line."""
+        return parse_json_reply(await self.monitor(text))
+
+    async def help(self) -> list[str]:
+        """Get the list of IPC commands Amiberry accepts.
 
         Returns:
-            List of help strings
+            Help lines from the running emulator.
+
+        Raises:
+            CommandError: If the command fails.
         """
         success, data = await self._send_command("HELP")
-        return data if success else []
+        if not success:
+            detail = data[0] if data else "HELP failed"
+            raise CommandError(detail)
+        return data
 
     # === ROUND 2 COMMANDS ===
 
@@ -2615,12 +2656,7 @@ class AmiberryIPCClient:
     # === ROUND 6 COMMANDS - Debugging and Diagnostics ===
 
     async def debug_activate(self) -> bool:
-        """
-        Activate the built-in debugger.
-
-        Returns:
-            True if successful
-        """
+        """Activate the built-in debugger."""
         success, _ = await self._send_command("DEBUG_ACTIVATE")
         return success
 
@@ -2635,17 +2671,16 @@ class AmiberryIPCClient:
         return success
 
     async def debug_status(self) -> dict[str, str] | None:
-        """
-        Get debugger status.
+        """Get debugger status.
 
-        Returns:
-            Dictionary with active status, or None on error
+        ``reason`` is included only when ``stopped`` is 1. It is the GDB stop
+        text for a monitor stop, or empty for another native stop.
         """
         success, data = await self._send_command("DEBUG_STATUS")
         if not success:
             return None
 
-        return _parse_kv_response(data)
+        return apply_debug_status(_parse_kv_response(data))
 
     async def debug_step(self, count: int = 1) -> bool:
         """
@@ -2729,23 +2764,45 @@ class AmiberryIPCClient:
             return data
         return []
 
-    async def set_breakpoint(self, address: int | str) -> bool:
-        """
-        Set a breakpoint at an address.
+    async def set_breakpoint(self, address: int | str, slot: int | None = None) -> int:
+        """Set a breakpoint at an address.
 
         Args:
             address: Memory address (hex string or integer)
+            slot: Optional breakpoint slot (0-19). Omit to use the first free slot.
 
         Returns:
-            True if successful
+            The slot Amiberry used.
+
+        Raises:
+            ValueError: If the slot is out of range.
+            CommandError: If the breakpoint could not be set.
         """
         if isinstance(address, int):
             addr_str = f"0x{address:x}"
         else:
             addr_str = str(address)
+        args = [addr_str]
+        if slot is not None:
+            if slot < 0 or slot >= 20:
+                raise ValueError("Breakpoint slot must be 0-19")
+            args.append(str(slot))
 
-        success, _ = await self._send_command("SET_BREAKPOINT", addr_str)
-        return success
+        success, data = await self._send_command("SET_BREAKPOINT", *args)
+        if not success:
+            detail = data[0] if data else "SET_BREAKPOINT failed"
+            raise CommandError(detail)
+        if not data:
+            raise CommandError("SET_BREAKPOINT returned no slot")
+        marker = "slot "
+        text = data[0]
+        index = text.rfind(marker)
+        if index < 0:
+            raise CommandError(f"SET_BREAKPOINT reply missing slot: {text}")
+        try:
+            return int(text[index + len(marker) :].strip())
+        except ValueError as exc:
+            raise CommandError(f"SET_BREAKPOINT reply missing slot: {text}") from exc
 
     async def clear_breakpoint(self, address: int | str | None = None) -> bool:
         """

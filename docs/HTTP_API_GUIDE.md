@@ -4,7 +4,7 @@ This guide shows you how to control Amiberry using the HTTP API from various aut
 
 ## Overview
 
-The Amiberry HTTP API is a REST API server that works on both macOS and Linux. It can be integrated with:
+The Amiberry HTTP API is a REST API server that works on Linux, FreeBSD, and macOS. It can be integrated with:
 
 - **Siri Shortcuts** (macOS/iOS)
 - **Google Assistant** (Android/Linux)
@@ -74,6 +74,8 @@ The API server provides these endpoints:
 - `GET /runtime/list-floppies` - List all floppy drives and contents
 - `POST /runtime/insert-cd` - Insert CD image
 - `POST /runtime/eject-cd` - Eject CD
+- `POST /runtime/disk-swap` - Insert a swapper-list disk (`disk_num` 0-19, `drive` 0-3)
+- `GET /runtime/disk-swap/{drive}` - Query which swapper slot is in a drive (`disk_num` -1 if none)
 
 **State Management**
 - `POST /runtime/screenshot` - Take a screenshot
@@ -180,11 +182,12 @@ The API server provides these endpoints:
 - `POST /runtime/debug/step` - Step one instruction
 - `POST /runtime/debug/step-over` - Step over subroutine calls
 - `POST /runtime/debug/continue` - Continue execution
+- `POST /runtime/debug/monitor` - Run one GDB monitor command. Body is `{"text":"tasks"}`. State-changing commands need the emulator paused or the debugger stopped. The reply `reason` on `GET /runtime/debug/status` is present only while `stopped=1` (watch, condition, exception, or process-entry stops).
 - `GET /runtime/cpu/regs` - Get CPU register values
 - `GET /runtime/custom/regs` - Get custom chipset register values
 - `POST /runtime/disassemble` - Disassemble memory at address
 - `GET /runtime/breakpoints` - List breakpoints
-- `POST /runtime/breakpoints` - Set breakpoint
+- `POST /runtime/breakpoints` - Set breakpoint (`address`, optional `slot` 0-19)
 - `DELETE /runtime/breakpoints` - Delete breakpoint
 
 **Hardware State**
@@ -197,6 +200,7 @@ The API server provides these endpoints:
 **Utility**
 - `GET /runtime/version` - Get Amiberry version info
 - `GET /runtime/ping` - Test IPC connection
+- `GET /runtime/help` - List IPC commands accepted by the running emulator
 - `GET /runtime/ipc-check` - Check if IPC is available
 - `GET /runtime/active-instance` - Get the currently active Amiberry instance
 - `POST /runtime/active-instance` - Set the active Amiberry instance (e.g. 0, 1, 2)
@@ -1024,7 +1028,7 @@ curl http://localhost:8080/savestates/mysave.uss/inspect
 curl http://localhost:8080/roms
 
 # Identify specific ROM (path must be inside the Amiberry home directory)
-curl "http://localhost:8080/roms/identify?rom_path=$HOME/Amiberry/kickstarts/kick13.rom"
+curl "http://localhost:8080/roms/identify?rom_path=$HOME/Amiberry/ROMs/kick13.rom"
 ```
 
 ### Version Info

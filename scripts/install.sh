@@ -11,8 +11,11 @@ echo ""
 if [[ "$OSTYPE" == "darwin"* ]]; then
     OS="macOS"
     CONFIG_FILE="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
-elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+elif [[ "$OSTYPE" == "linux-gnu"* || "$OSTYPE" == "freebsd"* ]]; then
     OS="Linux"
+    if [[ "$OSTYPE" == "freebsd"* ]]; then
+        OS="FreeBSD"
+    fi
     CONFIG_FILE="$HOME/.config/Claude/claude_desktop_config.json"
 else
     echo "Error: Unsupported operating system"

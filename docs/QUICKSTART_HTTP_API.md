@@ -240,7 +240,10 @@ rest_command:
 | `/runtime/display-mode` | GET/POST | Get/set display mode |
 | `/runtime/key` | POST | Send keyboard input |
 | `/runtime/mouse` | POST | Send mouse input |
+| `/runtime/disk-swap` | POST | Insert a swapper-list disk |
+| `/runtime/disk-swap/{drive}` | GET | Query the swapper slot in a drive |
 | `/runtime/ping` | GET | Test IPC connection |
+| `/runtime/help` | GET | List IPC commands |
 | `/runtime/active-instance` | GET/POST | Get/set active instance |
 
 ### Process Lifecycle Endpoints
@@ -261,6 +264,7 @@ rest_command:
 | `/logs/wait-for-pattern` | POST | Wait for regex in logs |
 | `/runtime/debug/activate` | POST | Activate debugger |
 | `/runtime/debug/step` | POST | Step one instruction |
+| `/runtime/debug/monitor` | POST | GDB monitor command (`{"text":"tasks"}`). Pause before state changes. |
 | `/runtime/cpu/regs` | GET | CPU register values |
 
 ## Files

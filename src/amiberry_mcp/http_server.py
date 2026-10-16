@@ -12,6 +12,7 @@ This server exposes REST API endpoints for automation tools including:
 import asyncio
 import base64
 import datetime
+import json
 import os
 import platform
 import re
@@ -32,28 +33,32 @@ from .common import (
     _is_path_within,
     build_launch_command,
     detect_amiberry_version,
+    disk_search_dirs,
     format_log_timestamp,
     format_signal_info,
+    iter_files_by_suffix,
     normalize_log_path,
+    rom_search_dirs,
+    savestate_search_dirs,
     scan_disk_images,
     terminate_process,
 )
 from .common import (
     find_config_path as _find_config_path,
 )
+from .common import (
+    iter_config_files as _iter_config_files,
+)
 from .config import (
     AMIBERRY_HOME,
+    CD_DIR,
     CONFIG_DIR,
-    DISK_IMAGE_DIRS,
     EMULATOR_BINARY,
-    IS_LINUX,
     IS_MACOS,
     LOG_DIR,
-    ROM_DIR,
     SAVESTATE_DIR,
     SCREENSHOT_DIR,
     SUPPORTED_MODELS,
-    SYSTEM_CONFIG_DIR,
     ensure_directories_exist,
     get_platform_info,
 )
@@ -71,8 +76,10 @@ from .gui_automation import (
 )
 from .ipc_client import (
     AmiberryIPCClient,
+    CommandError,
     IPCConnectionError,
 )
+from .monitor import format_reply, validate_monitor_text
 from .rom_manager import (
     get_rom_summary,
     identify_rom,
@@ -499,6 +506,16 @@ class RuntimeDisassembleRequest(BaseModel):
 
 class RuntimeSetBreakpointRequest(BaseModel):
     address: str
+    slot: int | None = Field(default=None, ge=0, le=19)
+
+
+class RuntimeDiskSwapRequest(BaseModel):
+    disk_num: int = Field(ge=0, le=19)
+    drive: int = Field(ge=0, le=3)
+
+
+class RuntimeMonitorRequest(BaseModel):
+    text: str
 
 
 class RuntimeClearBreakpointRequest(BaseModel):
@@ -671,28 +688,17 @@ async def stop():
 
 
 @app.get("/configs", response_model=list[ConfigInfo])
-async def list_configs(include_system: bool = False):
+async def list_configs():
     """List available Amiberry configuration files."""
 
     def _scan_configs() -> list[ConfigInfo]:
-        configs = []
-        # User configs
-        if CONFIG_DIR.exists():
-            for f in CONFIG_DIR.glob("*.uae"):
-                configs.append(ConfigInfo(name=f.name, source="user", path=str(f)))
-        # System configs (Linux only)
-        if (
-            IS_LINUX
-            and include_system
-            and SYSTEM_CONFIG_DIR
-            and SYSTEM_CONFIG_DIR.exists()
-        ):
-            for f in SYSTEM_CONFIG_DIR.glob("*.uae"):
-                configs.append(ConfigInfo(name=f.name, source="system", path=str(f)))
-        return configs
+        return [
+            ConfigInfo(name=name, source=source, path=str(path))
+            for name, source, path in _iter_config_files()
+        ]
 
     configs = await asyncio.to_thread(_scan_configs)
-    return sorted(configs, key=lambda x: x.name)
+    return sorted(configs, key=lambda item: item.name)
 
 
 @app.get("/configs/{config_name}")
@@ -729,7 +735,7 @@ async def get_config(config_name: str):
 async def list_disk_images(search: str | None = None, type: str = "all"):
     """List available disk images."""
     results = await asyncio.to_thread(
-        scan_disk_images, DISK_IMAGE_DIRS, type, search or ""
+        scan_disk_images, disk_search_dirs(), type, search or ""
     )
     return [DiskImage(name=r["name"], type=r["type"], path=r["path"]) for r in results]
 
@@ -741,14 +747,13 @@ async def list_savestates(search: str | None = None):
 
     def _scan_savestates() -> list[Savestate]:
         savestates = []
-        if SAVESTATE_DIR.exists():
-            for state in SAVESTATE_DIR.glob("**/*.uss"):
-                if not search_term or search_term in state.name.lower():
-                    mtime = state.stat().st_mtime
-                    timestamp = format_log_timestamp(mtime)
-                    savestates.append(
-                        Savestate(name=state.name, modified=timestamp, path=str(state))
-                    )
+        for state in iter_files_by_suffix(savestate_search_dirs(), (".uss",)):
+            if not search_term or search_term in state.name.lower():
+                mtime = state.stat().st_mtime
+                timestamp = format_log_timestamp(mtime)
+                savestates.append(
+                    Savestate(name=state.name, modified=timestamp, path=str(state))
+                )
         return savestates
 
     savestates = await asyncio.to_thread(_scan_savestates)
@@ -1083,7 +1088,7 @@ async def launch_whdload(
         def _scan_lha_files() -> list[Path]:
             seen: set[str] = set()
             results: list[Path] = []
-            for directory in DISK_IMAGE_DIRS:
+            for directory in disk_search_dirs():
                 if directory.exists():
                     for pattern in ["**/*.lha", "**/*.LHA"]:
                         for lha in directory.glob(pattern):
@@ -1156,9 +1161,7 @@ async def launch_cd(request: LaunchCDRequest):
                 status_code=404, detail=f"CD image not found: {request.cd_image}"
             )
     elif request.search_term:
-        search_dirs = DISK_IMAGE_DIRS + [AMIBERRY_HOME / "CD"]
-        if IS_MACOS:
-            search_dirs.append(AMIBERRY_HOME / "CDs")
+        search_dirs = disk_search_dirs(CD_DIR)
 
         def _scan_cd_files() -> list[Path]:
             images = scan_disk_images(search_dirs, "cd", request.search_term)
@@ -1211,9 +1214,7 @@ async def launch_cd(request: LaunchCDRequest):
 @app.get("/cd-images", response_model=list[CDImage])
 async def list_cd_images(search: str | None = None):
     """List available CD images."""
-    search_dirs = DISK_IMAGE_DIRS + [AMIBERRY_HOME / "CD"]
-    if IS_MACOS:
-        search_dirs.append(AMIBERRY_HOME / "CDs")
+    search_dirs = disk_search_dirs(CD_DIR)
 
     results = await asyncio.to_thread(scan_disk_images, search_dirs, "cd", search or "")
     return [CDImage(name=r["name"], type=r["type"], path=r["path"]) for r in results]
@@ -1378,7 +1379,6 @@ async def inspect_savestate_endpoint(savestate_name: str):
 @app.get("/roms", response_model=list[RomInfo])
 async def list_roms(directory: str | None = None):
     """List and identify ROM files in the ROMs directory."""
-    rom_dir = ROM_DIR
     if directory:
         candidate = Path(directory).resolve()
         if not _is_path_within(candidate, AMIBERRY_HOME):
@@ -1386,14 +1386,26 @@ async def list_roms(directory: str | None = None):
                 status_code=400,
                 detail="ROM directory must be within the Amiberry home directory",
             )
-        rom_dir = candidate
+        rom_dirs = [candidate]
+    else:
+        rom_dirs = rom_search_dirs()
 
-    if not await asyncio.to_thread(rom_dir.exists):
+    if not rom_dirs:
         return []
 
     try:
-        roms = await asyncio.to_thread(scan_rom_directory, rom_dir)
-        return [RomInfo(**rom) for rom in roms if not rom.get("error")]
+        roms = []
+        seen: set[str] = set()
+        for rom_dir in rom_dirs:
+            for rom in await asyncio.to_thread(scan_rom_directory, rom_dir):
+                if rom.get("error"):
+                    continue
+                key = rom.get("file", rom.get("filename", ""))
+                if key in seen:
+                    continue
+                seen.add(key)
+                roms.append(rom)
+        return [RomInfo(**rom) for rom in roms]
     except PermissionError as e:
         raise HTTPException(
             status_code=403,
@@ -1910,6 +1922,68 @@ _create_no_arg_ipc_endpoint(
     failure_detail="Ping failed",
     method="GET",
 )
+
+
+@app.get("/runtime/help")
+async def runtime_help():
+    """List IPC commands accepted by the running Amiberry instance."""
+    async with _ipc_context() as client:
+        lines = await client.help()
+        return StatusResponse(
+            success=True, message="IPC command list", data={"commands": lines}
+        )
+
+
+@app.post("/runtime/debug/monitor")
+async def runtime_debug_monitor(request: RuntimeMonitorRequest):
+    """Run one GDB monitor command. State changes need PAUSE or a stopped debugger."""
+    try:
+        text = validate_monitor_text(request.text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    async with _ipc_context() as client:
+        try:
+            lines = await client.monitor(text)
+        except CommandError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        payload = None
+        if len(lines) == 1:
+            try:
+                payload = json.loads(lines[0])
+            except json.JSONDecodeError:
+                payload = None
+        return StatusResponse(
+            success=True,
+            message=format_reply(text, lines),
+            data={"lines": lines, "json": payload},
+        )
+
+
+@app.get("/runtime/disk-swap/{drive}")
+async def runtime_query_disk_swap(drive: int):
+    """Query which swapper-list disk is in a floppy drive."""
+    if drive < 0 or drive > 3:
+        raise HTTPException(status_code=400, detail="Drive number must be 0-3")
+    async with _ipc_context() as client:
+        disk = await client.query_disk_swap(drive)
+        return StatusResponse(
+            success=True,
+            message="Swapper disk query",
+            data={"drive": drive, "disk_num": disk},
+        )
+
+
+@app.post("/runtime/disk-swap")
+async def runtime_disk_swap(request: RuntimeDiskSwapRequest):
+    """Insert a swapper-list disk into a floppy drive."""
+    async with _ipc_context() as client:
+        success = await client.disk_swap(request.disk_num, request.drive)
+        return _ipc_success_or_raise(
+            success,
+            f"Swapped disk {request.disk_num} into DF{request.drive}:",
+            "Failed to swap disk",
+            data={"disk_num": request.disk_num, "drive": request.drive},
+        )
 
 
 @app.post("/runtime/frame-advance")
@@ -3057,12 +3131,11 @@ async def runtime_set_breakpoint(request: RuntimeSetBreakpointRequest):
     Set a breakpoint at a memory address. Maximum 20 breakpoints.
     """
     async with _ipc_context() as client:
-        success = await client.set_breakpoint(request.address)
-        return _ipc_success_or_raise(
-            success,
-            f"Breakpoint set at {request.address}",
-            "Failed to set breakpoint. Maximum 20 breakpoints allowed.",
-            data={"address": request.address},
+        used = await client.set_breakpoint(request.address, request.slot)
+        return StatusResponse(
+            success=True,
+            message=f"Breakpoint set at {request.address} in slot {used}",
+            data={"address": request.address, "slot": used},
         )
 
 

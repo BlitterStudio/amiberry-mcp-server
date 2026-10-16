@@ -11,7 +11,7 @@ An MCP (Model Context Protocol) server for controlling [Amiberry](https://github
 - Search for disk images (ADF, HDF, DMS, LHA, ISO, CUE, CHD)
 - List and manage savestates
 - View and edit configuration file contents
-- Launch emulator with specific models (A500, A500P, A600, A1200, A4000, CD32, CDTV)
+- Launch emulator with a Quickstart model (`A1000`, `A500`, `A500P`, `A600`, `A2000`, `A3000`, `A1200`, `A4000`, `CD32`, `CDTV`)
 - HTTP API for voice assistants (Siri, Google Assistant) and automation
 
 ### Runtime Control
@@ -24,7 +24,7 @@ An MCP (Model Context Protocol) server for controlling [Amiberry](https://github
   safely using pixels from an exact screenshot
 - **Keyboard Input**: Send key presses or type text into the emulation
 - **Multi-instance**: Target a specific Amiberry instance when several are running
-- **Cross-platform**: Works on Linux and macOS
+- **Cross-platform**: Works on Linux, FreeBSD, and macOS
 
 ### Developer/Debug Features
 - **Log Capture**: Launch with logging enabled and capture output to files
@@ -53,12 +53,13 @@ An MCP (Model Context Protocol) server for controlling [Amiberry](https://github
 - Python 3.10 or higher
 - Amiberry emulator installed:
   - **macOS**: Amiberry.app in `/Applications`
-  - **Linux**: `amiberry` command in PATH
+  - **Linux and FreeBSD**: `amiberry` command in PATH
 - An MCP-compatible AI client (Claude Desktop, Claude Code, Codex, Gemini/Antigravity, Cursor, Cline, Windsurf, …)
 
-Only macOS and Linux are supported — the server raises `RuntimeError` on other
-platforms. Runtime control additionally needs Amiberry built with
-`USE_IPC_SOCKET=ON`.
+Linux, FreeBSD, and macOS are supported. The server raises `RuntimeError` on
+other platforms. Runtime control additionally needs Amiberry built with
+`USE_IPC_SOCKET=ON` (the default on those three platforms; Windows builds
+force it off).
 
 ## Project Structure
 
@@ -70,9 +71,10 @@ amiberry-mcp-server/
 │       ├── config.py          # Platform detection and paths
 │       ├── common.py          # Shared helpers (launch, scan, validation)
 │       ├── shared_state.py    # Process state, IPC client caching, launch helpers
-│       ├── server.py          # MCP server (133 tools, data-driven dispatch)
+│       ├── server.py          # MCP server (150 tools, data-driven dispatch)
 │       ├── http_server.py     # HTTP API server (FastAPI)
 │       ├── ipc_client.py      # IPC client with persistent connections
+│       ├── monitor.py         # MONITOR command builders and reply parsing
 │       ├── gui_automation.py  # Screenshot capture registry and GUI action service
 │       ├── uae_config.py      # Config file parser/generator
 │       ├── savestate.py       # Savestate metadata parser
@@ -190,37 +192,46 @@ Try asking your assistant:
 ```
 ~/Documents/Amiberry/
 ├── Configurations/    # .uae config files
-├── Floppies/         # .adf, .adz, .dms files
-├── Harddrives/       # .hdf, .hdz files
-├── Lha/              # .lha archives (WHDLoad games)
-├── Savestates/       # .uss savestate files
+├── Floppies/          # .adf, .adz, .dms files
+├── HardDrives/        # .hdf, .hdz files
+├── LHA/               # .lha archives (WHDLoad games)
+├── CDROMs/            # ISO/CUE/CHD images
+├── SaveStates/        # .uss savestate files
 ├── Screenshots/
-├── Kickstarts/       # Kickstart ROM files
-└── logs/             # Captured log files
+├── ROMs/              # Kickstart ROM files
+└── logs/              # Logs captured by this server
 ```
 
-### Linux
+Settings (`amiberry.conf`, `amiberry.ini`) live in
+`~/Library/Application Support/Amiberry`, not under the content root.
+
+### Linux and FreeBSD
 ```
 ~/Amiberry/
-├── conf/             # .uae config files
-├── floppies/         # .adf, .adz, .dms files
-├── harddrives/       # .hdf, .hdz files
-├── lha/              # .lha archives (WHDLoad games)
-├── savestates/       # .uss savestate files
-├── screenshots/
-├── kickstarts/       # Kickstart ROM files
-└── logs/             # Captured log files
-
-~/.config/amiberry/   # System configs (optional)
+├── Configurations/    # .uae config files
+├── Floppies/
+├── HardDrives/
+├── LHA/
+├── CDROMs/
+├── SaveStates/
+├── Screenshots/
+├── ROMs/
+└── logs/              # Logs captured by this server
 ```
 
-Set `AMIBERRY_HOME_DIR` to point the server at a different Amiberry home; every
-path above is derived from it. On Linux, `XDG_CONFIG_HOME` (default `~/.config`)
-determines where the system config directory is looked up.
+Settings live in `$XDG_CONFIG_HOME/amiberry` (default `~/.config/amiberry`).
+That directory is not a second `.uae` config tree. `AMIBERRY_CONFIG_DIR`
+overrides the configurations directory. A file named `amiberry.portable` next
+to the `amiberry` binary switches Amiberry into portable mode and this server
+follows that root; macOS ignores the marker. `AMIBERRY_HOME_DIR` overrides the
+content root when portable mode is off. Listings also search the pre-8.4
+names Amiberry still migrates (`kickstarts`, `roms`, `savestates`,
+`floppies`, `harddrives`, `lha`, and their case variants) so files copied
+from an older tree are not missed.
 
 ## Available MCP Tools
 
-The server exposes 133 tools. Names starting with `runtime_` act on a running
+The server exposes 150 tools. Names starting with `runtime_` act on a running
 emulation over IPC; the rest work on files and processes.
 
 ### Core Tools
@@ -277,8 +288,9 @@ emulation over IPC; the rest work on files and processes.
 | Tool | Description |
 |------|-------------|
 | `runtime_insert_floppy` | Insert floppy disk into drive |
+| `runtime_disk_swap` | Insert a swapper-list disk into a drive |
+| `runtime_query_disk_swap` | Query which swapper slot is in a drive (`-1` if none) |
 | `runtime_eject_floppy` | Eject floppy from drive |
-| `runtime_list_floppies` | List all floppy drives and contents |
 | `runtime_insert_cd` | Insert CD image |
 | `runtime_eject_cd` | Eject CD |
 
@@ -402,7 +414,7 @@ emulation over IPC; the rest work on files and processes.
 | `runtime_get_cpu_regs` | Get all CPU registers (D0-D7, A0-A7, PC, SR, USP, ISP) |
 | `runtime_get_custom_regs` | Get custom chip registers (DMACON, INTENA, INTREQ, etc.) |
 | `runtime_disassemble` | Disassemble instructions at a memory address |
-| `runtime_set_breakpoint` | Set a breakpoint at a memory address |
+| `runtime_set_breakpoint` | Set a breakpoint. Optional `slot` is 0-19; omit it to use the first free slot |
 | `runtime_clear_breakpoint` | Clear a breakpoint or all breakpoints |
 | `runtime_list_breakpoints` | List all active breakpoints |
 | `runtime_get_copper_state` | Get Copper coprocessor state |
@@ -438,7 +450,47 @@ emulation over IPC; the rest work on files and processes.
 |------|-------------|
 | `runtime_get_version` | Get Amiberry and SDL version info |
 | `runtime_ping` | Test IPC connection (returns PONG) |
+| `runtime_help` | List IPC commands the running Amiberry accepts |
+| `runtime_quit` | Ask Amiberry to quit over IPC (not a process kill) |
 | `check_ipc_connection` | Check IPC availability |
+
+#### Debugger monitor
+`MONITOR` runs the GDB monitor command set without a GDB client. Typed tools
+build the command, check arguments, and parse the JSON reply. A raw
+`runtime_monitor` tool sends one command string. HTTP exposes the same raw
+command as `POST /runtime/debug/monitor`.
+
+Read-only queries work while the guest runs, except guest-RAM reads when
+`cpu_threaded=true`. These actions change debugger state and need `PAUSE` or
+a stopped native debugger: watch add/range/remove/clear-events, DMA watch
+add/remove, condition add/remove, exception mask, history on/off, guest-output
+on/off/clear, and process-break name/address/clear. A watch, condition,
+exception, or process entry stops in the native debugger. `runtime_debug_status`
+then reports `stopped=1` and `reason=` (`T05awatch:...`, `T05breakpoint:N;`,
+`T05winuae-exception:...`, `T05winuae-entry:...`). `DEBUG_CONTINUE` resumes.
+`step-over`, `checkpoint`, and `input sequence` are refused.
+
+| Tool | Actions |
+|------|---------|
+| `runtime_monitor` | Raw monitor text |
+| `runtime_execution_status` | CPU, pause, frame, and beam |
+| `runtime_tasks` | Exec task lists |
+| `runtime_segments` | AmigaDOS segments |
+| `runtime_memory` | `map`, `check` |
+| `runtime_exception` | `status`, `mask` |
+| `runtime_watch` | `add`, `range`, `list`, `remove`, `events`, `last`, `clear-events` |
+| `runtime_dma_watch` | `add`, `list`, `remove` |
+| `runtime_condition` | `add`, `list`, `remove` |
+| `runtime_history` | `on`, `off`, `read` |
+| `runtime_guest_output` | `on`, `off`, `read`, `clear` |
+| `runtime_process_break` | `name`, `address`, `status`, `clear` |
+| `runtime_input` | `event`, `release`, `status` |
+
+Watch `add` and `range` take nine fields: address, size, access, source mask,
+value enabled, value, value mask, change-only, and log-only. Numbers are
+hexadecimal. Access is 1 read, 2 write, 3 both; a range may also set bit 2
+for instruction fetch. Change-only requires a write. An exact watch cannot
+include the CPU instruction source.
 
 ### Process Lifecycle Management
 | Tool | Description |
@@ -692,7 +744,7 @@ curl http://localhost:8080/savestates/mysave.uss/inspect
 
 # List ROMs, or identify one by path (must be inside the Amiberry home directory)
 curl http://localhost:8080/roms
-curl "http://localhost:8080/roms/identify?rom_path=$HOME/Amiberry/kickstarts/kick13.rom"
+curl "http://localhost:8080/roms/identify?rom_path=$HOME/Amiberry/ROMs/kick13.rom"
 
 # Runtime control (requires Amiberry with USE_IPC_SOCKET=ON)
 curl http://localhost:8080/runtime/status
@@ -877,7 +929,7 @@ curl -X POST http://localhost:8080/runtime/disassemble \
 curl http://localhost:8080/runtime/breakpoints
 curl -X POST http://localhost:8080/runtime/breakpoints \
   -H "Content-Type: application/json" \
-  -d '{"address": "0x400"}'
+  -d '{"address": "0x400", "slot": 2}'
 curl -X DELETE http://localhost:8080/runtime/breakpoints \
   -H "Content-Type: application/json" \
   -d '{"address": "ALL"}'
@@ -903,6 +955,7 @@ curl -X POST http://localhost:8080/runtime/type \
 # Utility
 curl http://localhost:8080/runtime/version
 curl http://localhost:8080/runtime/ping
+curl http://localhost:8080/runtime/help
 ```
 
 ### API Endpoints
@@ -982,8 +1035,9 @@ curl http://localhost:8080/runtime/ping
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/runtime/insert-floppy` | POST | Insert floppy disk |
+| `/runtime/disk-swap` | POST | Insert swapper disk `{"disk_num", "drive"}` |
+| `/runtime/disk-swap/{drive}` | GET | Query swapper slot in a drive |
 | `/runtime/eject-floppy` | POST | Eject floppy from drive |
-| `/runtime/list-floppies` | GET | List all floppy drives |
 | `/runtime/insert-cd` | POST | Insert CD image |
 | `/runtime/eject-cd` | POST | Eject CD |
 
@@ -1104,7 +1158,7 @@ curl http://localhost:8080/runtime/ping
 | `/runtime/custom/regs` | GET | Get custom chip registers |
 | `/runtime/disassemble` | POST | Disassemble at address |
 | `/runtime/breakpoints` | GET | List all breakpoints |
-| `/runtime/breakpoints` | POST | Set a breakpoint |
+| `/runtime/breakpoints` | POST | Set a breakpoint (`address`, optional `slot` 0-19) |
 | `/runtime/breakpoints` | DELETE | Clear breakpoint(s) |
 | `/runtime/copper/state` | GET | Get Copper state |
 | `/runtime/blitter/state` | GET | Get Blitter state |
@@ -1153,6 +1207,7 @@ curl http://localhost:8080/runtime/ping
 |----------|--------|-------------|
 | `/runtime/version` | GET | Get Amiberry version |
 | `/runtime/ping` | GET | Test IPC connection |
+| `/runtime/help` | GET | List IPC commands |
 | `/runtime/ipc-check` | GET | Check IPC availability |
 | `/runtime/active-instance` | GET | Get the instance currently being controlled |
 | `/runtime/active-instance` | POST | Set the instance to control (`null` to auto-discover) |
