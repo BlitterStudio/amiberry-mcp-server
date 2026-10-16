@@ -12,6 +12,7 @@ This server exposes REST API endpoints for automation tools including:
 import asyncio
 import base64
 import datetime
+import json
 import os
 import platform
 import re
@@ -75,8 +76,10 @@ from .gui_automation import (
 )
 from .ipc_client import (
     AmiberryIPCClient,
+    CommandError,
     IPCConnectionError,
 )
+from .monitor import format_reply, validate_monitor_text
 from .rom_manager import (
     get_rom_summary,
     identify_rom,
@@ -509,6 +512,10 @@ class RuntimeSetBreakpointRequest(BaseModel):
 class RuntimeDiskSwapRequest(BaseModel):
     disk_num: int = Field(ge=0, le=19)
     drive: int = Field(ge=0, le=3)
+
+
+class RuntimeMonitorRequest(BaseModel):
+    text: str
 
 
 class RuntimeClearBreakpointRequest(BaseModel):
@@ -1924,6 +1931,31 @@ async def runtime_help():
         lines = await client.help()
         return StatusResponse(
             success=True, message="IPC command list", data={"commands": lines}
+        )
+
+
+@app.post("/runtime/debug/monitor")
+async def runtime_debug_monitor(request: RuntimeMonitorRequest):
+    """Run one GDB monitor command. State changes need PAUSE or a stopped debugger."""
+    try:
+        text = validate_monitor_text(request.text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    async with _ipc_context() as client:
+        try:
+            lines = await client.monitor(text)
+        except CommandError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        payload = None
+        if len(lines) == 1:
+            try:
+                payload = json.loads(lines[0])
+            except json.JSONDecodeError:
+                payload = None
+        return StatusResponse(
+            success=True,
+            message=format_reply(text, lines),
+            data={"lines": lines, "json": payload},
         )
 
 

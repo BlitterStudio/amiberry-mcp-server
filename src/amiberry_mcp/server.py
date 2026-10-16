@@ -76,6 +76,13 @@ from .ipc_client import (
     IPCConnectionError,
     resolve_key_name,
 )
+from .monitor import (
+    MonitorError,
+    build_tool_command,
+    format_reply,
+    state_changing,
+    validate_monitor_text,
+)
 from .rom_manager import (
     get_rom_summary,
     identify_rom,
@@ -1243,6 +1250,231 @@ async def list_tools() -> list[Tool]:
             inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
+            name="runtime_monitor",
+            description=(
+                "Send one GDB monitor command over IPC. JSON replies are one line. "
+                "State-changing commands need PAUSE or a stopped debugger. "
+                "Do not send step-over, checkpoint, or input sequence."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Monitor command text, for example 'tasks' or 'watch list'.",
+                    }
+                },
+                "required": ["text"],
+            },
+        ),
+        Tool(
+            name="runtime_execution_status",
+            description="Read CPU, host-pause, frame, and beam state without stopping the guest.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="runtime_tasks",
+            description="List current, ready, and waiting Exec tasks. Reports truncated if the reply was cut.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="runtime_segments",
+            description="List loaded AmigaDOS segments for the current process, or for a process address.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "process": {
+                        "type": "integer",
+                        "description": "Optional process address. Omit for the current process. Must be longword aligned.",
+                    }
+                },
+            },
+        ),
+        Tool(
+            name="runtime_memory",
+            description="Read the debugger memory map, or check that a physical range is writable chip or fast RAM.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["map", "check"]},
+                    "address": {"type": "integer"},
+                    "length": {
+                        "type": "integer",
+                        "description": "Bytes to check, 1..8MiB.",
+                    },
+                },
+                "required": ["action"],
+            },
+        ),
+        Tool(
+            name="runtime_exception",
+            description=(
+                "Read the exception mask and last captured exception, or set the mask. "
+                "Setting the mask requires PAUSE or a stopped debugger. "
+                "Vectors 0 and 1 cannot be selected."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["status", "mask"]},
+                    "mask": {
+                        "type": ["integer", "string"],
+                        "description": "64-bit hex mask. Bits 0 and 1 must be clear.",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="runtime_watch",
+            description=(
+                "CPU/DMA watch predicates. add and range take nine hex fields: "
+                "address, size, access (1 read, 2 write, 3 both; range also bit 2 fetch), "
+                "source mask, value enabled, value, value mask, change-only, log-only. "
+                "add, range, remove, and clear-events require PAUSE or a stopped debugger."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "add",
+                            "range",
+                            "list",
+                            "remove",
+                            "events",
+                            "last",
+                            "clear-events",
+                        ],
+                    },
+                    "id": {"type": "integer", "minimum": 0, "maximum": 19},
+                    "address": {"type": "integer"},
+                    "size": {"type": "integer"},
+                    "access": {"type": "integer"},
+                    "sources": {"type": "integer"},
+                    "value_enabled": {"type": "integer", "enum": [0, 1]},
+                    "value": {"type": "integer"},
+                    "value_mask": {"type": "integer"},
+                    "change_only": {"type": "integer", "enum": [0, 1]},
+                    "log_only": {"type": "integer", "enum": [0, 1]},
+                },
+                "required": ["action"],
+            },
+        ),
+        Tool(
+            name="runtime_dma_watch",
+            description=(
+                "DMA watches. add takes address, length, mode (1 read, 2 write, 3 both), "
+                "and a non-CPU source mask. add and remove require PAUSE or a stopped debugger."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["add", "list", "remove"]},
+                    "id": {"type": "integer", "minimum": 0, "maximum": 19},
+                    "address": {"type": "integer"},
+                    "length": {"type": "integer"},
+                    "mode": {"type": "integer"},
+                    "mask": {"type": "integer"},
+                },
+                "required": ["action"],
+            },
+        ),
+        Tool(
+            name="runtime_condition",
+            description=(
+                "Conditional breakpoints on D0-A7, USP, MSP, ISP, VBR, or SR. "
+                "Operators are ==, !=, <, >, <=, and >=. "
+                "add and remove require PAUSE or a stopped debugger."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["add", "list", "remove"]},
+                    "id": {"type": "integer", "minimum": 0, "maximum": 19},
+                    "register": {"type": ["string", "integer"]},
+                    "operator": {"type": ["string", "integer"]},
+                    "value": {"type": "integer"},
+                    "mask": {"type": "integer"},
+                    "signed": {"type": "integer", "enum": [0, 1]},
+                },
+                "required": ["action"],
+            },
+        ),
+        Tool(
+            name="runtime_history",
+            description=(
+                "Turn debugger execution history on or off, or read up to 128 entries. "
+                "on and off require PAUSE or a stopped debugger."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["on", "off", "read"]},
+                    "count": {"type": "integer", "minimum": 1, "maximum": 128},
+                },
+                "required": ["action"],
+            },
+        ),
+        Tool(
+            name="runtime_guest_output",
+            description=(
+                "Capture uaelib debug messages. on, off, and clear require PAUSE "
+                "or a stopped debugger. read works while the guest runs."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["on", "off", "read", "clear"],
+                    },
+                },
+                "required": ["action"],
+            },
+        ),
+        Tool(
+            name="runtime_process_break",
+            description=(
+                "Arm a one-shot stop at an AmigaDOS program entry by name or task address. "
+                "name, address, and clear require PAUSE or a stopped debugger."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["name", "address", "status", "clear"],
+                    },
+                    "name": {"type": "string"},
+                    "address": {"type": "integer"},
+                },
+                "required": ["action"],
+            },
+        ),
+        Tool(
+            name="runtime_input",
+            description=(
+                "Inject one keyboard, relative mouse, or joystick event, or release held input. "
+                "kind 0 is a key, 1 is a mouse axis, 2 is a joystick control. "
+                "input sequence is refused."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["event", "release", "status"],
+                    },
+                    "kind": {"type": "integer"},
+                    "port": {"type": "integer"},
+                    "code": {"type": "integer"},
+                    "value": {"type": "integer"},
+                },
+                "required": ["action"],
+            },
+        ),
+        Tool(
             name="runtime_quit",
             description="Ask the running Amiberry instance to quit through IPC. This is a graceful quit, not a process kill.",
             inputSchema={"type": "object", "properties": {}},
@@ -1879,7 +2111,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="runtime_debug_status",
-            description="Get debugger status (active/inactive).",
+            description="Get debugger status. reason is present only while stopped=1.",
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -4811,6 +5043,50 @@ async def _handle_runtime_help(arguments: Any) -> list:
     return await _ipc_call(_cb)
 
 
+_MONITOR_TOOLS = (
+    "runtime_execution_status",
+    "runtime_tasks",
+    "runtime_segments",
+    "runtime_memory",
+    "runtime_exception",
+    "runtime_watch",
+    "runtime_dma_watch",
+    "runtime_condition",
+    "runtime_history",
+    "runtime_guest_output",
+    "runtime_process_break",
+    "runtime_input",
+)
+
+
+async def _handle_runtime_monitor(arguments: Any) -> list:
+    """Send raw monitor text and return the result lines."""
+    text = validate_monitor_text(str(arguments.get("text", "")))
+
+    async def _cb(client):
+        lines = await client.monitor(text)
+        return format_reply(text, lines)
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_monitor_tool(tool: str, arguments: Any) -> list:
+    """Build, send, and format one typed monitor command."""
+    try:
+        command = build_tool_command(tool, arguments)
+    except MonitorError as exc:
+        return _text_result(f"Invalid argument: {exc}")
+    note = ""
+    if state_changing(tool, arguments.get("action")):
+        note = "\nRequires PAUSE or a stopped debugger."
+
+    async def _cb(client):
+        lines = await client.monitor(command)
+        return format_reply(command, lines) + note
+
+    return await _ipc_call(_cb)
+
+
 async def _handle_runtime_quit(arguments: Any) -> list:
     """Send IPC QUIT while holding the endpoint lifecycle transition."""
     async with _state.reset_endpoint_transition(_state.active_instance):
@@ -4891,6 +5167,8 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "runtime_send_text": _handle_runtime_send_text,
     "runtime_ping": partial(_handle_no_arg_bool, "runtime_ping"),
     "runtime_help": _handle_runtime_help,
+    "runtime_monitor": _handle_runtime_monitor,
+    **{name: partial(_handle_monitor_tool, name) for name in _MONITOR_TOOLS},
     "runtime_quit": _handle_runtime_quit,
     "set_active_instance": _handle_set_active_instance,
     "get_active_instance": _handle_get_active_instance,

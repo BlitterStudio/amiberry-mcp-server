@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from .monitor import apply_debug_status, parse_json_reply, validate_monitor_text
+
 _MAX_RESPONSE_SIZE = 1024 * 1024
 
 if not hasattr(asyncio, "open_unix_connection"):
@@ -1895,6 +1897,24 @@ class AmiberryIPCClient:
         success, data = await self._send_command("PING")
         return bool(success and data and data[0] == "PONG")
 
+    async def monitor(self, text: str) -> list[str]:
+        """Run one GDB monitor command and return the raw result lines.
+
+        The text is one IPC argument. D-Bus has no MONITOR command, so this
+        always uses the Unix socket. JSON replies are one line. ``disasm`` is
+        one line per instruction.
+        """
+        command = validate_monitor_text(text)
+        success, data = await self._send_socket_command("MONITOR", command)
+        if not success:
+            detail = data[0] if data else "MONITOR failed"
+            raise CommandError(detail)
+        return data
+
+    async def monitor_json(self, text: str) -> Any:
+        """Run a monitor command whose reply is one JSON line."""
+        return parse_json_reply(await self.monitor(text))
+
     async def help(self) -> list[str]:
         """Get the list of IPC commands Amiberry accepts.
 
@@ -2636,12 +2656,7 @@ class AmiberryIPCClient:
     # === ROUND 6 COMMANDS - Debugging and Diagnostics ===
 
     async def debug_activate(self) -> bool:
-        """
-        Activate the built-in debugger.
-
-        Returns:
-            True if successful
-        """
+        """Activate the built-in debugger."""
         success, _ = await self._send_command("DEBUG_ACTIVATE")
         return success
 
@@ -2656,17 +2671,16 @@ class AmiberryIPCClient:
         return success
 
     async def debug_status(self) -> dict[str, str] | None:
-        """
-        Get debugger status.
+        """Get debugger status.
 
-        Returns:
-            Dictionary with active status, or None on error
+        ``reason`` is included only when ``stopped`` is 1. It is the GDB stop
+        text for a monitor stop, or empty for another native stop.
         """
         success, data = await self._send_command("DEBUG_STATUS")
         if not success:
             return None
 
-        return _parse_kv_response(data)
+        return apply_debug_status(_parse_kv_response(data))
 
     async def debug_step(self, count: int = 1) -> bool:
         """
