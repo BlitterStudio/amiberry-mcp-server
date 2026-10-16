@@ -321,7 +321,7 @@ class TestKnownRomsDatabase:
 
     def test_known_roms_sizes(self):
         """Test that ROM sizes are valid."""
-        valid_sizes = {262144, 524288, 1048576}  # 256KB, 512KB, 1MB
+        valid_sizes = {65536, 131072, 262144, 524288, 1048576}
 
         for crc, info in KNOWN_ROMS.items():
             assert info["size"] in valid_sizes, (

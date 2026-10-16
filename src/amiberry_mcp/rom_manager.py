@@ -11,171 +11,473 @@ from typing import Any
 # Known Amiga ROM database (CRC32 -> ROM info)
 # These are the most common Kickstart ROMs
 KNOWN_ROMS = {
-    # Kickstart 1.2
+    # KS ROM v23.93 (Velvet)
+    "ADCB44C9": {
+        "version": "23.93",
+        "revision": "23.93",
+        "model": "VELVET",
+        "size": 131072,
+    },
+    # KS ROM v1.0 (A1000)(NTSC)
+    "299790FF": {
+        "version": "1.0",
+        "revision": "1.0",
+        "model": "A1000",
+        "size": 262144,
+    },
+    # KS ROM v1.1 (A1000)(NTSC)
+    "D060572A": {
+        "version": "1.1",
+        "revision": "31.34",
+        "model": "A1000",
+        "size": 262144,
+    },
+    # KS ROM v1.1 (A1000)(PAL)
+    "EC86DAE2": {
+        "version": "1.1",
+        "revision": "31.34",
+        "model": "A1000",
+        "size": 262144,
+    },
+    # KS ROM v1.2 (A1000)
+    "9ED783D0": {
+        "version": "1.2",
+        "revision": "33.166",
+        "model": "A1000",
+        "size": 262144,
+    },
+    # KS ROM v1.2 (A500,A1000,A2000)
     "A6CE1636": {
         "version": "1.2",
         "revision": "33.180",
         "model": "A500/A1000/A2000",
         "size": 262144,
     },
-    # Kickstart 1.3
+    # KS ROM v1.3 (A500,A1000,A2000)
     "C4F0F55F": {
         "version": "1.3",
         "revision": "34.5",
         "model": "A500/A1000/A2000",
         "size": 262144,
     },
-    "E40A5DFB": {
+    # KS ROM v1.3 (A3000)(SK)
+    "E0F37258": {
         "version": "1.3",
         "revision": "34.5",
-        "model": "A500/A1000/A2000 (alt)",
+        "model": "A3000",
         "size": 262144,
     },
-    # Kickstart 2.04
+    # KS ROM v1.4 (A3000)
+    "BC0EC13F": {
+        "version": "1.4",
+        "revision": "36.16",
+        "model": "A3000",
+        "size": 524288,
+    },
+    # KS ROM v2.04 (A500+)
     "C3BDB240": {
         "version": "2.04",
         "revision": "37.175",
         "model": "A500+",
         "size": 524288,
     },
-    # Kickstart 2.05
+    # KS ROM v2.05 (A600)
     "83028FB5": {
         "version": "2.05",
         "revision": "37.299",
         "model": "A600",
         "size": 524288,
     },
+    # KS ROM v2.05 (A600HD)
     "64466C2A": {
         "version": "2.05",
         "revision": "37.300",
-        "model": "A600HD",
+        "model": "A600HD/A600",
         "size": 524288,
     },
+    # KS ROM v2.05 (A600HD)
     "43B0DF7B": {
         "version": "2.05",
         "revision": "37.350",
-        "model": "A600HD",
+        "model": "A600HD/A600",
         "size": 524288,
     },
-    # Kickstart 3.0
+    # KS ROM v2.04 (A3000)
+    "234A7233": {
+        "version": "2.04",
+        "revision": "37.175",
+        "model": "A3000",
+        "size": 524288,
+    },
+    # KS ROM v3.0 (A1200)
     "6C9B07D2": {
         "version": "3.0",
         "revision": "39.106",
         "model": "A1200",
         "size": 524288,
     },
-    "FC24AE0D": {
+    # KS ROM v3.0 (A4000)
+    "9E6AC152": {
         "version": "3.0",
         "revision": "39.106",
         "model": "A4000",
         "size": 524288,
     },
-    # Kickstart 3.1
-    "1483A091": {
-        "version": "3.1",
-        "revision": "40.63",
-        "model": "A500/A600/A2000",
-        "size": 524288,
-    },
-    "D6BAE334": {
-        "version": "3.1",
-        "revision": "40.68",
-        "model": "A1200",
-        "size": 524288,
-    },
-    "B7CC148B": {
-        "version": "3.1",
-        "revision": "40.68",
-        "model": "A3000",
-        "size": 524288,
-    },
+    # KS ROM v3.1 (A4000)
     "2B4566F1": {
         "version": "3.1",
         "revision": "40.70",
         "model": "A4000",
         "size": 524288,
     },
-    "9E6AC152": {
+    # KS ROM v3.1 (A500,A600,A2000)
+    "FC24AE0D": {
+        "version": "3.1",
+        "revision": "40.63",
+        "model": "A500/A600/A2000",
+        "size": 524288,
+    },
+    # KS ROM v3.1 (A1200)
+    "1483A091": {
+        "version": "3.1",
+        "revision": "40.68",
+        "model": "A1200",
+        "size": 524288,
+    },
+    # KS ROM v3.1 (A3000)
+    "EFB239CC": {
+        "version": "3.1",
+        "revision": "40.68",
+        "model": "A3000",
+        "size": 524288,
+    },
+    # KS ROM v3.1 (A4000)(Cloanto)
+    "43B6DD22": {
+        "version": "3.1",
+        "revision": "40.68",
+        "model": "A4000",
+        "size": 524288,
+    },
+    # KS ROM v3.1 (A4000)
+    "D6BAE334": {
+        "version": "3.1",
+        "revision": "40.68",
+        "model": "A4000",
+        "size": 524288,
+    },
+    # KS ROM v3.1 (A4000T)
+    "75932C3A": {
         "version": "3.1",
         "revision": "40.70",
         "model": "A4000T",
         "size": 524288,
     },
-    # Kickstart 3.1.4
-    "AFE0A9C3": {
-        "version": "3.1.4",
-        "revision": "46.143",
-        "model": "A500/A600/A2000",
+    # KS ROM v3.X (A4000)(Cloanto)
+    "3AC99EDC": {
+        "version": "3.10",
+        "revision": "45.57",
+        "model": "A4000",
         "size": 524288,
     },
+    # KS ROM v3.1.4-1 (A1200)
+    "F17FA97F": {
+        "version": "3.1.4",
+        "revision": "46.143",
+        "model": "A1200",
+        "size": 524288,
+    },
+    # KS ROM v3.1.4-1 (A3000)
+    "50C3529C": {
+        "version": "3.1.4",
+        "revision": "46.143",
+        "model": "A3000",
+        "size": 524288,
+    },
+    # KS ROM v3.1.4-1 (A4000)
+    "D47E18FD": {
+        "version": "3.1.4",
+        "revision": "46.143",
+        "model": "A4000",
+        "size": 524288,
+    },
+    # KS ROM v3.1.4-1 (A4000T)
+    "75A2B2A5": {
+        "version": "3.1.4",
+        "revision": "46.143",
+        "model": "A4000T",
+        "size": 524288,
+    },
+    # KS ROM v3.1.4-1 (A500)
     "D52B52FD": {
         "version": "3.1.4",
         "revision": "46.143",
+        "model": "A500",
+        "size": 524288,
+    },
+    # KS ROM v3.1.4-2 (A1200)
+    "B87506A7": {
+        "version": "3.1.4",
+        "revision": "46.143",
         "model": "A1200",
         "size": 524288,
     },
-    "FCA4B7E2": {
+    # KS ROM v3.1.4-2 (A3000)
+    "BA35F8EB": {
         "version": "3.1.4",
         "revision": "46.143",
         "model": "A3000",
         "size": 524288,
     },
-    "C3C48116": {
+    # KS ROM v3.1.4-2 (A4000)
+    "1B84CB33": {
         "version": "3.1.4",
         "revision": "46.143",
-        "model": "A4000/A4000T",
+        "model": "A4000",
         "size": 524288,
     },
-    # Kickstart 3.2
-    "C96B41EA": {
-        "version": "3.2",
-        "revision": "47.96",
-        "model": "A500/A600/A2000",
+    # KS ROM v3.1.4-2 (A4000T)
+    "D6D0EF3E": {
+        "version": "3.1.4",
+        "revision": "46.143",
+        "model": "A4000T",
         "size": 524288,
     },
-    "26D37C36": {
+    # KS ROM v3.1.4-2 (A500)
+    "568F8786": {
+        "version": "3.1.4",
+        "revision": "46.143",
+        "model": "A500",
+        "size": 524288,
+    },
+    # KS ROM v3.2 (A1200)
+    "BD1FF75E": {
         "version": "3.2",
         "revision": "47.96",
         "model": "A1200",
         "size": 524288,
     },
-    "F2BA9D52": {
+    # KS ROM v3.2 (A3000)
+    "F3AF46CC": {
         "version": "3.2",
         "revision": "47.96",
         "model": "A3000",
         "size": 524288,
     },
-    "5BB85713": {
+    # KS ROM v3.2 (A4000)
+    "9BB8FC93": {
         "version": "3.2",
         "revision": "47.96",
-        "model": "A4000/A4000T",
+        "model": "A4000",
         "size": 524288,
     },
-    # CD32 / CDTV
-    "1E5C4FE2": {
+    # KS ROM v3.2 (A4000T)
+    "9188A509": {
+        "version": "3.2",
+        "revision": "47.96",
+        "model": "A4000T",
+        "size": 524288,
+    },
+    # KS ROM v3.2 (A500/A600/A2000/A1000/CDTV)
+    "8173D7B6": {
+        "version": "3.2",
+        "revision": "47.96",
+        "model": "A500",
+        "size": 524288,
+    },
+    # KS ROM v3.2.1 (A1200)
+    "2B653371": {
+        "version": "3.2.1",
+        "revision": "47.102",
+        "model": "A1200",
+        "size": 524288,
+    },
+    # KS ROM v3.2.1 (A3000)
+    "0078F607": {
+        "version": "3.2.1",
+        "revision": "47.102",
+        "model": "A3000",
+        "size": 524288,
+    },
+    # KS ROM v3.2.1 (A4000)
+    "F3CED3B8": {
+        "version": "3.2.1",
+        "revision": "47.102",
+        "model": "A4000",
+        "size": 524288,
+    },
+    # KS ROM v3.2.1 (A4000T)
+    "AF3452EC": {
+        "version": "3.2.1",
+        "revision": "47.102",
+        "model": "A4000T",
+        "size": 524288,
+    },
+    # KS ROM v3.2.1 (A500/A600/A2000/A1000/CDTV)
+    "4F078456": {
+        "version": "3.2.1",
+        "revision": "47.102",
+        "model": "A500",
+        "size": 524288,
+    },
+    # KS ROM v3.2.2 (A1200)
+    "5C40328A": {
+        "version": "3.2.2",
+        "revision": "47.111",
+        "model": "A1200",
+        "size": 524288,
+    },
+    # KS ROM v3.2.2 (A3000)
+    "46335B57": {
+        "version": "3.2.2",
+        "revision": "47.111",
+        "model": "A3000",
+        "size": 524288,
+    },
+    # KS ROM v3.2.2 (A4000)
+    "4BEA9798": {
+        "version": "3.2.2",
+        "revision": "47.111",
+        "model": "A4000",
+        "size": 524288,
+    },
+    # KS ROM v3.2.2 (A4000T)
+    "36BBCD8A": {
+        "version": "3.2.2",
+        "revision": "47.111",
+        "model": "A4000T",
+        "size": 524288,
+    },
+    # KS ROM v3.2.2 (A500/A600/A2000/A1000/CDTV)
+    "E4458462": {
+        "version": "3.2.2",
+        "revision": "47.111",
+        "model": "A500",
+        "size": 524288,
+    },
+    # KS ROM v3.2.3 (A1200)
+    "B18D3B67": {
+        "version": "3.2.3",
+        "revision": "47.115",
+        "model": "A1200",
+        "size": 524288,
+    },
+    # KS ROM v3.2.3 (A3000)
+    "74C0B23F": {
+        "version": "3.2.3",
+        "revision": "47.115",
+        "model": "A3000",
+        "size": 524288,
+    },
+    # KS ROM v3.2.3 (A4000)
+    "B6A4698E": {
+        "version": "3.2.3",
+        "revision": "47.115",
+        "model": "A4000",
+        "size": 524288,
+    },
+    # KS ROM v3.2.3 (A4000T)
+    "588A5E6D": {
+        "version": "3.2.3",
+        "revision": "47.115",
+        "model": "A4000T",
+        "size": 524288,
+    },
+    # KS ROM v3.2.3 (A500/A600/A2000/A1000/CDTV)
+    "E1F50B0B": {
+        "version": "3.2.3",
+        "revision": "47.115",
+        "model": "A500",
+        "size": 524288,
+    },
+    # KS ROM v3.2 (Walker)
+    "261339F8": {
+        "version": "3.2",
+        "revision": "43.1",
+        "model": "WALKER",
+        "size": 524288,
+    },
+    # Casablanca 74095 - 00 717 - 02
+    "2EC384E3": {
+        "version": "3.1",
+        "revision": "0.0",
+        "model": "CASABLANCA",
+        "size": 1048576,
+    },
+    # CD32 KS ROM v3.1
+    "1E62D4A5": {
         "version": "3.1",
         "revision": "40.60",
         "model": "CD32",
         "size": 524288,
     },
-    "3525BE88": {
-        "version": "CD32",
-        "revision": "ext",
-        "model": "CD32 Extended",
+    # CD32 extended ROM
+    "87746BE2": {
+        "version": "3.1",
+        "revision": "40.60",
+        "model": "CD32",
         "size": 524288,
     },
-    "8D28A7D9": {"version": "1.0", "revision": "1.0", "model": "CDTV", "size": 262144},
-    "7BA40FFA": {
-        "version": "2.30",
-        "revision": "2.30",
-        "model": "CDTV Extended",
+    # CD32 ROM (KS + extended)
+    "F5D4F3C8": {
+        "version": "3.1",
+        "revision": "40.60",
+        "model": "CD32",
+        "size": 1048576,
+    },
+    # CDTV extended ROM v1.0
+    "42BAA124": {
+        "version": "1.0",
+        "revision": "1.0",
+        "model": "CDTV",
         "size": 262144,
     },
-    # AROS
-    "E4FED7D0": {
-        "version": "AROS",
-        "revision": "ROM",
-        "model": "AROS Kickstart replacement",
+    # CDTV extended ROM v2.7
+    "CEAE68D2": {
+        "version": "2.7",
+        "revision": "2.7",
+        "model": "CDTV",
+        "size": 262144,
+    },
+    # CDTV/A570 extended ROM v2.30
+    "30B54232": {
+        "version": "2.30",
+        "revision": "2.30",
+        "model": "CDTV",
+        "size": 262144,
+    },
+    # CDTV extended ROM v47.1
+    "AB6274E7": {
+        "version": "47.1",
+        "revision": "47.96",
+        "model": "CDTV",
+        "size": 262144,
+    },
+    # CDTV-CR extended ROM v3.32
+    "581A85CF": {
+        "version": "3.32",
+        "revision": "3.32",
+        "model": "CDTVCR",
+        "size": 262144,
+    },
+    # CDTV-CR extended ROM v3.44
+    "0B7BD64F": {
+        "version": "3.44",
+        "revision": "3.44",
+        "model": "CDTVCR",
+        "size": 262144,
+    },
+    # A1000 bootstrap ROM
+    "0B1AD2D0": {
+        "version": "0.0",
+        "revision": "0.0",
+        "model": "A1000",
+        "size": 65536,
+    },
+    # The Diagnostic 2.0 (Logica)
+    "8484F426": {
+        "version": "2.0",
+        "revision": "2.0",
+        "model": "LOGICA",
         "size": 524288,
     },
 }

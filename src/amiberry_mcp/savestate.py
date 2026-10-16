@@ -7,9 +7,13 @@ import struct
 from pathlib import Path
 from typing import Any
 
-# ASF file format constants
-ASF_MAGIC = b"ASF "  # AmigaStateFile header
-CHUNK_HEADER_SIZE = 8  # 4 bytes name + 4 bytes size
+# Amiberry writes UAE IFF chunks: 4-byte name, 4-byte size, 4-byte flags,
+# then payload. The size includes those 12 header bytes and excludes the
+# 1-4 byte alignment padding that follows the payload. END is the older
+# 8-byte marker (name + size 8) with no flags.
+ASF_MAGIC = b"ASF "
+CHUNK_HEADER_SIZE = 12
+END_CHUNK_SIZE = 8
 
 # Pre-compiled struct formats to avoid repeated format string parsing
 _STRUCT_U32_BE = struct.Struct(">I")
@@ -39,48 +43,63 @@ def _read_string(data: bytes, offset: int) -> tuple[str, int]:
     return string, end - offset + 1
 
 
-def _parse_header(data: bytes) -> tuple[dict[str, Any], int]:
-    """Parse the ASF header and return (metadata_dict, offset_to_first_chunk).
+def _chunk_padding(payload_len: int) -> int:
+    """Return the 1-4 alignment bytes Amiberry writes after a payload."""
+    return 4 - (payload_len & 3)
 
-    Validates the magic header and reads version + 3 null-terminated strings
-    (emulator name, version, description).
+
+def _decode_chunk_payload(
+    data: bytes, start: int, chunk_size: int
+) -> tuple[bytes, int]:
+    """Return the payload and the on-disk payload length used for padding.
+
+    ``start`` is the offset of the chunk name. Compressed chunks (flags bit 0)
+    store an uncompressed length and a zlib payload.
     """
-    if len(data) < 4 or data[:4] != ASF_MAGIC:
-        raise ValueError("Invalid savestate file: missing ASF header")
+    flags = _read_u32_be(data, start + 8)
+    body_len = chunk_size - CHUNK_HEADER_SIZE
+    body = data[start + CHUNK_HEADER_SIZE : start + chunk_size]
+    if flags & 1:
+        if len(body) < 4:
+            return b"", 0
+        import zlib
 
+        stored = body[4:]
+        try:
+            payload = zlib.decompress(stored)
+        except zlib.error:
+            payload = b""
+        return payload, len(stored)
+    return body[:body_len], body_len
+
+
+def _parse_asf_payload(payload: bytes) -> dict[str, Any]:
+    """Parse the ASF payload: version and three null-terminated strings."""
     metadata: dict[str, Any] = {}
+    if len(payload) < 4:
+        return metadata
+    metadata["version"] = _read_u32_be(payload, 0)
     offset = 4
-
-    # Version (4 bytes)
-    if offset + 4 <= len(data):
-        metadata["version"] = _read_u32_be(data, offset)
-        offset += 4
-
-    # Emulator name
-    if offset < len(data):
-        emulator, consumed = _read_string(data, offset)
+    for key in ("emulator", "emulator_version", "description"):
+        if offset >= len(payload):
+            break
+        text, consumed = _read_string(payload, offset)
         if consumed == 0:
-            return metadata, offset
-        metadata["emulator"] = emulator
+            break
+        metadata[key] = text
         offset += consumed
+    return metadata
 
-    # Emulator version
-    if offset < len(data):
-        emu_version, consumed = _read_string(data, offset)
-        if consumed == 0:
-            return metadata, offset
-        metadata["emulator_version"] = emu_version
-        offset += consumed
 
-    # Description
-    if offset < len(data):
-        description, consumed = _read_string(data, offset)
-        if consumed == 0:
-            return metadata, offset
-        metadata["description"] = description
-        offset += consumed
-
-    return metadata, offset
+def _parse_header(data: bytes) -> tuple[dict[str, Any], int]:
+    """Parse the leading ASF chunk and return metadata plus the next offset."""
+    if len(data) < CHUNK_HEADER_SIZE or data[:4] != ASF_MAGIC:
+        raise ValueError("Invalid savestate file: missing ASF header")
+    chunk_size = _read_u32_be(data, 4)
+    if chunk_size < CHUNK_HEADER_SIZE or chunk_size > len(data):
+        raise ValueError("Invalid savestate file: truncated ASF chunk")
+    payload, on_disk = _decode_chunk_payload(data, 0, chunk_size)
+    return _parse_asf_payload(payload), chunk_size + _chunk_padding(on_disk)
 
 
 def inspect_savestate(path: Path) -> dict[str, Any]:
@@ -123,15 +142,25 @@ def inspect_savestate(path: Path) -> dict[str, Any]:
     memory_info = {"chip": 0, "bogo": 0, "fast": 0, "z3": 0}
     disk_info = []
 
-    while offset + CHUNK_HEADER_SIZE <= len(data):
+    end_markers = 0
+    while offset + END_CHUNK_SIZE <= len(data):
         chunk_name = data[offset : offset + 4].decode("latin-1", errors="replace")
         chunk_size = _read_u32_be(data, offset + 4)
-
-        if chunk_size < CHUNK_HEADER_SIZE or chunk_size > len(data) - offset:
+        if chunk_size < END_CHUNK_SIZE or offset + chunk_size > len(data):
             break
-
-        chunk_data = data[offset + CHUNK_HEADER_SIZE : offset + chunk_size]
+        if chunk_size == END_CHUNK_SIZE:
+            chunks.append({"name": chunk_name, "size": chunk_size})
+            offset += END_CHUNK_SIZE
+            if chunk_name == "END ":
+                end_markers += 1
+                if end_markers >= 2:
+                    break
+            continue
+        if chunk_size < CHUNK_HEADER_SIZE:
+            break
+        chunk_data, on_disk = _decode_chunk_payload(data, offset, chunk_size)
         chunks.append({"name": chunk_name, "size": chunk_size})
+        offset += chunk_size + _chunk_padding(on_disk)
 
         # Parse specific chunks
         if chunk_name == "CPU " and len(chunk_data) >= 8:
@@ -200,9 +229,7 @@ def inspect_savestate(path: Path) -> dict[str, Any]:
                 disk_info.append(drive_info)
 
         elif chunk_name == "END ":
-            break
-
-        offset += chunk_size
+            continue
 
     # Add parsed info to metadata
     if cpu_info:
@@ -310,13 +337,27 @@ def list_savestate_chunks(path: Path) -> list[dict[str, Any]]:
     _, offset = _parse_header(data)
 
     chunks = []
-    while offset + CHUNK_HEADER_SIZE <= len(data):
+    while offset + END_CHUNK_SIZE <= len(data):
         chunk_name = data[offset : offset + 4].decode("latin-1", errors="replace")
         chunk_size = _read_u32_be(data, offset + 4)
-
-        if chunk_size < CHUNK_HEADER_SIZE or chunk_size > len(data) - offset:
+        if chunk_size < END_CHUNK_SIZE or offset + chunk_size > len(data):
             break
-
+        if chunk_size == END_CHUNK_SIZE:
+            chunks.append(
+                {
+                    "name": chunk_name,
+                    "offset": offset,
+                    "size": chunk_size,
+                    "data_size": 0,
+                }
+            )
+            offset += END_CHUNK_SIZE
+            if chunk_name == "END ":
+                break
+            continue
+        if chunk_size < CHUNK_HEADER_SIZE:
+            break
+        _, on_disk = _decode_chunk_payload(data, offset, chunk_size)
         chunks.append(
             {
                 "name": chunk_name,
@@ -325,10 +366,8 @@ def list_savestate_chunks(path: Path) -> list[dict[str, Any]]:
                 "data_size": chunk_size - CHUNK_HEADER_SIZE,
             }
         )
-
+        offset += chunk_size + _chunk_padding(on_disk)
         if chunk_name == "END ":
             break
-
-        offset += chunk_size
 
     return chunks

@@ -280,12 +280,12 @@ class TestGetConfigSummary:
 
     def test_summary_memory_info(self):
         """Test memory info in summary."""
-        config = {"chipmem_size": "4", "fastmem_size": "8192"}
+        config = {"chipmem_size": "4", "fastmem_size": "8"}
 
         summary = get_config_summary(config)
 
-        assert summary["memory"]["chip_kb"] == 2048  # 4 * 512
-        assert summary["memory"]["fast_kb"] == 8192  # Already in KB
+        assert summary["memory"]["chip_kb"] == 2048  # 4 * 512KB
+        assert summary["memory"]["fast_kb"] == 8192  # 8MB
 
     def test_summary_floppy_info(self):
         """Test floppy info in summary."""

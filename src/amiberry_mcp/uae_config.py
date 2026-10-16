@@ -251,13 +251,23 @@ def get_config_summary(config: dict[str, str]) -> dict[str, Any]:
         "24bit": config.get("cpu_24bit_addressing", "false") == "true",
     }
 
-    # Memory
+    # chipmem_size is in 512KB units, except 0 (256KB) and negative (128KB).
+    # fastmem_size is in megabytes; fastmem_size_k is in kilobytes.
     try:
-        chip_size = int(config.get("chipmem_size", "1")) * 512  # In KB
+        chip_units = int(config.get("chipmem_size", "1"))
+        if chip_units < 0:
+            chip_size = 128
+        elif chip_units == 0:
+            chip_size = 256
+        else:
+            chip_size = chip_units * 512
     except (ValueError, TypeError):
         chip_size = 512
     try:
-        fast_size = int(config.get("fastmem_size", "0"))  # Already in KB
+        if "fastmem_size_k" in config:
+            fast_size = int(config["fastmem_size_k"])
+        else:
+            fast_size = int(config.get("fastmem_size", "0")) * 1024
     except (ValueError, TypeError):
         fast_size = 0
     summary["memory"] = {
@@ -265,7 +275,6 @@ def get_config_summary(config: dict[str, str]) -> dict[str, Any]:
         "fast_kb": fast_size,
     }
 
-    # Chipset
     chipset = config.get("chipset", "ocs")
     summary["chipset"] = chipset.upper()
 
@@ -413,7 +422,7 @@ def _get_a4000_template() -> dict[str, str]:
         "chipset_compatible": "A4000",
         "chipmem_size": "4",  # 2MB
         "bogomem_size": "0",
-        "fastmem_size": "8192",  # 8MB
+        "fastmem_size": "8",  # 8MB
         "nr_floppies": "1",
         "floppy_speed": "100",
         "floppy0type": "0",
