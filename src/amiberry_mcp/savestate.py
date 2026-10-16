@@ -197,21 +197,16 @@ def inspect_savestate(path: Path) -> dict[str, Any]:
                 if rom_id:
                     rom_info["id"] = rom_id
 
-        elif chunk_name == "CRAM" and len(chunk_data) >= 8:
-            # Chip RAM
-            memory_info["chip"] = _read_u32_be(chunk_data, 4)
-
-        elif chunk_name == "BRAM" and len(chunk_data) >= 8:
-            # Bogo/Slow RAM
-            memory_info["bogo"] = _read_u32_be(chunk_data, 4)
-
-        elif chunk_name == "FRAM" and len(chunk_data) >= 8:
-            # Fast RAM
-            memory_info["fast"] = _read_u32_be(chunk_data, 4)
-
-        elif chunk_name == "ZRAM" and len(chunk_data) >= 8:
-            # Z3 RAM
-            memory_info["z3"] = _read_u32_be(chunk_data, 4)
+        elif chunk_name in ("CRAM", "BRAM", "FRAM", "ZRAM"):
+            # The payload is the RAM bank. Amiberry restores the size from
+            # the uncompressed length, not from an integer inside the bank.
+            key = {
+                "CRAM": "chip",
+                "BRAM": "bogo",
+                "FRAM": "fast",
+                "ZRAM": "z3",
+            }[chunk_name]
+            memory_info[key] += len(chunk_data)
 
         elif chunk_name.startswith("DSK") and len(chunk_data) >= 8:
             # Floppy drive info

@@ -4,6 +4,7 @@ Unit tests for the savestate module.
 """
 
 import struct
+import zlib
 from pathlib import Path
 
 import pytest
@@ -107,7 +108,9 @@ class TestInspectSavestate:
         data = _asf_chunk(0, "UAE", "8.4.1", "CPU test")
         data += _iff_chunk(b"CPU ", struct.pack(">II", 20, 0))
         data += _iff_chunk(b"CHIP", struct.pack(">I", 4))
-        data += _iff_chunk(b"CRAM", struct.pack(">II", 0, 2097152))
+        # Bytes 4-7 look like a size field. They are RAM contents.
+        ram = b"\x00\x00\x00\x00\xff\xff\xff\xff" + (b"\x00" * (1024 - 8))
+        data += _iff_chunk(b"CRAM", ram)
         data += b"END " + struct.pack(">I", 8)
         path.write_bytes(data)
         return path
@@ -136,7 +139,26 @@ class TestInspectSavestate:
         assert metadata["cpu"]["chipset"] == "AGA"
 
         assert "memory" in metadata
-        assert metadata["memory"]["chip"] == 2048  # 2MB in KB
+        assert metadata["memory"]["chip"] == 1  # payload length, not offset 4
+
+    def test_compressed_ram_uses_uncompressed_length(self, tmp_path):
+        """A zlib RAM bank reports the bank size, not the compressed size."""
+        bank = b"\xff" * 2048
+        stored = struct.pack(">I", len(bank)) + zlib.compress(bank)
+        size = 12 + len(stored)
+        pad = 4 - (len(stored) & 3)
+        chunk = b"FRAM" + struct.pack(">II", size, 1) + stored + (b"\x00" * pad)
+        path = tmp_path / "fast.uss"
+        path.write_bytes(
+            _asf_chunk(0, "UAE", "8.4.1", "fast")
+            + chunk
+            + b"END "
+            + struct.pack(">I", 8)
+        )
+
+        metadata = inspect_savestate(path)
+
+        assert metadata["memory"]["fast"] == 2
 
     def test_inspect_nonexistent_file(self, tmp_path):
         """Test inspecting a file that doesn't exist."""
