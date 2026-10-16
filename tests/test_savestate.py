@@ -106,7 +106,8 @@ class TestInspectSavestate:
         """Create a savestate with CPU, chipset, and chip-RAM chunks."""
         path = Path(tmpdir) / "cpu.uss"
         data = _asf_chunk(0, "UAE", "8.4.1", "CPU test")
-        data += _iff_chunk(b"CPU ", struct.pack(">II", 20, 0))
+        data += _iff_chunk(b"CPU ", struct.pack(">II", 68020, 0))
+        data += _iff_chunk(b"FPU ", struct.pack(">I", 68881))
         data += _iff_chunk(b"CHIP", struct.pack(">I", 4))
         # Bytes 4-7 look like a size field. They are RAM contents.
         ram = b"\x00\x00\x00\x00\xff\xff\xff\xff" + (b"\x00" * (1024 - 8))
@@ -136,10 +137,25 @@ class TestInspectSavestate:
 
         assert "cpu" in metadata
         assert metadata["cpu"]["model"] == "68020"
-        assert metadata["cpu"]["chipset"] == "AGA"
+        assert metadata["cpu"]["fpu"] == "68881"
 
         assert "memory" in metadata
         assert metadata["memory"]["chip"] == 1  # payload length, not offset 4
+
+    def test_cpu_and_fpu_numbers_are_not_prefixed(self, tmp_path):
+        """A raw 68020 must not become 6868020, and FPU 0 is none."""
+        path = tmp_path / "models.uss"
+        data = _asf_chunk(0, "UAE", "8.4.1", "models")
+        data += _iff_chunk(b"CPU ", struct.pack(">II", 68020, 0))
+        data += _iff_chunk(b"FPU ", struct.pack(">I", 0))
+        data += b"END " + struct.pack(">I", 8)
+        path.write_bytes(data)
+
+        metadata = inspect_savestate(path)
+
+        assert metadata["cpu"]["model"] == "68020"
+        assert metadata["cpu"]["fpu"] == "none"
+        assert "FPU" not in get_savestate_summary(metadata)
 
     def test_compressed_ram_uses_uncompressed_length(self, tmp_path):
         """A zlib RAM bank reports the bank size, not the compressed size."""

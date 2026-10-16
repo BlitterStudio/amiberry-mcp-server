@@ -165,13 +165,14 @@ def inspect_savestate(path: Path) -> dict[str, Any]:
         # Parse specific chunks
         if chunk_name == "CPU " and len(chunk_data) >= 8:
             cpu_model = _read_u32_be(chunk_data, 0)
-            cpu_info["model"] = f"68{cpu_model:03d}"
+            # save_cpu() writes currprefs.cpu_model (68000, 68020, ...).
+            cpu_info["model"] = str(cpu_model)
             cpu_info["flags"] = _read_u32_be(chunk_data, 4)
 
         elif chunk_name == "FPU " and len(chunk_data) >= 4:
             fpu_model = _read_u32_be(chunk_data, 0)
-            if fpu_model > 0:
-                cpu_info["fpu"] = f"68{fpu_model:03d}"
+            # save_fpu() writes currprefs.fpu_model. 0 means no FPU.
+            cpu_info["fpu"] = "none" if fpu_model == 0 else str(fpu_model)
 
         elif chunk_name == "CHIP" and len(chunk_data) >= 4:
             chipset_flags = _read_u32_be(chunk_data, 0)
@@ -268,8 +269,9 @@ def get_savestate_summary(metadata: dict[str, Any]) -> str:
     if "cpu" in metadata:
         cpu = metadata["cpu"]
         cpu_str = cpu.get("model", "Unknown")
-        if cpu.get("fpu"):
-            cpu_str += f" + {cpu['fpu']} FPU"
+        fpu = cpu.get("fpu")
+        if fpu and fpu != "none":
+            cpu_str += f" + {fpu} FPU"
         if cpu.get("chipset"):
             cpu_str += f" ({cpu['chipset']})"
         lines.append(f"CPU: {cpu_str}")
