@@ -71,9 +71,10 @@ amiberry-mcp-server/
 │       ├── config.py          # Platform detection and paths
 │       ├── common.py          # Shared helpers (launch, scan, validation)
 │       ├── shared_state.py    # Process state, IPC client caching, launch helpers
-│       ├── server.py          # MCP server (137 tools, data-driven dispatch)
+│       ├── server.py          # MCP server (150 tools, data-driven dispatch)
 │       ├── http_server.py     # HTTP API server (FastAPI)
 │       ├── ipc_client.py      # IPC client with persistent connections
+│       ├── monitor.py         # MONITOR command builders and reply parsing
 │       ├── gui_automation.py  # Screenshot capture registry and GUI action service
 │       ├── uae_config.py      # Config file parser/generator
 │       ├── savestate.py       # Savestate metadata parser
@@ -230,7 +231,7 @@ from an older tree are not missed.
 
 ## Available MCP Tools
 
-The server exposes 137 tools. Names starting with `runtime_` act on a running
+The server exposes 150 tools. Names starting with `runtime_` act on a running
 emulation over IPC; the rest work on files and processes.
 
 ### Core Tools
@@ -452,6 +453,44 @@ emulation over IPC; the rest work on files and processes.
 | `runtime_help` | List IPC commands the running Amiberry accepts |
 | `runtime_quit` | Ask Amiberry to quit over IPC (not a process kill) |
 | `check_ipc_connection` | Check IPC availability |
+
+#### Debugger monitor
+`MONITOR` runs the GDB monitor command set without a GDB client. Typed tools
+build the command, check arguments, and parse the JSON reply. A raw
+`runtime_monitor` tool sends one command string. HTTP exposes the same raw
+command as `POST /runtime/debug/monitor`.
+
+Read-only queries work while the guest runs, except guest-RAM reads when
+`cpu_threaded=true`. These actions change debugger state and need `PAUSE` or
+a stopped native debugger: watch add/range/remove/clear-events, DMA watch
+add/remove, condition add/remove, exception mask, history on/off, guest-output
+on/off/clear, and process-break name/address/clear. A watch, exception, or
+process entry stops in the native debugger. `runtime_debug_status` then reports
+`stopped=1` and `reason=` (`T05awatch:...`, `T05winuae-exception:...`,
+`T05winuae-entry:...`). `DEBUG_CONTINUE` resumes. `step-over`, `checkpoint`,
+and `input sequence` are refused.
+
+| Tool | Actions |
+|------|---------|
+| `runtime_monitor` | Raw monitor text |
+| `runtime_execution_status` | CPU, pause, frame, and beam |
+| `runtime_tasks` | Exec task lists |
+| `runtime_segments` | AmigaDOS segments |
+| `runtime_memory` | `map`, `check` |
+| `runtime_exception` | `status`, `mask` |
+| `runtime_watch` | `add`, `range`, `list`, `remove`, `events`, `last`, `clear-events` |
+| `runtime_dma_watch` | `add`, `list`, `remove` |
+| `runtime_condition` | `add`, `list`, `remove` |
+| `runtime_history` | `on`, `off`, `read` |
+| `runtime_guest_output` | `on`, `off`, `read`, `clear` |
+| `runtime_process_break` | `name`, `address`, `status`, `clear` |
+| `runtime_input` | `event`, `release`, `status` |
+
+Watch `add` and `range` take nine fields: address, size, access, source mask,
+value enabled, value, value mask, change-only, and log-only. Numbers are
+hexadecimal. Access is 1 read, 2 write, 3 both; a range may also set bit 2
+for instruction fetch. Change-only requires a write. An exact watch cannot
+include the CPU instruction source.
 
 ### Process Lifecycle Management
 | Tool | Description |

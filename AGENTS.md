@@ -8,9 +8,9 @@ Python 3.10+ project using `hatchling` build system with `ruff` for linting/form
 **Source layout**: `src/amiberry_mcp/` (package), `tests/` (flat test dir), `scripts/` (shell installers).
 
 Key modules:
-- `server.py` — MCP server with 137 tools, data-driven handler dispatch (~4900 lines)
-- `http_server.py` — FastAPI REST API with endpoint factories (~3900 lines)
-- `ipc_client.py` — Unix socket / D-Bus IPC client with persistent connections (~2900 lines)
+- `server.py` — MCP server with 150 tools, data-driven handler dispatch (~5200 lines)
+- `http_server.py` — FastAPI REST API with endpoint factories (~4000 lines)
+- `ipc_client.py` — Unix socket / D-Bus IPC client with persistent connections (~2900 lines). `monitor()` is socket-only.
 - `gui_automation.py` — Screenshot-driven GUI action service: owns the action contract,
   screenshot-pixel translation, and the readiness/input/cleanup transaction (~1600 lines)
 - `shared_state.py` — Process state, IPC client caching, capture registry, launch helpers

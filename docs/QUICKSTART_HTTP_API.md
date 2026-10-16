@@ -264,6 +264,7 @@ rest_command:
 | `/logs/wait-for-pattern` | POST | Wait for regex in logs |
 | `/runtime/debug/activate` | POST | Activate debugger |
 | `/runtime/debug/step` | POST | Step one instruction |
+| `/runtime/debug/monitor` | POST | GDB monitor command (`{"text":"tasks"}`). Pause before state changes. |
 | `/runtime/cpu/regs` | GET | CPU register values |
 
 ## Files
