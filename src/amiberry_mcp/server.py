@@ -238,6 +238,13 @@ _ARG_BOOL_HANDLERS: dict[str, tuple[str, tuple[str, ...], dict[str, Any], str, s
         "Inserted CD: {image_name}",
         "Failed to insert CD.",
     ),
+    "runtime_disk_swap": (
+        "disk_swap",
+        ("disk_num", "drive"),
+        {},
+        "Swapped disk {disk_num} into DF{drive}:.",
+        "Failed to swap disk {disk_num} into DF{drive}:.",
+    ),
     "runtime_set_config": (
         "set_config",
         ("option", "value"),
@@ -335,13 +342,6 @@ _ARG_BOOL_HANDLERS: dict[str, tuple[str, tuple[str, ...], dict[str, Any], str, s
         {"count": 1},
         "Stepped {count} instruction(s).",
         "Failed to step. Debugger may not be active.",
-    ),
-    "runtime_set_breakpoint": (
-        "set_breakpoint",
-        ("address",),
-        {},
-        "Breakpoint set at {address}.",
-        "Failed to set breakpoint. Maximum 20 breakpoints allowed.",
     ),
     "runtime_load_config": (
         "load_config",
@@ -928,6 +928,44 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="runtime_disk_swap",
+            description="Insert a disk from the swapper list into a floppy drive. Requires Amiberry to be running with IPC enabled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "disk_num": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 19,
+                        "description": "Index in the disk swapper list (0-19)",
+                    },
+                    "drive": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 3,
+                        "description": "Target floppy drive (0-3)",
+                    },
+                },
+                "required": ["disk_num", "drive"],
+            },
+        ),
+        Tool(
+            name="runtime_query_disk_swap",
+            description="Query which swapper-list disk is in a floppy drive. -1 means the inserted disk is not from the swapper. Requires IPC.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "drive": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 3,
+                        "description": "Floppy drive number (0-3)",
+                    }
+                },
+                "required": ["drive"],
+            },
+        ),
+        Tool(
             name="get_runtime_status",
             description="Get the current status of a running Amiberry emulation (paused state, loaded config, mounted disks). Requires Amiberry to be running with IPC enabled.",
             inputSchema={
@@ -1195,6 +1233,16 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {},
             },
+        ),
+        Tool(
+            name="runtime_help",
+            description="List the IPC commands the running Amiberry instance accepts.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="runtime_quit",
+            description="Ask the running Amiberry instance to quit through IPC. This is a graceful quit, not a process kill.",
+            inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
             name="set_active_instance",
@@ -1901,6 +1949,12 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Memory address (hex e.g., '0x400' or decimal)",
                     },
+                    "slot": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 19,
+                        "description": "Breakpoint slot (0-19). Omit to use the first free slot.",
+                    },
                 },
                 "required": ["address"],
             },
@@ -2308,10 +2362,10 @@ async def _handle_get_platform_info(arguments: Any) -> list:
 
 async def _handle_list_configs(arguments: Any) -> list:
     """Handle list_configs tool."""
+
     def _scan_configs():
         return [
-            (name, source, str(path))
-            for name, source, path in _iter_config_files()
+            (name, source, str(path)) for name, source, path in _iter_config_files()
         ]
 
     configs = await asyncio.to_thread(_scan_configs)
@@ -4721,6 +4775,52 @@ async def _handle_launch_and_wait_for_ipc(arguments: Any) -> list:
         )
 
 
+async def _handle_runtime_query_disk_swap(arguments: Any) -> list:
+    """Handle runtime_query_disk_swap tool."""
+    drive = arguments["drive"]
+
+    async def _cb(client):
+        disk = await client.query_disk_swap(int(drive))
+        if disk < 0:
+            return f"DF{drive}: disk is not from the swapper list."
+        return f"DF{drive}: swapper disk {disk}."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_help(arguments: Any) -> list:
+    """Handle runtime_help tool."""
+
+    async def _cb(client):
+        lines = await client.help()
+        return "\n".join(lines) if lines else "No commands reported."
+
+    return await _ipc_call(_cb)
+
+
+async def _handle_runtime_quit(arguments: Any) -> list:
+    """Send IPC QUIT while holding the endpoint lifecycle transition."""
+    async with _state.reset_endpoint_transition(_state.active_instance):
+        return await _ipc_bool_call(
+            "quit",
+            success_msg="Quit command sent.",
+            failure_msg="Failed to quit Amiberry.",
+            operation="runtime_quit",
+        )
+
+
+async def _handle_runtime_set_breakpoint(arguments: Any) -> list:
+    """Handle runtime_set_breakpoint tool."""
+    address = arguments["address"]
+    slot = arguments.get("slot")
+
+    async def _cb(client):
+        used = await client.set_breakpoint(address, slot)
+        return f"Breakpoint set at {address} in slot {used}."
+
+    return await _ipc_call(_cb, operation="runtime_set_breakpoint")
+
+
 # Tool dispatch dictionary
 _TOOL_DISPATCH: dict[str, Any] = {
     "get_platform_info": _handle_get_platform_info,
@@ -4751,6 +4851,8 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "runtime_load_state": partial(_handle_arg_bool, "runtime_load_state"),
     "runtime_insert_floppy": partial(_handle_arg_bool, "runtime_insert_floppy"),
     "runtime_insert_cd": partial(_handle_arg_bool, "runtime_insert_cd"),
+    "runtime_disk_swap": partial(_handle_arg_bool, "runtime_disk_swap"),
+    "runtime_query_disk_swap": _handle_runtime_query_disk_swap,
     "get_runtime_status": _handle_get_runtime_status,
     "runtime_get_config": _handle_runtime_get_config,
     "runtime_set_config": partial(_handle_arg_bool, "runtime_set_config"),
@@ -4775,6 +4877,8 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "runtime_send_key": _handle_runtime_send_key,
     "runtime_send_text": _handle_runtime_send_text,
     "runtime_ping": partial(_handle_no_arg_bool, "runtime_ping"),
+    "runtime_help": _handle_runtime_help,
+    "runtime_quit": _handle_runtime_quit,
     "set_active_instance": _handle_set_active_instance,
     "get_active_instance": _handle_get_active_instance,
     "runtime_quicksave": partial(_handle_arg_bool, "runtime_quicksave"),
@@ -4836,7 +4940,7 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "runtime_get_cpu_regs": _handle_runtime_get_cpu_regs,
     "runtime_get_custom_regs": _handle_runtime_get_custom_regs,
     "runtime_disassemble": _handle_runtime_disassemble,
-    "runtime_set_breakpoint": partial(_handle_arg_bool, "runtime_set_breakpoint"),
+    "runtime_set_breakpoint": _handle_runtime_set_breakpoint,
     "runtime_clear_breakpoint": _handle_runtime_clear_breakpoint,
     "runtime_list_breakpoints": _handle_runtime_list_breakpoints,
     "runtime_get_copper_state": _handle_runtime_get_copper_state,

@@ -501,6 +501,12 @@ class RuntimeDisassembleRequest(BaseModel):
 
 class RuntimeSetBreakpointRequest(BaseModel):
     address: str
+    slot: int | None = Field(default=None, ge=0, le=19)
+
+
+class RuntimeDiskSwapRequest(BaseModel):
+    disk_num: int = Field(ge=0, le=19)
+    drive: int = Field(ge=0, le=3)
 
 
 class RuntimeClearBreakpointRequest(BaseModel):
@@ -684,7 +690,6 @@ async def list_configs():
 
     configs = await asyncio.to_thread(_scan_configs)
     return sorted(configs, key=lambda item: item.name)
-
 
 
 @app.get("/configs/{config_name}")
@@ -1900,6 +1905,43 @@ _create_no_arg_ipc_endpoint(
 )
 
 
+@app.get("/runtime/help")
+async def runtime_help():
+    """List IPC commands accepted by the running Amiberry instance."""
+    async with _ipc_context() as client:
+        lines = await client.help()
+        return StatusResponse(
+            success=True, message="IPC command list", data={"commands": lines}
+        )
+
+
+@app.get("/runtime/disk-swap/{drive}")
+async def runtime_query_disk_swap(drive: int):
+    """Query which swapper-list disk is in a floppy drive."""
+    if drive < 0 or drive > 3:
+        raise HTTPException(status_code=400, detail="Drive number must be 0-3")
+    async with _ipc_context() as client:
+        disk = await client.query_disk_swap(drive)
+        return StatusResponse(
+            success=True,
+            message="Swapper disk query",
+            data={"drive": drive, "disk_num": disk},
+        )
+
+
+@app.post("/runtime/disk-swap")
+async def runtime_disk_swap(request: RuntimeDiskSwapRequest):
+    """Insert a swapper-list disk into a floppy drive."""
+    async with _ipc_context() as client:
+        success = await client.disk_swap(request.disk_num, request.drive)
+        return _ipc_success_or_raise(
+            success,
+            f"Swapped disk {request.disk_num} into DF{request.drive}:",
+            "Failed to swap disk",
+            data={"disk_num": request.disk_num, "drive": request.drive},
+        )
+
+
 @app.post("/runtime/frame-advance")
 async def runtime_frame_advance(request: RuntimeFrameAdvanceRequest):
     """
@@ -3045,12 +3087,11 @@ async def runtime_set_breakpoint(request: RuntimeSetBreakpointRequest):
     Set a breakpoint at a memory address. Maximum 20 breakpoints.
     """
     async with _ipc_context() as client:
-        success = await client.set_breakpoint(request.address)
-        return _ipc_success_or_raise(
-            success,
-            f"Breakpoint set at {request.address}",
-            "Failed to set breakpoint. Maximum 20 breakpoints allowed.",
-            data={"address": request.address},
+        used = await client.set_breakpoint(request.address, request.slot)
+        return StatusResponse(
+            success=True,
+            message=f"Breakpoint set at {request.address} in slot {used}",
+            data={"address": request.address, "slot": used},
         )
 
 
