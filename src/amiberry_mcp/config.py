@@ -67,9 +67,7 @@ def _nonempty(environ: Mapping[str, str], name: str) -> str | None:
     return None
 
 
-def portable_marker_root(
-    platform_name: str, emulator_path: Path | None
-) -> Path | None:
+def portable_marker_root(platform_name: str, emulator_path: Path | None) -> Path | None:
     """Return the executable directory when portable mode is active.
 
     Amiberry enables portable mode when ``amiberry.portable`` sits next to
@@ -120,9 +118,7 @@ def resolve_amiberry_paths(
         env_home = _nonempty(environ, "AMIBERRY_HOME_DIR")
         env_config = _nonempty(environ, "AMIBERRY_CONFIG_DIR")
         content_root = Path(env_home) if env_home else home / "Amiberry"
-        config_dir = (
-            Path(env_config) if env_config else content_root / "Configurations"
-        )
+        config_dir = Path(env_config) if env_config else content_root / "Configurations"
         xdg_config = _nonempty(environ, "XDG_CONFIG_HOME")
         settings_dir = (
             Path(xdg_config) if xdg_config else home / ".config"

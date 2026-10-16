@@ -7,7 +7,6 @@ only a filename (e.g. 'Lightwave.uae') against the platform-specific
 CONFIG_DIR.
 """
 
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest

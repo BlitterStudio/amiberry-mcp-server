@@ -8,7 +8,7 @@ Python 3.10+ project using `hatchling` build system with `ruff` for linting/form
 **Source layout**: `src/amiberry_mcp/` (package), `tests/` (flat test dir), `scripts/` (shell installers).
 
 Key modules:
-- `server.py` — MCP server with 133 tools, data-driven handler dispatch (~4900 lines)
+- `server.py` — MCP server with 137 tools, data-driven handler dispatch (~4900 lines)
 - `http_server.py` — FastAPI REST API with endpoint factories (~3900 lines)
 - `ipc_client.py` — Unix socket / D-Bus IPC client with persistent connections (~2900 lines)
 - `gui_automation.py` — Screenshot-driven GUI action service: owns the action contract,
@@ -166,7 +166,7 @@ async def _ipc_bool_call(method_name, *args, success_msg, failure_msg) -> list[T
   their envelope and serialize the immutable result. Coordinates are always screenshot
   pixels tied to a `capture_id`; `request_id` is the idempotency key over a bounded
   retention window. One controller process per Amiberry instance.
-- **Platform support**: macOS + Linux with platform-specific paths in `config.py`. `RuntimeError` on unsupported platforms. `AMIBERRY_HOME_DIR` overrides the Amiberry home.
+- **Platform support**: Linux, FreeBSD, and macOS. Paths follow Amiberry 8.4 (`Configurations`, `ROMs`, `SaveStates`, and the other title-case content directories). `RuntimeError` on other platforms. `AMIBERRY_HOME_DIR` overrides the content root unless a portable marker is active. `AMIBERRY_CONFIG_DIR` overrides the configurations directory on Linux and FreeBSD.
 - **IPC transport**: Prefers Unix socket, falls back to D-Bus on Linux. Socket paths support multiple instances.
 - **Security**: Path traversal prevention on all user-supplied paths. IPC argument sanitization (tab/newline stripping).
 - **Optional deps**: `fastapi`/`uvicorn` for HTTP, `jeepney` for D-Bus — guarded by try/except ImportError
