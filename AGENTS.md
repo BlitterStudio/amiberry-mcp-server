@@ -166,7 +166,7 @@ async def _ipc_bool_call(method_name, *args, success_msg, failure_msg) -> list[T
   their envelope and serialize the immutable result. Coordinates are always screenshot
   pixels tied to a `capture_id`; `request_id` is the idempotency key over a bounded
   retention window. One controller process per Amiberry instance.
-- **Platform support**: Linux, FreeBSD, and macOS. Paths follow Amiberry 8.4 (`Configurations`, `ROMs`, `SaveStates`, and the other title-case content directories). `RuntimeError` on other platforms. `AMIBERRY_HOME_DIR` overrides the content root unless a portable marker is active. `AMIBERRY_CONFIG_DIR` overrides the configurations directory on Linux and FreeBSD.
+- **Platform support**: Linux, FreeBSD, and macOS. Paths follow Amiberry 8.4 (`Configurations`, `ROMs`, `SaveStates`, and the other title-case content directories). ROM, savestate, and disk listings also search the pre-8.4 names Amiberry still migrates. `RuntimeError` on other platforms. `AMIBERRY_HOME_DIR` overrides the content root unless a portable marker is active. `AMIBERRY_CONFIG_DIR` overrides the configurations directory on Linux and FreeBSD.
 - **IPC transport**: Prefers Unix socket, falls back to D-Bus on Linux. Socket paths support multiple instances.
 - **Security**: Path traversal prevention on all user-supplied paths. IPC argument sanitization (tab/newline stripping).
 - **Optional deps**: `fastapi`/`uvicorn` for HTTP, `jeepney` for D-Bus — guarded by try/except ImportError

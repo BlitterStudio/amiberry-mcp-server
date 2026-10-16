@@ -223,7 +223,10 @@ That directory is not a second `.uae` config tree. `AMIBERRY_CONFIG_DIR`
 overrides the configurations directory. A file named `amiberry.portable` next
 to the `amiberry` binary switches Amiberry into portable mode and this server
 follows that root; macOS ignores the marker. `AMIBERRY_HOME_DIR` overrides the
-content root when portable mode is off.
+content root when portable mode is off. Listings also search the pre-8.4
+names Amiberry still migrates (`kickstarts`, `roms`, `savestates`,
+`floppies`, `harddrives`, `lha`, and their case variants) so files copied
+from an older tree are not missed.
 
 ## Available MCP Tools
 
