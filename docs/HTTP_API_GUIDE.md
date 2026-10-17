@@ -59,6 +59,10 @@ The API server provides these endpoints:
 
 ### Runtime Control Endpoints
 > **Note:** These endpoints require Amiberry built with `USE_IPC_SOCKET=ON`
+> (the default on Linux, FreeBSD, macOS, and current Windows builds). The
+> server talks to the Unix socket on POSIX/macOS and to the
+> `\\.\pipe\amiberry` named pipe on Windows; multiple instances use
+> `amiberry_1` through `amiberry_9` on both transports.
 
 **Emulation Control**
 - `GET /runtime/status` - Get emulation status (paused state, loaded config, floppies)
