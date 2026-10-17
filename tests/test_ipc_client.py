@@ -9,6 +9,8 @@ Covers:
 """
 
 import asyncio
+import os
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -22,12 +24,25 @@ from amiberry_mcp.ipc_client import (
     MouseUntrapMode,
     Renderer,
     TabletMode,
+    _find_socket_path,
+    _get_socket_path,
     _parse_actionable_capture,
     _parse_automation_config_response,
     _parse_automation_state,
     _parse_guarded_input_response,
     _parse_release_response,
 )
+
+
+@pytest.fixture(autouse=True)
+def _unix_transport_seams():
+    """Exercise the shared command logic through the Unix transport seams.
+
+    The Windows pipe transport has dedicated tests below; forcing the Unix
+    code path here keeps these tests meaningful on any host platform.
+    """
+    with patch("amiberry_mcp.ipc_client.IS_WINDOWS", False):
+        yield
 
 
 def _capture_fields() -> list[str]:
@@ -779,6 +794,244 @@ class TestBreakpointAndDiskSwap:
 
         with pytest.raises(CommandError, match="HELP failed"):
             await client.help()
+
+
+class TestWindowsEndpointNaming:
+    """Windows names IPC endpoints after the pipe namespace."""
+
+    def test_instance_pipe_names(self):
+        with patch("amiberry_mcp.ipc_client.IS_WINDOWS", True):
+            assert _get_socket_path(0) == "\\\\.\\pipe\\amiberry"
+            assert _get_socket_path(1) == "\\\\.\\pipe\\amiberry_1"
+            assert _get_socket_path(9) == "\\\\.\\pipe\\amiberry_9"
+
+    def test_client_instance_targets_pipe_name(self):
+        with patch("amiberry_mcp.ipc_client.IS_WINDOWS", True):
+            client = AmiberryIPCClient(prefer_dbus=False, instance=2)
+        assert client._socket_path == "\\\\.\\pipe\\amiberry_2"
+
+    def test_unix_instance_names_unchanged(self):
+        assert _get_socket_path(0).endswith("amiberry.sock")
+        assert _get_socket_path(3).endswith("amiberry_3.sock")
+
+
+class TestWindowsPipeDiscovery:
+    """Discovery lists ``\\\\.\\pipe\\`` instead of opening pipe names."""
+
+    def test_prefers_lowest_available_instance(self):
+        with (
+            patch("amiberry_mcp.ipc_client.IS_WINDOWS", True),
+            patch(
+                "os.listdir",
+                return_value=["spoolss", "amiberry_2", "AMIBERRY_1", "chrome"],
+            ),
+        ):
+            assert _find_socket_path() == "\\\\.\\pipe\\amiberry_1"
+
+    def test_ignores_lookalike_names(self):
+        with (
+            patch("amiberry_mcp.ipc_client.IS_WINDOWS", True),
+            patch("time.sleep"),
+            patch(
+                "os.listdir",
+                return_value=["amiberry_10", "amiberryfoo", "amiberry-1"],
+            ),
+        ):
+            assert _find_socket_path() == "\\\\.\\pipe\\amiberry"
+
+    def test_existence_check_never_opens_the_pipe(self):
+        client = AmiberryIPCClient(
+            prefer_dbus=False, socket_path="\\\\.\\pipe\\amiberry_1"
+        )
+        with (
+            patch("amiberry_mcp.ipc_client.IS_WINDOWS", True),
+            patch("os.listdir", return_value=["amiberry_1"]),
+            patch("os.path.exists", side_effect=AssertionError("opens the pipe")),
+            patch("os.stat", side_effect=AssertionError("opens the pipe")),
+        ):
+            assert client.is_available() is True
+
+    @pytest.mark.asyncio
+    async def test_send_command_skips_existence_preflight(self):
+        """No preflight probe: the connect attempt itself reports a missing pipe."""
+        client = AmiberryIPCClient(
+            prefer_dbus=False, socket_path="\\\\.\\pipe\\amiberry"
+        )
+        with (
+            patch("amiberry_mcp.ipc_client.IS_WINDOWS", True),
+            patch("os.listdir", return_value=[]),
+            patch("os.path.exists", side_effect=AssertionError("opens the pipe")),
+            patch("os.stat", side_effect=AssertionError("opens the pipe")),
+            patch.object(
+                client,
+                "_open_command_stream",
+                AsyncMock(side_effect=FileNotFoundError("missing")),
+            ),
+        ):
+            with pytest.raises(IPCConnectionError, match="Socket not found"):
+                await client._send_socket_command("PING")
+
+
+class TestTransportSelection:
+    """The command stream follows the host platform."""
+
+    @pytest.mark.asyncio
+    async def test_windows_uses_the_pipe_stream(self):
+        client = AmiberryIPCClient(
+            prefer_dbus=False, socket_path="\\\\.\\pipe\\amiberry"
+        )
+        stream = (AsyncMock(), MagicMock())
+        with (
+            patch("amiberry_mcp.ipc_client.IS_WINDOWS", True),
+            patch.object(
+                client, "_open_windows_pipe_stream", AsyncMock(return_value=stream)
+            ) as pipe_open,
+            patch("asyncio.open_unix_connection"),
+        ):
+            await client._ensure_socket_connection(1.0)
+
+        pipe_open.assert_awaited_once_with(1.0)
+
+    @pytest.mark.asyncio
+    async def test_unix_uses_open_unix_connection(self):
+        client = AmiberryIPCClient(prefer_dbus=False, socket_path="/tmp/amiberry.sock")
+        reader, writer = AsyncMock(), MagicMock()
+        with (
+            patch("amiberry_mcp.ipc_client.IS_WINDOWS", False),
+            patch(
+                "asyncio.open_unix_connection",
+                AsyncMock(return_value=(reader, writer)),
+            ) as unix_open,
+            patch.object(client, "_open_windows_pipe_stream", AsyncMock()),
+        ):
+            await client._ensure_socket_connection(1.0)
+
+        unix_open.assert_awaited_once_with("/tmp/amiberry.sock")
+
+    @pytest.mark.asyncio
+    async def test_missing_endpoint_reports_socket_not_found(self):
+        client = AmiberryIPCClient(
+            prefer_dbus=False, socket_path="\\\\.\\pipe\\amiberry_mcp_missing_1"
+        )
+        with pytest.raises(IPCConnectionError, match="Socket not found at"):
+            await client._send_socket_command("PING")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows named pipes")
+class TestWindowsPipeTransport:
+    """Live named-pipe behavior against a real pipe server."""
+
+    @pytest.mark.asyncio
+    async def test_selector_loop_is_rejected_explicitly(self):
+        async def _attempt():
+            client = AmiberryIPCClient(
+                prefer_dbus=False, socket_path="\\\\.\\pipe\\amiberry"
+            )
+            with (
+                patch("amiberry_mcp.ipc_client.IS_WINDOWS", True),
+                pytest.raises(IPCConnectionError, match="ProactorEventLoop"),
+            ):
+                await client._open_command_stream(1.0)
+
+        def _run_under_selector_policy():
+            previous = asyncio.get_event_loop_policy()
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+            try:
+                asyncio.run(_attempt())
+            finally:
+                asyncio.set_event_loop_policy(previous)
+
+        await asyncio.to_thread(_run_under_selector_policy)
+
+    @pytest.mark.asyncio
+    async def test_busy_pipe_retries_until_next_instance_listens(self):
+        import _winapi
+        import threading
+        import time as time_module
+
+        pipe_name = f"\\\\.\\pipe\\amiberry_mcp_busy_{os.getpid()}"
+        next_instance_delay = 0.5
+        stop = threading.Event()
+
+        def serve_client(handle):
+            try:
+                request = b""
+                while not request.endswith(b"\n"):
+                    chunk = _winapi.ReadFile(handle, 4096, None)[0]
+                    if not chunk:
+                        return
+                    request += chunk
+                _winapi.WriteFile(handle, b"OK\tpong\n", None)
+            except OSError:
+                pass
+            finally:
+                _winapi.CloseHandle(handle)
+
+        def run_server():
+            # Mirrors Amiberry: one listening instance at a time, the next
+            # one created only after a short delay per connection.
+            error_pipe_connected = 535
+            while not stop.is_set():
+                handle = _winapi.CreateNamedPipe(
+                    pipe_name, 0x3, 0x0, 4, 65536, 65536, 0, 0
+                )
+                try:
+                    _winapi.ConnectNamedPipe(handle)
+                except OSError as e:
+                    # A client that connected between CreateNamedPipe and
+                    # ConnectNamedPipe is already attached, not a failure.
+                    if getattr(e, "winerror", None) != error_pipe_connected:
+                        _winapi.CloseHandle(handle)
+                        return
+                threading.Thread(
+                    target=serve_client, args=(handle,), daemon=True
+                ).start()
+                time_module.sleep(next_instance_delay)
+
+        server = threading.Thread(target=run_server, daemon=True)
+        server.start()
+        hold = None
+        try:
+            # Occupy the listening instance so the client must retry
+            # ERROR_PIPE_BUSY until the next instance appears.
+            hold = _winapi.CreateFile(
+                pipe_name,
+                _winapi.GENERIC_READ | _winapi.GENERIC_WRITE,
+                0,
+                0,
+                _winapi.OPEN_EXISTING,
+                0,
+                0,
+            )
+            client = AmiberryIPCClient(prefer_dbus=False, socket_path=pipe_name)
+            started = time_module.monotonic()
+            with patch("amiberry_mcp.ipc_client.IS_WINDOWS", True):
+                success, data = await asyncio.wait_for(
+                    client._send_socket_command("PING"), timeout=10
+                )
+            elapsed = time_module.monotonic() - started
+
+            assert success is True
+            assert data == ["pong"]
+            assert elapsed >= next_instance_delay - 0.15
+        finally:
+            if hold is not None:
+                _winapi.CloseHandle(hold)
+            stop.set()
+            try:
+                _winapi.CloseHandle(
+                    _winapi.CreateFile(
+                        pipe_name,
+                        _winapi.GENERIC_READ | _winapi.GENERIC_WRITE,
+                        0,
+                        0,
+                        _winapi.OPEN_EXISTING,
+                        0,
+                        0,
+                    )
+                )
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":
