@@ -113,10 +113,12 @@ Legacy runtimes return the screenshot with `actionable=false`,
 relative-coordinate fallback. Actionable capture currently requires Amiberry's
 SDL or OpenGL renderer. Vulkan still supports legacy screenshots, but returns
 an actionable-capture error until it can bind pixels to exact presented-frame
-geometry. This workflow supports Linux and macOS. Run one
-controller process per Amiberry runtime instance; simultaneous MCP and HTTP
-servers controlling the same instance are unsupported. Automated contract
-coverage does not replace the pending live Linux/macOS release check.
+geometry. This workflow supports Linux, macOS, and Windows; the Windows
+named-pipe path has been validated live against an installed Amiberry build.
+Run one controller process per Amiberry runtime instance; simultaneous MCP
+and HTTP servers controlling the same instance are unsupported. Automated
+contract coverage does not replace the pending live Linux/macOS release
+check.
 
 ### Python
 

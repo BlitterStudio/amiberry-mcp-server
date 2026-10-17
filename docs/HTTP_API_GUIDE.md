@@ -438,10 +438,13 @@ same runtime identity, geometry revision, and monitor; obey any recapture
 response. Run one controller process per runtime instance. Running the MCP and
 HTTP servers simultaneously against the same Amiberry instance is unsupported.
 
-The action API is supported on Linux and macOS. Automated tests cover the
-schemas, MCP/HTTP parity, geometry translation, stale guards, deduplication,
-and cleanup semantics. Live end-to-end Linux and macOS validation remains a
-separate release check; this documentation does not claim that matrix has run.
+The action API is supported on Linux, macOS, and Windows. Automated tests
+cover the schemas, MCP/HTTP parity, geometry translation, stale guards,
+deduplication, and cleanup semantics. The Windows named-pipe path has been
+validated live end to end against an installed Amiberry build, down to mouse
+button state read back from the emulated CIA registers. Live end-to-end Linux
+and macOS validation remains a separate release check; this documentation
+does not claim that matrix has run.
 
 HTTP action status mapping is `200` for `ok`, `404` for unknown/evicted
 captures, `422` for coordinate bounds failures, `501` for an unsupported

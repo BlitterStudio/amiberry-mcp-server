@@ -499,9 +499,14 @@ Older Amiberry builds still return a screenshot, but the metadata has
 Actionable captures need Amiberry's SDL or OpenGL renderer. The Vulkan
 renderer returns plain screenshots and rejects GUI actions, because it cannot
 yet tie screenshot pixels to the geometry of the presented frame. There is no
-fallback to relative coordinates. GUI automation is supported on Linux and
-macOS. Automated tests cover the action contract and coordinate geometry; each
-release is also checked against a live Amiberry separately.
+fallback to relative coordinates. GUI automation is supported on Linux,
+macOS, and Windows. The Windows named-pipe path was validated live against
+an installed Amiberry build: actionable capture, the guarded configuration
+compare-and-set, clicks, drags, and stale-capture rejection after a window
+resize and after a restart all behaved as specified, with held buttons read
+back from the emulated CIA registers. Automated tests cover the action
+contract and coordinate geometry; each release is also checked against a
+live Amiberry separately.
 
 ## Example prompts
 
