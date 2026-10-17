@@ -2,16 +2,19 @@
 IPC client for Amiberry runtime control.
 
 Supports:
-- Unix domain sockets (cross-platform: Linux, macOS, FreeBSD)
+- Unix domain sockets (Linux, macOS, FreeBSD)
+- Windows named pipes (Windows)
 - D-Bus (Linux only, when available)
 
-The client automatically chooses the best available transport.
+The client automatically chooses the best available transport. Both the Unix
+socket and the Windows pipe carry the same line protocol.
 """
 
 import asyncio
 import importlib
 import os
 import sys
+import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -19,6 +22,7 @@ from typing import Any
 from .monitor import apply_debug_status, parse_json_reply, validate_monitor_text
 
 _MAX_RESPONSE_SIZE = 1024 * 1024
+_PIPE_MISSING_GRACE_SECONDS = 0.25
 
 if not hasattr(asyncio, "open_unix_connection"):
 
@@ -49,24 +53,70 @@ if sys.platform == "linux":
 
 DBUS_AVAILABLE = _dbus_available
 
+# Endpoint selection - Windows uses named pipes, other platforms Unix sockets
+IS_WINDOWS = sys.platform == "win32"
+_WINDOWS_PIPE_ROOT = "\\\\.\\pipe\\"
 
 # Socket paths - cache base directory
 _SOCKET_BASE_DIR = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
 
 
 def _get_socket_path(instance: int = 0) -> str:
-    """Generate socket path for a given instance number."""
+    """Generate the endpoint name for a given instance number.
+
+    On Windows this is the named pipe ``\\\\.\\pipe\\amiberry`` (further
+    instances ``amiberry_1`` .. ``amiberry_9``); elsewhere the Unix socket
+    path inside ``$XDG_RUNTIME_DIR`` or ``/tmp``.
+    """
+    if IS_WINDOWS:
+        suffix = "" if instance == 0 else f"_{instance}"
+        return f"{_WINDOWS_PIPE_ROOT}amiberry{suffix}"
     if instance == 0:
         return os.path.join(_SOCKET_BASE_DIR, "amiberry.sock")
     else:
         return os.path.join(_SOCKET_BASE_DIR, f"amiberry_{instance}.sock")
 
 
+def _windows_pipe_names() -> set[str]:
+    """Return the lowercased names currently registered in the pipe namespace.
+
+    Opening a pipe name (``CreateFile``) connects to it, and even
+    ``os.path.exists()``/``os.stat()`` on a pipe name opens a client
+    connection. Listing ``\\\\.\\pipe\\`` is the only probe that does not
+    touch the pipe itself.
+    """
+    try:
+        return {name.lower() for name in os.listdir(_WINDOWS_PIPE_ROOT)}
+    except OSError:
+        return set()
+
+
+def _windows_pipe_exists(path: str) -> bool:
+    """Check a pipe name against the namespace listing, retrying briefly.
+
+    The pipe-namespace listing is best-effort and can miss live names for a
+    moment, so probe a few times before reporting that a pipe is gone.
+    """
+    name = os.path.basename(path).lower()
+    for _attempt in range(3):
+        if name in _windows_pipe_names():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def _endpoint_exists(path: str) -> bool:
+    """Check whether an Amiberry endpoint exists without connecting to it."""
+    if IS_WINDOWS:
+        return _windows_pipe_exists(path)
+    return os.path.exists(path)
+
+
 def _find_socket_path() -> str:
-    """Find the first available Amiberry socket (supports multiple instances)."""
+    """Find the first available Amiberry endpoint (supports multiple instances)."""
     for instance in range(10):
         path = _get_socket_path(instance)
-        if os.path.exists(path):
+        if _endpoint_exists(path):
             return path
 
     # Fall back to default path even if it doesn't exist
@@ -914,8 +964,9 @@ class AmiberryIPCClient:
     """
     Async IPC client for Amiberry runtime control.
 
-    Supports Unix sockets (cross-platform) and D-Bus (Linux).
-    Automatically selects the best available transport.
+    Supports Unix sockets (Linux, macOS, FreeBSD), Windows named pipes
+    (Windows), and D-Bus (Linux). Automatically selects the best available
+    transport.
     """
 
     def __init__(
@@ -972,10 +1023,61 @@ class AmiberryIPCClient:
 
             await self._close_socket_connection()
 
-        self._reader, self._writer = await asyncio.wait_for(
+        self._reader, self._writer = await self._open_command_stream(timeout)
+
+    async def _open_command_stream(
+        self, timeout: float
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        """Open one command stream to the configured endpoint.
+
+        On Windows this is the named-pipe transport (see
+        ``_open_windows_pipe_stream``); elsewhere ``asyncio.open_unix_connection``.
+        """
+        if IS_WINDOWS:
+            return await self._open_windows_pipe_stream(timeout)
+        return await asyncio.wait_for(
             asyncio.open_unix_connection(self._socket_path),
             timeout=timeout,
         )
+
+    async def _open_windows_pipe_stream(
+        self, timeout: float
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        """Open the Windows named pipe using the proactor event loop.
+
+        ``create_pipe_connection`` retries ``ERROR_PIPE_BUSY`` for as long as
+        Amiberry needs to recreate a listening pipe instance (it does so
+        within a frame of each connection); ``wait_for`` bounds that retry to
+        the connect timeout. ``FileNotFoundError`` is retried briefly as
+        well, because the pipe-name lookup can transiently miss a live pipe
+        while instances rotate.
+
+        Raises:
+            IPCConnectionError: If the running loop is not a
+                ProactorEventLoop, which is the only asyncio loop that
+                supports named pipes on Windows.
+        """
+        loop = asyncio.get_running_loop()
+        if not isinstance(loop, asyncio.ProactorEventLoop):
+            raise IPCConnectionError(
+                "The Windows named-pipe transport requires a ProactorEventLoop "
+                f"(got {type(loop).__name__}). Ensure no dependency forces "
+                "WindowsSelectorEventLoopPolicy."
+            )
+        reader = asyncio.StreamReader()
+        protocol = asyncio.StreamReaderProtocol(reader)
+        missing_grace_deadline = loop.time() + _PIPE_MISSING_GRACE_SECONDS
+        while True:
+            try:
+                transport, _ = await loop.create_pipe_connection(
+                    lambda: protocol, self._socket_path
+                )
+                break
+            except FileNotFoundError:
+                if loop.time() >= missing_grace_deadline:
+                    raise
+                await asyncio.sleep(0.02)
+        return reader, asyncio.StreamWriter(transport, protocol, reader, loop)
 
     @property
     def transport(self) -> str:
@@ -991,15 +1093,17 @@ class AmiberryIPCClient:
             # For now, just return True if D-Bus is available
             return DBUS_AVAILABLE
         else:
-            return os.path.exists(self._socket_path)
+            return _endpoint_exists(self._socket_path)
 
     async def _send_socket_command(
         self, command: str, *args: str, timeout: float = 5.0
     ) -> tuple[bool, list[str]]:
-        """Send a command over Unix socket and return the response."""
+        """Send a command over the socket transport and return the response."""
         socket_path = self._socket_path
 
-        if not os.path.exists(socket_path):
+        if not IS_WINDOWS and not _endpoint_exists(socket_path):
+            # On Windows the pipe-namespace listing is only advisory; the
+            # connect attempt below reports a missing pipe reliably.
             raise IPCConnectionError(
                 f"Socket not found at {socket_path}. Is Amiberry running with USE_IPC_SOCKET?"
             )
@@ -1077,7 +1181,10 @@ class AmiberryIPCClient:
                     ) from e
                 except FileNotFoundError as e:
                     await self._close_socket_connection()
-                    raise IPCConnectionError(f"Socket not found: {socket_path}") from e
+                    raise IPCConnectionError(
+                        f"Socket not found at {socket_path}. "
+                        "Is Amiberry running with USE_IPC_SOCKET?"
+                    ) from e
                 except IPCConnectionError:
                     raise
                 except Exception as e:
@@ -1140,10 +1247,7 @@ class AmiberryIPCClient:
                 writer: asyncio.StreamWriter | Any | None = None
                 command_written = False
                 try:
-                    reader, writer = await asyncio.wait_for(
-                        asyncio.open_unix_connection(self._socket_path),
-                        timeout=timeout,
-                    )
+                    reader, writer = await self._open_command_stream(timeout)
                     writer.write(message.encode("utf-8"))
                     command_written = True
                     await writer.drain()
@@ -1901,8 +2005,8 @@ class AmiberryIPCClient:
         """Run one GDB monitor command and return the raw result lines.
 
         The text is one IPC argument. D-Bus has no MONITOR command, so this
-        always uses the Unix socket. JSON replies are one line. ``disasm`` is
-        one line per instruction.
+        always uses the socket transport (Unix socket or Windows pipe). JSON
+        replies are one line. ``disasm`` is one line per instruction.
         """
         command = validate_monitor_text(text)
         success, data = await self._send_socket_command("MONITOR", command)

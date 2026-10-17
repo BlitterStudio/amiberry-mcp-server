@@ -7,42 +7,11 @@ These tests mock the IPC layer so they run without a live Amiberry instance.
 
 import base64
 import json
-import platform
-import sys
 from contextlib import contextmanager
 from pathlib import Path
-from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-if platform.system() not in ("Darwin", "Linux"):
-    _cfg = "amiberry_mcp.config"
-    if _cfg not in sys.modules:
-        _mod = ModuleType(_cfg)
-        _root = Path.home() / "Amiberry"
-        _mod.IS_MACOS = False  # type: ignore[attr-defined]
-        _mod.IS_LINUX = True  # type: ignore[attr-defined]
-        _mod.EMULATOR_BINARY = "amiberry"  # type: ignore[attr-defined]
-        for _name, _value in {
-            "AMIBERRY_HOME": _root,
-            "CONFIG_DIR": _root / "conf",
-            "SYSTEM_CONFIG_DIR": None,
-            "SAVESTATE_DIR": _root / "savestates",
-            "SCREENSHOT_DIR": _root / "screenshots",
-            "LOG_DIR": _root / "logs",
-            "ROM_DIR": _root / "kickstarts",
-            "DISK_IMAGE_DIRS": [_root / "floppies"],
-            "FLOPPY_EXTENSIONS": [".adf"],
-            "HARDFILE_EXTENSIONS": [".hdf"],
-            "LHA_EXTENSIONS": [".lha"],
-            "CD_EXTENSIONS": [".iso"],
-            "SUPPORTED_MODELS": ["A500", "A1200", "CD32"],
-        }.items():
-            setattr(_mod, _name, _value)
-        _mod.ensure_directories_exist = lambda: None  # type: ignore[attr-defined]
-        _mod.get_platform_info = lambda: {}  # type: ignore[attr-defined]
-        sys.modules[_cfg] = _mod
 
 from amiberry_mcp.gui_automation import (
     ActionableBounds,

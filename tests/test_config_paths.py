@@ -111,7 +111,7 @@ class TestFindConfigPath:
 
 
 class TestResolveAmiberryPaths:
-    """Path formulas match Amiberry 8.4 for Linux, FreeBSD, and macOS."""
+    """Path formulas match Amiberry 8.4 for Linux, FreeBSD, macOS, and Windows."""
 
     def test_linux_defaults(self, tmp_path):
         from amiberry_mcp.config import resolve_amiberry_paths
@@ -217,8 +217,70 @@ class TestResolveAmiberryPaths:
         assert paths.portable is False
         assert paths.home == tmp_path / "Documents" / "Amiberry"
 
+    def test_windows_defaults(self, tmp_path):
+        from amiberry_mcp.config import resolve_amiberry_paths
+
+        environ = {"LOCALAPPDATA": str(tmp_path / "AppData" / "Local")}
+        paths = resolve_amiberry_paths("Windows", environ, tmp_path)
+
+        assert paths.home == tmp_path / "Amiberry"
+        assert paths.config_dir == paths.home / "Configurations"
+        assert paths.settings_dir == tmp_path / "AppData" / "Local" / "Amiberry"
+        assert paths.legacy_config_dirs == (paths.home / "conf",)
+        assert paths.rom_dir == paths.home / "ROMs"
+        assert paths.savestate_dir == paths.home / "SaveStates"
+        assert paths.portable is False
+
+    def test_windows_settings_fallback_order(self, tmp_path):
+        from amiberry_mcp.config import resolve_amiberry_paths
+
+        roaming = resolve_amiberry_paths(
+            "Windows", {"APPDATA": str(tmp_path / "roaming")}, tmp_path
+        )
+        assert roaming.settings_dir == tmp_path / "roaming" / "Amiberry"
+
+        fallback = resolve_amiberry_paths("Windows", {}, tmp_path)
+        assert fallback.settings_dir == tmp_path / "AppData" / "Local" / "Amiberry"
+
+    def test_windows_ignores_config_dir_env(self, tmp_path):
+        from amiberry_mcp.config import resolve_amiberry_paths
+
+        environ = {
+            "AMIBERRY_HOME_DIR": str(tmp_path / "custom-home"),
+            "AMIBERRY_CONFIG_DIR": str(tmp_path / "ignored-conf"),
+            "LOCALAPPDATA": str(tmp_path / "AppData" / "Local"),
+        }
+        paths = resolve_amiberry_paths("Windows", environ, tmp_path)
+
+        assert paths.home == tmp_path / "custom-home"
+        assert paths.config_dir == tmp_path / "custom-home" / "Configurations"
+
+    def test_windows_portable_marker_wins(self, tmp_path):
+        from amiberry_mcp.config import resolve_amiberry_paths
+
+        binary = tmp_path / "bin" / "Amiberry.exe"
+        binary.parent.mkdir()
+        binary.write_text("")
+        (binary.parent / "amiberry.portable").write_text("")
+
+        paths = resolve_amiberry_paths(
+            "Windows",
+            {
+                "AMIBERRY_HOME_DIR": str(tmp_path / "ignored"),
+                "LOCALAPPDATA": str(tmp_path / "AppData" / "Local"),
+            },
+            tmp_path,
+            binary,
+        )
+
+        assert paths.portable is True
+        assert paths.home == binary.parent.resolve()
+        assert paths.config_dir == paths.home / "Configurations"
+        # Settings still follow %LOCALAPPDATA% on Windows, even when portable.
+        assert paths.settings_dir == tmp_path / "AppData" / "Local" / "Amiberry"
+
     def test_unsupported_platform_raises(self, tmp_path):
         from amiberry_mcp.config import resolve_amiberry_paths
 
         with pytest.raises(RuntimeError, match="Unsupported platform"):
-            resolve_amiberry_paths("Windows", {}, tmp_path)
+            resolve_amiberry_paths("SunOS", {}, tmp_path)

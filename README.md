@@ -24,7 +24,7 @@ An MCP (Model Context Protocol) server for controlling [Amiberry](https://github
   safely using pixels from an exact screenshot
 - **Keyboard Input**: Send key presses or type text into the emulation
 - **Multi-instance**: Target a specific Amiberry instance when several are running
-- **Cross-platform**: Works on Linux, FreeBSD, and macOS
+- **Cross-platform**: Works on Linux, FreeBSD, macOS, and Windows
 
 ### Developer/Debug Features
 - **Log Capture**: Launch with logging enabled and capture output to files
@@ -54,12 +54,16 @@ An MCP (Model Context Protocol) server for controlling [Amiberry](https://github
 - Amiberry emulator installed:
   - **macOS**: Amiberry.app in `/Applications`
   - **Linux and FreeBSD**: `amiberry` command in PATH
+  - **Windows**: `Amiberry.exe` command in PATH
 - An MCP-compatible AI client (Claude Desktop, Claude Code, Codex, Gemini/Antigravity, Cursor, Cline, Windsurf, …)
 
-Linux, FreeBSD, and macOS are supported. The server raises `RuntimeError` on
-other platforms. Runtime control additionally needs Amiberry built with
-`USE_IPC_SOCKET=ON` (the default on those three platforms; Windows builds
-force it off).
+Linux, FreeBSD, macOS, and Windows are supported. The server raises
+`RuntimeError` on other platforms. Runtime control additionally needs Amiberry
+built with `USE_IPC_SOCKET=ON` — the default on all four platforms since the
+Windows named-pipe transport landed after 8.4.1. On Windows the control
+endpoint is the named pipe `\\.\pipe\amiberry` (further instances:
+`\\.\pipe\amiberry_1` .. `\\.\pipe\amiberry_9`); elsewhere it is the Unix
+socket `$XDG_RUNTIME_DIR/amiberry.sock` or `/tmp/amiberry.sock`.
 
 ## Project Structure
 
@@ -228,6 +232,26 @@ content root when portable mode is off. Listings also search the pre-8.4
 names Amiberry still migrates (`kickstarts`, `roms`, `savestates`,
 `floppies`, `harddrives`, `lha`, and their case variants) so files copied
 from an older tree are not missed.
+
+### Windows
+```
+%USERPROFILE%\Amiberry\
+├── Configurations\    # .uae config files
+├── Floppies\
+├── HardDrives\
+├── LHA\
+├── CDROMs\
+├── SaveStates\
+├── Screenshots\
+├── ROMs\
+└── logs\              # Logs captured by this server
+```
+
+Settings live in `%LOCALAPPDATA%\Amiberry` (falling back to `%APPDATA%\Amiberry`).
+`AMIBERRY_CONFIG_DIR` is not honored on Windows: configurations always sit at
+`<content>\Configurations`. `AMIBERRY_HOME_DIR` overrides the content root and
+an `amiberry.portable` marker next to `Amiberry.exe` switches Amiberry into
+portable mode, as on Linux. This server launches `Amiberry.exe` from `PATH`.
 
 ## Available MCP Tools
 
@@ -1266,6 +1290,7 @@ ruff format src/ tests/
 ### "Command not found" errors
 - **Linux**: Ensure `amiberry` is in your PATH
 - **macOS**: Verify Amiberry.app is in `/Applications`
+- **Windows**: Ensure `Amiberry.exe` is in your PATH
 
 ### Permission errors
 - Check that scripts are executable: `chmod +x scripts/*.sh`
@@ -1286,6 +1311,13 @@ ls ~/Amiberry/logs/
 - With multiple instances, instance 0 uses `amiberry.sock` and the rest use
   `amiberry_1.sock`, `amiberry_2.sock`, … (searched up to instance 9) — pick one
   with `set_active_instance`
+- On Windows the endpoint is the named pipe `\\.\pipe\amiberry` (further
+  instances `\\.\pipe\amiberry_1` … `\\.\pipe\amiberry_9`). List it with
+  `Get-ChildItem \\.\pipe\ | Where-Object Name -like 'amiberry*'` — do not use
+  `Test-Path`, which opens a client connection to the pipe
+- The Windows pipe transport needs an asyncio Proactor event loop (the default
+  on Windows). The server reports an explicit error if some dependency forced
+  a selector loop
 - Verify Amiberry is running before using runtime control tools
 - Test the socket directly: `echo "GET_STATUS" | nc -U "${XDG_RUNTIME_DIR:-/tmp}/amiberry.sock"`
 

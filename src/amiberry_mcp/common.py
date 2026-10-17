@@ -19,6 +19,7 @@ from .config import (
     EMULATOR_BINARY,
     FLOPPY_EXTENSIONS,
     HARDFILE_EXTENSIONS,
+    IS_WINDOWS,
     LEGACY_CONFIG_DIRS,
     LEGACY_DISK_DIRS,
     LEGACY_ROM_DIRS,
@@ -206,6 +207,17 @@ def build_launch_command(
     return cmd
 
 
+def _popen_session_kwargs() -> dict[str, Any]:
+    """Return the platform-supported process-detachment options.
+
+    ``start_new_session`` detaches the child from our session on POSIX
+    platforms; ``subprocess.Popen`` rejects it outright on Windows.
+    """
+    if IS_WINDOWS:
+        return {}
+    return {"start_new_session": True}
+
+
 def launch_process(
     cmd: list[str],
     log_path: Path | None = None,
@@ -226,7 +238,7 @@ def launch_process(
                 cmd,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
-                start_new_session=True,
+                **_popen_session_kwargs(),
             )
         except Exception:
             log_file.close()
@@ -237,7 +249,7 @@ def launch_process(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            start_new_session=True,
+            **_popen_session_kwargs(),
         )
         return proc, None
 

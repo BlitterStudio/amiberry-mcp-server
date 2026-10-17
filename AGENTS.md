@@ -10,7 +10,7 @@ Python 3.10+ project using `hatchling` build system with `ruff` for linting/form
 Key modules:
 - `server.py` — MCP server with 150 tools, data-driven handler dispatch (~5200 lines)
 - `http_server.py` — FastAPI REST API with endpoint factories (~4000 lines)
-- `ipc_client.py` — Unix socket / D-Bus IPC client with persistent connections (~2900 lines). `monitor()` is socket-only.
+- `ipc_client.py` — Unix socket / Windows named pipe / D-Bus IPC client with persistent connections (~3000 lines). `monitor()` is socket/pipe-only.
 - `gui_automation.py` — Screenshot-driven GUI action service: owns the action contract,
   screenshot-pixel translation, and the readiness/input/cleanup transaction (~1600 lines)
 - `shared_state.py` — Process state, IPC client caching, capture registry, launch helpers
@@ -158,7 +158,7 @@ async def _ipc_bool_call(method_name, *args, success_msg, failure_msg) -> list[T
 - **Launch pattern**: All process launches go through `launch_and_store()` in `shared_state.py`, which centralises close-log → invalidate-cache → launch → store-state.
 - **Handler dispatch**: `server.py` uses data-driven handler tables (`_NO_ARG_BOOL_HANDLERS`, `_ARG_BOOL_HANDLERS`, `_SIMPLE_QUERY_HANDLERS`) with `functools.partial` dispatch, reducing boilerplate for ~36 repetitive handlers.
 - **Endpoint factories**: `http_server.py` uses `_create_no_arg_ipc_endpoint()` for no-arg boolean IPC endpoints.
-- **IPC connection reuse**: `AmiberryIPCClient` maintains persistent Unix socket connections with `asyncio.Lock`-protected access and automatic reconnect on `BrokenPipeError`/`ConnectionResetError`.
+- **IPC connection reuse**: `AmiberryIPCClient` maintains persistent socket connections (Unix socket or Windows named pipe) with `asyncio.Lock`-protected access and automatic reconnect on `BrokenPipeError`/`ConnectionResetError`.
 - **Scan caching**: `common.py` caches `scan_disk_images()` results with a 60-second TTL. Use `clear_scan_cache()` to force refresh.
 - **MCP tools**: Registered as `@app.call_tool()` handlers returning `list[TextContent]`
 - **GUI automation**: `gui_automation.py` is the single source of truth for the action
@@ -166,7 +166,7 @@ async def _ipc_bool_call(method_name, *args, success_msg, failure_msg) -> list[T
   their envelope and serialize the immutable result. Coordinates are always screenshot
   pixels tied to a `capture_id`; `request_id` is the idempotency key over a bounded
   retention window. One controller process per Amiberry instance.
-- **Platform support**: Linux, FreeBSD, and macOS. Paths follow Amiberry 8.4 (`Configurations`, `ROMs`, `SaveStates`, and the other title-case content directories). ROM, savestate, and disk listings also search the pre-8.4 names Amiberry still migrates. `RuntimeError` on other platforms. `AMIBERRY_HOME_DIR` overrides the content root unless a portable marker is active. `AMIBERRY_CONFIG_DIR` overrides the configurations directory on Linux and FreeBSD.
-- **IPC transport**: Prefers Unix socket, falls back to D-Bus on Linux. Socket paths support multiple instances.
+- **Platform support**: Linux, FreeBSD, macOS, and Windows. Paths follow Amiberry 8.4 (`Configurations`, `ROMs`, `SaveStates`, and the other title-case content directories). ROM, savestate, and disk listings also search the pre-8.4 names Amiberry still migrates. `RuntimeError` on other platforms. `AMIBERRY_HOME_DIR` overrides the content root unless a portable marker is active. `AMIBERRY_CONFIG_DIR` overrides the configurations directory on Linux and FreeBSD (not honored on Windows).
+- **IPC transport**: Unix socket, Windows named pipe (`\\.\pipe\amiberry`, `amiberry_1`..`amiberry_9`), or D-Bus on Linux. Endpoint paths support multiple instances. Windows needs a ProactorEventLoop and discovers pipes by listing `\\.\pipe\` (never `os.path.exists`, which opens the pipe).
 - **Security**: Path traversal prevention on all user-supplied paths. IPC argument sanitization (tab/newline stripping).
 - **Optional deps**: `fastapi`/`uvicorn` for HTTP, `jeepney` for D-Bus — guarded by try/except ImportError

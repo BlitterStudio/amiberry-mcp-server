@@ -10,56 +10,11 @@ Covers:
 """
 
 import asyncio
-import platform
 import subprocess
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-# Patch platform detection before importing modules that depend on config.py,
-# so the test suite runs on any OS (the project targets macOS/Linux only).
-if platform.system() not in ("Darwin", "Linux"):
-    _cfg = "amiberry_mcp.config"
-    if _cfg not in sys.modules:
-        from types import ModuleType
-
-        _mod = ModuleType(_cfg)
-        _mod.__dict__.update(  # type: ignore[attr-defined]
-            IS_MACOS=False,
-            IS_LINUX=True,
-            EMULATOR_BINARY="amiberry",
-        )
-        from pathlib import Path as _P
-
-        _home = _P.home() / "Amiberry"
-        for _attr, _val in {
-            "AMIBERRY_HOME": _home,
-            "CONFIG_DIR": _home / "conf",
-            "SYSTEM_CONFIG_DIR": None,
-            "SAVESTATE_DIR": _home / "savestates",
-            "SCREENSHOT_DIR": _home / "screenshots",
-            "LOG_DIR": _home / "logs",
-            "ROM_DIR": _home / "kickstarts",
-            "DISK_IMAGE_DIRS": [_home / "floppies"],
-            "FLOPPY_EXTENSIONS": [".adf"],
-            "HARDFILE_EXTENSIONS": [".hdf"],
-            "LHA_EXTENSIONS": [".lha"],
-            "CD_EXTENSIONS": [".iso"],
-            "SUPPORTED_MODELS": ["A500", "A1200", "CD32"],
-        }.items():
-            setattr(_mod, _attr, _val)
-
-        def _ensure_directories_exist() -> None:
-            pass
-
-        def _get_platform_info() -> dict:
-            return {}
-
-        _mod.ensure_directories_exist = _ensure_directories_exist  # type: ignore[attr-defined]
-        _mod.get_platform_info = _get_platform_info  # type: ignore[attr-defined]
-        sys.modules[_cfg] = _mod
 
 from amiberry_mcp.ipc_client import (
     ActionableCaptureGeometry,

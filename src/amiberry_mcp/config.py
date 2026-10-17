@@ -15,6 +15,7 @@ _PLATFORM = platform.system()
 IS_MACOS = _PLATFORM == "Darwin"
 IS_LINUX = _PLATFORM == "Linux"
 IS_FREEBSD = _PLATFORM == "FreeBSD"
+IS_WINDOWS = _PLATFORM == "Windows"
 IS_POSIX = IS_LINUX or IS_FREEBSD
 
 # Official --model names from Amiberry's usage text (main.cpp).
@@ -38,7 +39,11 @@ LHA_EXTENSIONS = [".lha"]
 CD_EXTENSIONS = [".iso", ".cue", ".chd", ".bin", ".nrg"]
 
 EMULATOR_BINARY = (
-    "/Applications/Amiberry.app/Contents/MacOS/Amiberry" if IS_MACOS else "amiberry"
+    "/Applications/Amiberry.app/Contents/MacOS/Amiberry"
+    if IS_MACOS
+    else "Amiberry.exe"
+    if IS_WINDOWS
+    else "amiberry"
 )
 
 
@@ -100,6 +105,25 @@ def _legacy_content_dirs(
     return roms, savestates, disks
 
 
+def _windows_settings_dir(
+    environ: Mapping[str, str], home: Path, portable_root: Path | None
+) -> Path:
+    """Resolve the Windows settings directory the way Amiberry does.
+
+    Order: ``%LOCALAPPDATA%\\Amiberry``, then ``%APPDATA%\\Amiberry``, then
+    ``<home>\\AppData\\Local\\Amiberry``, then ``<portable root>\\Settings``.
+    """
+    local_app_data = _nonempty(environ, "LOCALAPPDATA")
+    if local_app_data:
+        return Path(local_app_data) / "Amiberry"
+    roaming_app_data = _nonempty(environ, "APPDATA")
+    if roaming_app_data:
+        return Path(roaming_app_data) / "Amiberry"
+    if portable_root is not None:
+        return portable_root / "Settings"
+    return home / "AppData" / "Local" / "Amiberry"
+
+
 def portable_marker_root(platform_name: str, emulator_path: Path | None) -> Path | None:
     """Return the executable directory when portable mode is active.
 
@@ -131,12 +155,30 @@ def resolve_amiberry_paths(
     macOS uses ``AMIBERRY_HOME_DIR`` or ``~/Documents/Amiberry`` for content
     and ``~/Library/Application Support/Amiberry`` for settings. It does not
     honor ``AMIBERRY_CONFIG_DIR`` or the portable marker.
+
+    Windows uses the portable marker, then ``AMIBERRY_HOME_DIR``, then
+    ``%USERPROFILE%\\Amiberry`` for content. Configurations always follow the
+    content root and ``AMIBERRY_CONFIG_DIR`` is not honored. Settings live in
+    ``%LOCALAPPDATA%\\Amiberry``; see ``_windows_settings_dir`` for the full
+    fallback order.
     """
-    if platform_name not in ("Darwin", "Linux", "FreeBSD"):
+    if platform_name not in ("Darwin", "Linux", "FreeBSD", "Windows"):
         raise RuntimeError(f"Unsupported platform: {platform_name}")
 
     portable_root = portable_marker_root(platform_name, emulator_path)
-    if portable_root is not None:
+    if platform_name == "Windows":
+        env_home = _nonempty(environ, "AMIBERRY_HOME_DIR")
+        if portable_root is not None:
+            content_root = portable_root
+        elif env_home:
+            content_root = Path(env_home)
+        else:
+            content_root = home / "Amiberry"
+        config_dir = content_root / "Configurations"
+        settings_dir = _windows_settings_dir(environ, home, portable_root)
+        legacy = (content_root / "conf",)
+        legacy_roms, legacy_saves, legacy_disks = _legacy_content_dirs(content_root)
+    elif portable_root is not None:
         content_root = portable_root
         config_dir = portable_root / "Configurations"
         settings_dir = portable_root / "Settings"
@@ -192,7 +234,7 @@ def _resolved_emulator_path() -> Path | None:
     return Path(found) if found else None
 
 
-if _PLATFORM not in ("Darwin", "Linux", "FreeBSD"):
+if _PLATFORM not in ("Darwin", "Linux", "FreeBSD", "Windows"):
     raise RuntimeError(f"Unsupported platform: {_PLATFORM}")
 
 _PATHS = resolve_amiberry_paths(
