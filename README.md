@@ -1,162 +1,123 @@
 # Amiberry MCP Server
 
-An MCP (Model Context Protocol) server for controlling [Amiberry](https://github.com/BlitterStudio/amiberry), the Amiga emulator, from any MCP-compatible AI assistant — Claude Desktop, Claude Code, Codex, Gemini (Antigravity), Cursor, Cline, Windsurf, and others.
+An [MCP](https://modelcontextprotocol.io) (Model Context Protocol) server for
+[Amiberry](https://github.com/BlitterStudio/amiberry), the Amiga emulator. It
+lets an AI assistant list and edit configurations, launch games and disk
+images, control a running emulation, and debug Amiga code.
 
-> **MCP is client-agnostic.** This README uses Claude Desktop as the worked example because its config path is well-known, but the server itself talks plain MCP over stdio and works with anything that speaks the protocol. The installer auto-configures Claude Desktop, Claude Code, Codex, and Gemini/Antigravity if it detects them; for other clients, point them at the same `python -m amiberry_mcp.server` command (see [Other MCP clients](#other-mcp-clients) below).
+The server speaks plain MCP over stdio, so any MCP client can use it: Claude
+Desktop, Claude Code, Codex, Gemini (Antigravity), Cursor, Cline, Windsurf, and
+others. The installer configures Claude Desktop, Claude Code, Codex, and
+Gemini/Antigravity. For other clients, see [Other MCP clients](#other-mcp-clients).
+
+A separate HTTP API exposes the same functions as REST endpoints for scripts,
+home automation, and voice assistants.
 
 ## Features
 
-### Core Features
-- Browse and launch Amiberry configurations
-- Search for disk images (ADF, HDF, DMS, LHA, ISO, CUE, CHD)
-- List and manage savestates
-- View and edit configuration file contents
-- Launch emulator with a Quickstart model (`A1000`, `A500`, `A500P`, `A600`, `A2000`, `A3000`, `A1200`, `A4000`, `CD32`, `CDTV`)
-- HTTP API for voice assistants (Siri, Google Assistant) and automation
+**Files and launching**
+- List and launch Amiberry configurations, or launch a Quickstart model
+  (`A1000`, `A500`, `A500P`, `A600`, `A2000`, `A3000`, `A1200`, `A4000`,
+  `CD32`, `CDTV`)
+- Search disk images (ADF, HDF, DMS, LHA, ISO, CUE, CHD) and launch WHDLoad
+  games from LHA archives
+- Launch CD32 and CDTV images, and set up the disk swapper for multi-disk games
+- Parse, edit, and create `.uae` configuration files from model templates
+- Read metadata from `.uss` savestates and identify Kickstart ROMs by checksum
 
-### Runtime Control
-- **Pause/Resume**: Control running emulation via IPC
-- **Save/Load State**: Save and restore states while running
-- **Disk Swapping**: Insert floppy/CD images into running emulation
-- **Live Configuration**: Query and modify config options at runtime
-- **Screenshots**: Capture screenshots from running emulation
-- **Screenshot-driven GUI Automation**: Move, click, double-click, and drag
-  safely using pixels from an exact screenshot
-- **Keyboard Input**: Send key presses or type text into the emulation
-- **Multi-instance**: Target a specific Amiberry instance when several are running
-- **Cross-platform**: Works on Linux, FreeBSD, macOS, and Windows
+**Runtime control** (needs Amiberry built with IPC support)
+- Pause, resume, reset, frame-advance, save and load states
+- Swap floppies, CDs, and WHDLoad games in a running emulation
+- Change chipset, CPU, memory, display, sound, and input settings at runtime
+- Send keystrokes, text, and mouse input
+- Take screenshots and click, drag, or hover at pixels picked from a screenshot
+- Control one of several running Amiberry instances
 
-### Developer/Debug Features
-- **Log Capture**: Launch with logging enabled and capture output to files
-- **Log Tailing**: Incremental log reading and pattern-based waiting
-- **Crash Detection**: Automatic crash detection via process signals and log scanning
-- **Config Editor**: Parse, modify, and create .uae configuration files
-- **Savestate Inspector**: Read metadata from .uss savestate files
-- **ROM Manager**: Identify and catalog Kickstart ROMs by checksum
-- **Memory Access**: Read/write emulated Amiga memory for debugging
-
-### Autonomous Troubleshooting
-- **Process Lifecycle**: Track, monitor, kill, and restart Amiberry processes
-- **Health Check**: Combined process + IPC + emulation status check
-- **Launch and Wait**: Launch Amiberry and wait until IPC is ready for commands
-- **Screenshot Analysis**: Capture screenshots with image data returned for AI analysis
-- **Crash Recovery**: Detect crashes, analyze logs, restart automatically
-
-### Game Launcher Features
-- **WHDLoad Launcher**: Search and launch WHDLoad games from LHA archives
-- **CD Image Launcher**: Launch CD32/CDTV games with auto-detection
-- **Multi-Disk Support**: Configure disk swapper for multi-disk games
-- **Config Templates**: Generate configs from pre-made model templates
+**Debugging**
+- Launch with logging, tail logs, and wait for a log pattern
+- Detect crashes from the process exit status and log contents; kill and restart
+- Read and write emulated memory, inspect CPU and custom chip registers,
+  disassemble, single-step, and set breakpoints
+- Use the GDB monitor command set (watchpoints, conditions, task and segment
+  lists) without a GDB client
 
 ## Requirements
 
-- Python 3.10 or higher
-- Amiberry emulator installed:
-  - **macOS**: Amiberry.app in `/Applications`
-  - **Linux and FreeBSD**: `amiberry` command in PATH
-  - **Windows**: `Amiberry.exe` command in PATH
-- An MCP-compatible AI client (Claude Desktop, Claude Code, Codex, Gemini/Antigravity, Cursor, Cline, Windsurf, …)
+- Python 3.10 or newer
+- Amiberry:
+  - **macOS**: `Amiberry.app` in `/Applications`
+  - **Linux and FreeBSD**: `amiberry` on `PATH`
+  - **Windows**: `Amiberry.exe` on `PATH`
+- An MCP client
 
-Linux, FreeBSD, macOS, and Windows are supported. The server raises
-`RuntimeError` on other platforms. Runtime control additionally needs Amiberry
-built with `USE_IPC_SOCKET=ON` — the default on all four platforms since the
-Windows named-pipe transport landed after 8.4.1. On Windows the control
-endpoint is the named pipe `\\.\pipe\amiberry` (further instances:
-`\\.\pipe\amiberry_1` .. `\\.\pipe\amiberry_9`); elsewhere it is the Unix
-socket `$XDG_RUNTIME_DIR/amiberry.sock` or `/tmp/amiberry.sock`.
+The server runs on Linux, FreeBSD, macOS, and Windows, and raises
+`RuntimeError` on any other platform.
 
-## Project Structure
-
-```
-amiberry-mcp-server/
-├── src/
-│   └── amiberry_mcp/
-│       ├── __init__.py
-│       ├── config.py          # Platform detection and paths
-│       ├── common.py          # Shared helpers (launch, scan, validation)
-│       ├── shared_state.py    # Process state, IPC client caching, launch helpers
-│       ├── server.py          # MCP server (150 tools, data-driven dispatch)
-│       ├── http_server.py     # HTTP API server (FastAPI)
-│       ├── ipc_client.py      # IPC client with persistent connections
-│       ├── monitor.py         # MONITOR command builders and reply parsing
-│       ├── gui_automation.py  # Screenshot capture registry and GUI action service
-│       ├── uae_config.py      # Config file parser/generator
-│       ├── savestate.py       # Savestate metadata parser
-│       └── rom_manager.py     # ROM identification
-├── scripts/
-│   ├── install.sh             # MCP server installer
-│   ├── install_http_api.sh    # HTTP API installer
-│   ├── start_http_api.sh      # HTTP API launcher
-│   ├── uninstall.sh           # Uninstaller
-│   └── test_http_api.sh       # HTTP API tests
-├── tests/                     # pytest suite, one test file per module
-├── docs/
-│   ├── HTTP_API_GUIDE.md      # HTTP API documentation
-│   └── QUICKSTART_HTTP_API.md # HTTP API quick reference
-├── AGENTS.md                  # Architecture and code conventions
-├── pyproject.toml
-├── README.md
-└── LICENSE
-```
+Runtime control talks to Amiberry over IPC, which needs Amiberry built with
+`USE_IPC_SOCKET=ON`. That is the default on all four platforms since Windows
+gained the named-pipe transport after 8.4.1. On Windows the endpoint is the
+named pipe `\\.\pipe\amiberry` (further instances use `\\.\pipe\amiberry_1`
+through `\\.\pipe\amiberry_9`). Elsewhere it is the Unix socket
+`$XDG_RUNTIME_DIR/amiberry.sock`, or `/tmp/amiberry.sock` when
+`XDG_RUNTIME_DIR` is unset.
 
 ## Installation
 
-### Quick Install (Recommended)
+### Installer (macOS, Linux, FreeBSD)
 
 ```bash
-# Clone the repository
 git clone https://github.com/BlitterStudio/amiberry-mcp-server.git
 cd amiberry-mcp-server
-
-# Run the installer
 ./scripts/install.sh
 ```
 
-The installer will:
-1. Create a Python virtual environment
-2. Install dependencies
-3. Auto-detect and configure any of: Claude Desktop, Claude Code, Codex, Gemini (Antigravity)
+The installer:
+1. Creates a virtual environment in `venv/`
+2. Installs the package and its dependencies
+3. Adds an `amiberry` entry to the Claude Desktop config, creating the file if
+   needed
+4. Adds the same entry for Claude Code, Codex, and Gemini (Antigravity) when it
+   finds them installed
 
-> Other MCP clients (Cursor, Cline, Windsurf, …) aren't auto-configured — see [Other MCP clients](#other-mcp-clients) for the snippet to paste into their config.
+Other clients need the entry added by hand. See
+[Other MCP clients](#other-mcp-clients).
 
-### Manual Installation
+### Manual installation
+
+The installer is a shell script and does not run on Windows. Install manually
+there, or on any platform where you prefer to:
 
 ```bash
-# Create and activate virtual environment
 python3 -m venv venv
-source venv/bin/activate
-
-# Install the package
-pip install -e .
-
-# Configure your MCP client manually (see below)
+source venv/bin/activate        # Windows: venv\Scripts\activate
+pip install -e .                # or ".[http]" to include the HTTP API
 ```
 
-### Client Configuration
+Then add the server to your client as described below.
 
-All MCP clients ultimately need the same two things: the command to launch and its args. For this server:
+## Client configuration
 
-| Field   | Value                                              |
-|---------|----------------------------------------------------|
-| Command | `/path/to/amiberry-mcp-server/venv/bin/python`     |
-| Args    | `["-m", "amiberry_mcp.server"]`                    |
-| Transport | stdio                                            |
+Every stdio MCP client needs the same command and arguments:
 
-#### Claude Desktop
+| Field     | Value                                                    |
+|-----------|----------------------------------------------------------|
+| Command   | `/path/to/amiberry-mcp-server/venv/bin/python`           |
+|           | Windows: `C:\path\to\amiberry-mcp-server\venv\Scripts\python.exe` |
+| Args      | `["-m", "amiberry_mcp.server"]`                          |
+| Transport | stdio                                                    |
 
-Edit your Claude Desktop configuration file:
+### Claude Desktop
 
-**macOS:**
-```bash
-nano ~/Library/Application\ Support/Claude/claude_desktop_config.json
-```
+Edit the config file for your platform:
 
-**Linux:**
-```bash
-nano ~/.config/Claude/claude_desktop_config.json
-```
+| Platform | Config file |
+|----------|-------------|
+| macOS    | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Linux    | `~/.config/Claude/claude_desktop_config.json` |
+| Windows  | `%APPDATA%\Claude\claude_desktop_config.json` |
 
-Add this configuration:
+Add the server under `mcpServers`:
+
 ```json
 {
   "mcpServers": {
@@ -168,331 +129,270 @@ Add this configuration:
 }
 ```
 
-Then restart Claude Desktop.
+On Windows, escape the backslashes in the JSON path
+(`"C:\\path\\to\\amiberry-mcp-server\\venv\\Scripts\\python.exe"`).
+Restart Claude Desktop afterwards.
 
-#### Other MCP clients
+### Other MCP clients
 
-The same `command` / `args` pair works for any stdio MCP client. Paste an equivalent entry into:
+Add an entry with the same command and arguments:
 
-- **Claude Code** — `~/.claude.json` (the installer handles this automatically)
-- **Codex** — `~/.codex/config.toml`, as a `[mcp_servers.amiberry]` block (installer handles this)
-- **Gemini / Antigravity** — `~/.gemini/antigravity/mcp_config.json` (installer handles this)
-- **Cursor** — `~/.cursor/mcp.json` (or `.cursor/mcp.json` inside a project)
-- **Cline / Continue / Windsurf** — see each client's MCP settings UI; same command/args
-- **Anything else MCP-aware** — point it at `python -m amiberry_mcp.server` via stdio
+| Client | Where |
+|--------|-------|
+| Claude Code | `~/.claude.json` (set by the installer) |
+| Codex | `~/.codex/config.toml`, as a `[mcp_servers.amiberry]` table (set by the installer) |
+| Gemini / Antigravity | `~/.gemini/antigravity/mcp_config.json` (set by the installer) |
+| Cursor | `~/.cursor/mcp.json`, or `.cursor/mcp.json` inside a project |
+| Cline, Continue, Windsurf | the client's MCP settings |
+| Any other MCP client | run `python -m amiberry_mcp.server` over stdio |
 
-## Verification
+### Checking the setup
 
-After installation, restart your AI client. You should see the Amiberry MCP tools become available (typically shown as a tool/hammer icon, in a `/mcp` list, or in the client's tool inspector).
+Restart the client. The Amiberry tools should appear in its tool list (the
+`/mcp` command, a tools icon, or a tool inspector, depending on the client).
+Then ask something like:
 
-Try asking your assistant:
 - "What Amiberry configurations do I have?"
 - "Show me my disk images"
 - "Launch Amiberry with the A500 model"
 
-## Default Directory Structure
+## Amiberry directories
 
-### macOS
+The server reads and writes the same directories Amiberry uses. It also
+creates a `logs` directory under the content root for logs it captures.
+
+| Platform | Content root | Settings (`amiberry.conf`, `amiberry.ini`) |
+|----------|--------------|----------------------------------------------|
+| macOS | `~/Documents/Amiberry` | `~/Library/Application Support/Amiberry` |
+| Linux, FreeBSD | `~/Amiberry` | `$XDG_CONFIG_HOME/amiberry` (default `~/.config/amiberry`) |
+| Windows | `%USERPROFILE%\Amiberry` | `%LOCALAPPDATA%\Amiberry`, falling back to `%APPDATA%\Amiberry` |
+
+Inside the content root:
+
 ```
-~/Documents/Amiberry/
+Amiberry/
 ├── Configurations/    # .uae config files
-├── Floppies/          # .adf, .adz, .dms files
-├── HardDrives/        # .hdf, .hdz files
+├── Floppies/          # .adf, .adz, .dms
+├── HardDrives/        # .hdf, .hdz
 ├── LHA/               # .lha archives (WHDLoad games)
-├── CDROMs/            # ISO/CUE/CHD images
-├── SaveStates/        # .uss savestate files
+├── CDROMs/            # ISO, CUE, CHD
+├── SaveStates/        # .uss savestates
 ├── Screenshots/
-├── ROMs/              # Kickstart ROM files
-└── logs/              # Logs captured by this server
+├── ROMs/              # Kickstart ROMs
+└── logs/              # logs captured by this server
 ```
 
-Settings (`amiberry.conf`, `amiberry.ini`) live in
-`~/Library/Application Support/Amiberry`, not under the content root.
+The settings directory holds settings only; it is not a second `.uae` config
+tree.
 
-### Linux and FreeBSD
-```
-~/Amiberry/
-├── Configurations/    # .uae config files
-├── Floppies/
-├── HardDrives/
-├── LHA/
-├── CDROMs/
-├── SaveStates/
-├── Screenshots/
-├── ROMs/
-└── logs/              # Logs captured by this server
-```
+Overrides:
 
-Settings live in `$XDG_CONFIG_HOME/amiberry` (default `~/.config/amiberry`).
-That directory is not a second `.uae` config tree. `AMIBERRY_CONFIG_DIR`
-overrides the configurations directory. A file named `amiberry.portable` next
-to the `amiberry` binary switches Amiberry into portable mode and this server
-follows that root; macOS ignores the marker. `AMIBERRY_HOME_DIR` overrides the
-content root when portable mode is off. Listings also search the pre-8.4
-names Amiberry still migrates (`kickstarts`, `roms`, `savestates`,
-`floppies`, `harddrives`, `lha`, and their case variants) so files copied
-from an older tree are not missed.
+- `AMIBERRY_HOME_DIR` replaces the content root, unless portable mode is on.
+- An `amiberry.portable` file next to the Amiberry binary switches Amiberry to
+  portable mode, and the server follows that root. macOS ignores the marker.
+- `AMIBERRY_CONFIG_DIR` replaces the configurations directory on Linux and
+  FreeBSD. Windows does not honor it: configurations are always in
+  `<content root>\Configurations`.
 
-### Windows
-```
-%USERPROFILE%\Amiberry\
-├── Configurations\    # .uae config files
-├── Floppies\
-├── HardDrives\
-├── LHA\
-├── CDROMs\
-├── SaveStates\
-├── Screenshots\
-├── ROMs\
-└── logs\              # Logs captured by this server
-```
+ROM, savestate, and disk listings also search the pre-8.4 directory names that
+Amiberry still migrates (`kickstarts`, `roms`, `savestates`, `floppies`,
+`harddrives`, `lha`, and their case variants), so files copied from an older
+tree still show up.
 
-Settings live in `%LOCALAPPDATA%\Amiberry` (falling back to `%APPDATA%\Amiberry`).
-`AMIBERRY_CONFIG_DIR` is not honored on Windows: configurations always sit at
-`<content>\Configurations`. `AMIBERRY_HOME_DIR` overrides the content root and
-an `amiberry.portable` marker next to `Amiberry.exe` switches Amiberry into
-portable mode, as on Linux. This server launches `Amiberry.exe` from `PATH`.
+## MCP tools
 
-## Available MCP Tools
+The server exposes 150 tools. Tools whose names start with `runtime_` act on a
+running emulation over IPC; the rest work on files and processes.
 
-The server exposes 150 tools. Names starting with `runtime_` act on a running
-emulation over IPC; the rest work on files and processes.
+### Configurations and files
 
-### Core Tools
 | Tool | Description |
 |------|-------------|
-| `list_configs` | List available configuration files |
-| `get_config_content` | View contents of a config file |
-| `list_disk_images` | Search for disk images (ADF/HDF/DMS/LHA) |
-| `launch_amiberry` | Launch with config, model, disk, or LHA file |
-| `list_savestates` | List available savestate files |
+| `list_configs` | List configuration files |
+| `get_config_content` | Show the contents of a config file |
+| `parse_config` | Parse a `.uae` file into structured data |
+| `modify_config` | Change options in a config file |
+| `create_config` | Create a config from a model template |
+| `list_disk_images` | Search disk images (ADF, HDF, DMS, LHA) |
+| `list_cd_images` | List CD images |
+| `list_savestates` | List savestate files |
+| `inspect_savestate` | Read metadata from a `.uss` savestate |
+| `list_roms` | List ROMs with identification |
+| `identify_rom` | Identify a ROM by checksum |
+| `get_amiberry_version` | Show the installed Amiberry version |
 | `get_platform_info` | Show platform and path information |
 
-### Configuration Tools
-| Tool | Description |
-|------|-------------|
-| `parse_config` | Parse .uae config file into structured data |
-| `modify_config` | Change specific options in a config file |
-| `create_config` | Generate new config from template |
+### Launching
 
-### Launch Tools
 | Tool | Description |
 |------|-------------|
-| `launch_with_logging` | Launch with --log flag and capture output |
-| `launch_whdload` | Search and launch WHDLoad games |
-| `launch_cd` | Launch CD images (ISO/CUE/CHD) |
-| `set_disk_swapper` | Configure multi-disk game support |
+| `launch_amiberry` | Launch with a config, model, disk, or LHA file |
+| `launch_with_logging` | Launch with `--log` and capture the output to a file |
+| `launch_and_wait_for_ipc` | Launch and wait until the IPC endpoint is ready |
+| `launch_whdload` | Search for and launch a WHDLoad game |
+| `launch_cd` | Launch a CD image (ISO, CUE, CHD) |
+| `set_disk_swapper` | Set up the disk swapper for a multi-disk game |
 
-### Media Tools
+### Processes, logs, and crashes
+
 | Tool | Description |
 |------|-------------|
-| `list_cd_images` | List available CD images |
+| `check_process_alive` | Check whether Amiberry is running (PID, exit code, signal) |
+| `get_process_info` | Process details with crash detection |
+| `kill_amiberry` | Force-kill a running or hung Amiberry |
+| `wait_for_exit` | Wait for the process to exit, with a timeout |
+| `restart_amiberry` | Kill and relaunch with the same command |
+| `health_check` | Check process, IPC, emulation status, and FPS in one call |
 | `list_logs` | List captured log files |
 | `get_log_content` | Read a captured log file |
+| `tail_log` | Return log lines added since the last read |
+| `wait_for_log_pattern` | Wait for a regex to appear in the log |
+| `get_crash_info` | Detect a crash from the process state and log contents |
 
-### Analysis Tools
+### Runtime: emulation and state
+
 | Tool | Description |
 |------|-------------|
-| `inspect_savestate` | Read metadata from .uss savestate files |
-| `list_roms` | List available ROMs with identification |
-| `identify_rom` | Get ROM details by checksum |
-| `get_amiberry_version` | Get Amiberry version info |
-
-### Runtime Control Tools
-
-#### Emulation Control
-| Tool | Description |
-|------|-------------|
-| `pause_emulation` | Pause a running emulation |
-| `resume_emulation` | Resume a paused emulation |
+| `get_runtime_status` | Get emulation status |
+| `pause_emulation` | Pause emulation |
+| `resume_emulation` | Resume emulation |
 | `reset_emulation` | Soft or hard reset |
-| `runtime_frame_advance` | Advance N frames when paused |
-
-#### Media Control
-| Tool | Description |
-|------|-------------|
-| `runtime_insert_floppy` | Insert floppy disk into drive |
-| `runtime_disk_swap` | Insert a swapper-list disk into a drive |
-| `runtime_query_disk_swap` | Query which swapper slot is in a drive (`-1` if none) |
-| `runtime_eject_floppy` | Eject floppy from drive |
-| `runtime_insert_cd` | Insert CD image |
-| `runtime_eject_cd` | Eject CD |
-
-#### State Management
-| Tool | Description |
-|------|-------------|
-| `runtime_screenshot` | Take a screenshot |
+| `runtime_frame_advance` | Advance N frames while paused |
+| `runtime_quit` | Ask Amiberry to quit over IPC (not a process kill) |
 | `runtime_save_state` | Save state while running |
 | `runtime_load_state` | Load a savestate |
-| `runtime_quicksave` | Quick save to slot (0-9) |
-| `runtime_quickload` | Quick load from slot (0-9) |
+| `runtime_quicksave` | Quick save to slot 0-9 |
+| `runtime_quickload` | Quick load from slot 0-9 |
+| `runtime_screenshot` | Save a screenshot to a file |
+| `runtime_get_config` | Get a config option value |
+| `runtime_set_config` | Set a config option |
+| `runtime_load_config` | Load a `.uae` file into the running emulation |
+| `runtime_list_configs` | List config files known to the running emulator |
+| `runtime_get_led_status` | Get LED states (power, floppy, HD, CD) |
+| `runtime_get_fps` | Get frame rate and idle percentage |
 
-#### Audio Control
+### Runtime: media
+
 | Tool | Description |
 |------|-------------|
-| `runtime_set_volume` | Set master volume (0-100) |
-| `runtime_get_volume` | Get current volume |
-| `runtime_mute` | Mute audio |
-| `runtime_unmute` | Unmute audio |
-
-#### Display Control
-| Tool | Description |
-|------|-------------|
-| `runtime_toggle_fullscreen` | Toggle fullscreen/windowed mode |
-| `runtime_set_warp` | Enable/disable warp mode |
-| `runtime_get_warp` | Get warp mode status |
-| `runtime_set_display_mode` | Set mode (0=window, 1=fullscreen, 2=fullwindow) |
-| `runtime_get_display_mode` | Get current display mode |
-| `runtime_set_ntsc` | Set video mode (0=PAL, 1=NTSC) |
-| `runtime_get_ntsc` | Get current video mode (PAL/NTSC) |
-
-#### Sound Control
-| Tool | Description |
-|------|-------------|
-| `runtime_set_sound_mode` | Set mode (0=off, 1=normal, 2=stereo, 3=best) |
-| `runtime_get_sound_mode` | Get current sound mode |
-
-#### Joystick/Input Control
-| Tool | Description |
-|------|-------------|
-| `runtime_get_joyport_mode` | Get port mode (0-3) |
-| `runtime_set_joyport_mode` | Set port mode (0=default, 2=mouse, 3=joy, 7=cd32) |
-| `runtime_get_autofire` | Get autofire mode for port |
-| `runtime_set_autofire` | Set autofire (0=off, 1=normal, 2=toggle, 3=always, 4=toggle_noaf) |
-
-#### Floppy Control
-| Tool | Description |
-|------|-------------|
+| `runtime_insert_floppy` | Insert a floppy image into a drive |
+| `runtime_eject_floppy` | Eject a floppy |
+| `runtime_list_floppies` | List floppy drives and their contents |
+| `runtime_disk_swap` | Insert a disk from the swapper list into a drive |
+| `runtime_query_disk_swap` | Show which swapper slot is in a drive (`-1` if none) |
 | `runtime_set_floppy_speed` | Set floppy speed (0=turbo, 100=1x, 200=2x, 400=4x, 800=8x) |
-| `runtime_get_floppy_speed` | Get current floppy speed |
-| `runtime_disk_write_protect` | Set disk write protection for drive |
-| `runtime_get_disk_write_protect` | Get disk write protection status |
+| `runtime_get_floppy_speed` | Get floppy speed |
+| `runtime_disk_write_protect` | Set write protection for a drive |
+| `runtime_get_disk_write_protect` | Get write protection for a drive |
+| `runtime_insert_cd` | Insert a CD image |
+| `runtime_eject_cd` | Eject the CD |
+| `runtime_list_harddrives` | List mounted hard drives and directories |
+| `runtime_insert_whdload` | Load a WHDLoad game (LHA archive or directory) |
+| `runtime_eject_whdload` | Eject the loaded WHDLoad game |
+| `runtime_get_whdload` | Show the loaded WHDLoad game |
 
-#### Display Control (additional)
-| Tool | Description |
-|------|-------------|
-| `runtime_toggle_rtg` | Toggle between RTG and chipset display |
-| `runtime_toggle_status_line` | Cycle status line (off/chipset/rtg/both) |
-| `runtime_get_fps` | Get current frame rate and idle percentage |
+### Runtime: hardware
 
-#### Input Control (additional)
-| Tool | Description |
-|------|-------------|
-| `runtime_toggle_mouse_grab` | Toggle mouse capture/grab |
-| `runtime_get_mouse_speed` | Get current mouse sensitivity |
-
-#### Hardware/Chipset Control
 | Tool | Description |
 |------|-------------|
 | `runtime_set_chipset` | Set chipset (OCS, ECS_AGNUS, ECS_DENISE, ECS, AGA) |
-| `runtime_get_chipset` | Get current chipset |
-| `runtime_set_cpu_speed` | Set CPU speed (-1=max, 0=cycle-exact, >0=%) |
-| `runtime_get_cpu_speed` | Get current CPU speed setting |
-| `runtime_get_memory_config` | Get all memory sizes (chip, fast, bogo, z3, rtg) |
+| `runtime_get_chipset` | Get chipset |
+| `runtime_set_cpu_model` | Set CPU model (68000, 68010, 68020, 68030, 68040, 68060) |
+| `runtime_get_cpu_model` | Get CPU model |
+| `runtime_set_cpu_speed` | Set CPU speed (-1=max, 0=cycle-exact, >0=percent) |
+| `runtime_get_cpu_speed` | Get CPU speed |
+| `runtime_get_memory_config` | Get memory sizes (chip, fast, bogo, Z3, RTG) |
+| `runtime_set_chip_mem` | Set Chip RAM (256, 512, 1024, 2048, 4096, 8192 KB) |
+| `runtime_set_fast_mem` | Set Fast RAM (0, 1024, 2048, 4096, 8192 KB) |
+| `runtime_set_slow_mem` | Set Slow (Bogo) RAM (0, 256, 512, 1024, 1792 KB) |
+| `runtime_set_z3_mem` | Set Zorro III RAM (0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024 MB) |
 
-#### Memory Configuration
+### Runtime: display and sound
+
 | Tool | Description |
 |------|-------------|
-| `runtime_set_chip_mem` | Set Chip RAM size (256, 512, 1024, 2048, 4096, 8192 KB) |
-| `runtime_set_fast_mem` | Set Fast RAM size (0, 1024, 2048, 4096, 8192 KB) |
-| `runtime_set_slow_mem` | Set Slow/Bogo RAM size (0, 256, 512, 1024, 1792 KB) |
-| `runtime_set_z3_mem` | Set Zorro III RAM size (0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024 MB) |
-| `runtime_get_cpu_model` | Get current CPU model (68000, 68010, 68020, 68030, 68040, 68060) |
-| `runtime_set_cpu_model` | Set CPU model |
-
-#### Window/Display Control
-| Tool | Description |
-|------|-------------|
-| `runtime_set_window_size` | Set emulator window size (width x height) |
-| `runtime_get_window_size` | Get current window dimensions |
-| `runtime_set_scaling` | Set scaling mode (-1=auto, 0=nearest, 1=linear, 2=integer) |
-| `runtime_get_scaling` | Get current scaling mode |
+| `runtime_toggle_fullscreen` | Toggle fullscreen and windowed mode |
+| `runtime_set_display_mode` | Set display mode (0=window, 1=fullscreen, 2=fullwindow) |
+| `runtime_get_display_mode` | Get display mode |
+| `runtime_set_window_size` | Set window size (width x height) |
+| `runtime_get_window_size` | Get window size |
+| `runtime_set_scaling` | Set scaling (-1=auto, 0=nearest, 1=linear, 2=integer) |
+| `runtime_get_scaling` | Get scaling mode |
 | `runtime_set_line_mode` | Set line mode (single, double, scanlines) |
-| `runtime_get_line_mode` | Get current line mode |
-| `runtime_set_resolution` | Set display resolution (lores, hires, superhires) |
-| `runtime_get_resolution` | Get current resolution mode |
-| `runtime_set_autocrop` | Enable/disable automatic display cropping |
-| `runtime_get_autocrop` | Get current autocrop status |
+| `runtime_get_line_mode` | Get line mode |
+| `runtime_set_resolution` | Set resolution (lores, hires, superhires) |
+| `runtime_get_resolution` | Get resolution |
+| `runtime_set_autocrop` | Turn automatic cropping on or off |
+| `runtime_get_autocrop` | Get autocrop state |
+| `runtime_set_ntsc` | Set video mode (0=PAL, 1=NTSC) |
+| `runtime_get_ntsc` | Get video mode |
+| `runtime_toggle_rtg` | Switch between RTG and chipset display |
+| `runtime_toggle_status_line` | Cycle the status line (off, chipset, RTG, both) |
+| `runtime_set_warp` | Turn warp mode on or off |
+| `runtime_get_warp` | Get warp mode |
+| `runtime_set_volume` | Set master volume (0-100) |
+| `runtime_get_volume` | Get volume |
+| `runtime_mute` | Mute audio |
+| `runtime_unmute` | Unmute audio |
+| `runtime_set_sound_mode` | Set sound mode (0=off, 1=normal, 2=stereo, 3=best) |
+| `runtime_get_sound_mode` | Get sound mode |
 
-#### WHDLoad Control
+### Runtime: input
+
 | Tool | Description |
 |------|-------------|
-| `runtime_insert_whdload` | Load a WHDLoad game (LHA archive or directory) |
-| `runtime_eject_whdload` | Eject the currently loaded WHDLoad game |
-| `runtime_get_whdload` | Get info about currently loaded WHDLoad game |
+| `runtime_send_key` | Press, release, or tap a key by name (`space`, `return`, `f1`) or scancode |
+| `runtime_send_text` | Type a string, adding Shift for capitals and symbols |
+| `runtime_send_mouse` | Send mouse movement and button presses |
+| `runtime_set_mouse_speed` | Set mouse sensitivity (10-200) |
+| `runtime_get_mouse_speed` | Get mouse sensitivity |
+| `runtime_toggle_mouse_grab` | Toggle mouse capture |
+| `runtime_set_joyport_mode` | Set port mode (0=default, 2=mouse, 3=joystick, 7=CD32 pad) |
+| `runtime_get_joyport_mode` | Get port mode |
+| `runtime_set_autofire` | Set autofire (0=off, 1=normal, 2=toggle, 3=always, 4=toggle_noaf) |
+| `runtime_get_autofire` | Get autofire mode for a port |
 
-#### Instance Control
+### Runtime: screenshot-driven GUI automation
+
 | Tool | Description |
 |------|-------------|
-| `get_active_instance` | Get the currently active Amiberry instance being controlled |
-| `set_active_instance` | Set the active instance to control (e.g. 0, 1, 2; `null` to auto-discover) |
+| `runtime_screenshot_view` | Return the screenshot image plus capture metadata for GUI actions |
+| `runtime_gui_move` | Move or hover at a pixel in that screenshot |
+| `runtime_gui_click` | Click or double-click a mouse button at a pixel |
+| `runtime_gui_drag` | Drag with a mouse button between two pixels |
 
-#### Debugging and Diagnostics
+See [Screenshot-driven GUI automation](#screenshot-driven-gui-automation).
+
+### Runtime: debugging
+
 | Tool | Description |
 |------|-------------|
-| `runtime_debug_activate` | Activate the built-in debugger |
-| `runtime_debug_deactivate` | Deactivate debugger and resume emulation |
-| `runtime_debug_status` | Get debugger status (active/inactive) |
+| `runtime_debug_activate` | Enter the built-in debugger |
+| `runtime_debug_deactivate` | Leave the debugger and resume emulation |
+| `runtime_debug_status` | Get debugger status |
 | `runtime_debug_step` | Single-step CPU instructions |
-| `runtime_debug_continue` | Continue execution until next breakpoint |
-| `runtime_get_cpu_regs` | Get all CPU registers (D0-D7, A0-A7, PC, SR, USP, ISP) |
-| `runtime_get_custom_regs` | Get custom chip registers (DMACON, INTENA, INTREQ, etc.) |
-| `runtime_disassemble` | Disassemble instructions at a memory address |
-| `runtime_set_breakpoint` | Set a breakpoint. Optional `slot` is 0-19; omit it to use the first free slot |
-| `runtime_clear_breakpoint` | Clear a breakpoint or all breakpoints |
-| `runtime_list_breakpoints` | List all active breakpoints |
-| `runtime_get_copper_state` | Get Copper coprocessor state |
-| `runtime_get_blitter_state` | Get Blitter state (busy, channels, dimensions) |
+| `runtime_debug_step_over` | Step over subroutine calls (JSR, BSR) |
+| `runtime_debug_continue` | Run until the next breakpoint |
+| `runtime_get_cpu_regs` | Get CPU registers (D0-D7, A0-A7, PC, SR, USP, ISP) |
+| `runtime_get_custom_regs` | Get custom chip registers (DMACON, INTENA, INTREQ, and others) |
+| `runtime_disassemble` | Disassemble at an address |
+| `runtime_set_breakpoint` | Set a breakpoint. `slot` (0-19) is optional; without it the first free slot is used |
+| `runtime_clear_breakpoint` | Clear one breakpoint or all of them |
+| `runtime_list_breakpoints` | List breakpoints |
+| `runtime_read_memory` | Read 1, 2, or 4 bytes of emulated memory |
+| `runtime_write_memory` | Write 1, 2, or 4 bytes of emulated memory |
+| `runtime_get_copper_state` | Get Copper state |
+| `runtime_get_blitter_state` | Get Blitter state (busy, channels, size) |
 | `runtime_get_drive_state` | Get floppy drive state (track, side, motor) |
 | `runtime_get_audio_state` | Get audio channel states |
 | `runtime_get_dma_state` | Get DMA channel states |
 
-#### Status
-| Tool | Description |
-|------|-------------|
-| `runtime_get_led_status` | Get all LED states (power, floppy, HD, CD) |
-| `runtime_list_harddrives` | List mounted hard drives/directories |
+### Runtime: debugger monitor
 
-#### Configuration
-| Tool | Description |
-|------|-------------|
-| `get_runtime_status` | Get emulation status |
-| `runtime_get_config` | Get config option value |
-| `runtime_set_config` | Set config option |
-| `runtime_list_configs` | List config files known to the running emulator |
-
-#### Input Control
-| Tool | Description |
-|------|-------------|
-| `runtime_send_key` | Send keyboard input by key name (e.g. 'space', 'return', 'f1') or scancode, with press/release/press-and-release |
-| `runtime_send_text` | Send a string of text into the emulation (handles shift for uppercase/symbols) |
-| `runtime_send_mouse` | Send mouse movement and buttons |
-| `runtime_set_mouse_speed` | Set mouse sensitivity (10-200) |
-
-#### Utility
-| Tool | Description |
-|------|-------------|
-| `runtime_get_version` | Get Amiberry and SDL version info |
-| `runtime_ping` | Test IPC connection (returns PONG) |
-| `runtime_help` | List IPC commands the running Amiberry accepts |
-| `runtime_quit` | Ask Amiberry to quit over IPC (not a process kill) |
-| `check_ipc_connection` | Check IPC availability |
-
-#### Debugger monitor
-`MONITOR` runs the GDB monitor command set without a GDB client. Typed tools
-build the command, check arguments, and parse the JSON reply. A raw
-`runtime_monitor` tool sends one command string. HTTP exposes the same raw
+`MONITOR` runs the GDB monitor command set without a GDB client. The typed
+tools below build the command, check the arguments, and parse the JSON reply.
+`runtime_monitor` sends one raw command string. The HTTP API exposes the raw
 command as `POST /runtime/debug/monitor`.
-
-Read-only queries work while the guest runs, except guest-RAM reads when
-`cpu_threaded=true`. These actions change debugger state and need `PAUSE` or
-a stopped native debugger: watch add/range/remove/clear-events, DMA watch
-add/remove, condition add/remove, exception mask, history on/off, guest-output
-on/off/clear, and process-break name/address/clear. A watch, condition,
-exception, or process entry stops in the native debugger. `runtime_debug_status`
-then reports `stopped=1` and `reason=` (`T05awatch:...`, `T05breakpoint:N;`,
-`T05winuae-exception:...`, `T05winuae-entry:...`). `DEBUG_CONTINUE` resumes.
-`step-over`, `checkpoint`, and `input sequence` are refused.
 
 | Tool | Actions |
 |------|---------|
@@ -510,67 +410,55 @@ then reports `stopped=1` and `reason=` (`T05awatch:...`, `T05breakpoint:N;`,
 | `runtime_process_break` | `name`, `address`, `status`, `clear` |
 | `runtime_input` | `event`, `release`, `status` |
 
+Read-only queries work while the guest runs, except guest RAM reads when
+`cpu_threaded=true`.
+
+These actions change debugger state and need the emulation paused (`PAUSE`) or
+the native debugger stopped:
+
+- watch `add`, `range`, `remove`, `clear-events`
+- DMA watch `add`, `remove`
+- condition `add`, `remove`
+- exception `mask`
+- history `on`, `off`
+- guest output `on`, `off`, `clear`
+- process break `name`, `address`, `clear`
+
+A watch, condition, exception, or process-entry hit stops in the native
+debugger. `runtime_debug_status` then reports `stopped=1` and a `reason=`
+(`T05awatch:...`, `T05breakpoint:N;`, `T05winuae-exception:...`,
+`T05winuae-entry:...`). `DEBUG_CONTINUE` resumes. The monitor refuses
+`step-over`, `checkpoint`, and `input sequence`.
+
 Watch `add` and `range` take nine fields: address, size, access, source mask,
 value enabled, value, value mask, change-only, and log-only. Numbers are
-hexadecimal. Access is 1 read, 2 write, 3 both; a range may also set bit 2
-for instruction fetch. Change-only requires a write. An exact watch cannot
-include the CPU instruction source.
+hexadecimal. Access is 1 for read, 2 for write, 3 for both; a range can also
+set bit 2 for instruction fetch. Change-only requires a write. An exact watch
+cannot include the CPU instruction source.
 
-### Process Lifecycle Management
+### Instances and IPC
+
 | Tool | Description |
 |------|-------------|
-| `check_process_alive` | Check if Amiberry process is running (PID, exit code, signal) |
-| `get_process_info` | Detailed process info with crash detection |
-| `kill_amiberry` | Force kill a running/hung Amiberry process |
-| `wait_for_exit` | Wait for process to exit with configurable timeout |
-| `restart_amiberry` | Kill and re-launch with same command |
+| `get_active_instance` | Show which Amiberry instance the server controls |
+| `set_active_instance` | Choose an instance (0, 1, 2, ...; `null` to auto-discover) |
+| `check_ipc_connection` | Check whether the IPC endpoint is reachable |
+| `runtime_ping` | Test the IPC connection (returns `PONG`) |
+| `runtime_get_version` | Get Amiberry and SDL versions from the running emulator |
+| `runtime_help` | List the IPC commands the running Amiberry accepts |
 
-### Memory Access
-| Tool | Description |
-|------|-------------|
-| `runtime_read_memory` | Read emulated Amiga memory (1/2/4 bytes) |
-| `runtime_write_memory` | Write emulated Amiga memory (1/2/4 bytes) |
+## Screenshot-driven GUI automation
 
-### Runtime Configuration
-| Tool | Description |
-|------|-------------|
-| `runtime_load_config` | Load a .uae config file into running emulation |
-| `runtime_debug_step_over` | Step over subroutine calls (JSR/BSR) |
-
-### Screenshot Analysis
-| Tool | Description |
-|------|-------------|
-| `runtime_screenshot_view` | Return exact image data plus actionable capture metadata |
-| `runtime_gui_move` | Move or hover at a pixel from that capture |
-| `runtime_gui_click` | Click or double-click a named button at a captured pixel |
-| `runtime_gui_drag` | Drag a named button between two captured pixels |
-
-### Log Tailing & Crash Detection
-| Tool | Description |
-|------|-------------|
-| `tail_log` | Get new log lines since last read (incremental) |
-| `wait_for_log_pattern` | Wait for a regex pattern in log output |
-| `get_crash_info` | Detect crashes via process state and log scanning |
-
-### Workflow Automation
-| Tool | Description |
-|------|-------------|
-| `health_check` | Combined check: process + IPC + emulation status + FPS |
-| `launch_and_wait_for_ipc` | Launch Amiberry and wait until IPC socket is ready |
-
-> **Note:** Runtime control requires Amiberry built with `USE_IPC_SOCKET=ON`
-
-### Screenshot-driven GUI automation
-
-GUI automation is screenshot-first. Call `runtime_screenshot_view`, inspect the
-returned image, and use pixel coordinates from that exact image in one of
-`runtime_gui_move`, `runtime_gui_click`, or `runtime_gui_drag`. Pass the
-returned `capture_id` and a caller-generated `request_id` with every action.
+GUI actions use coordinates taken from a screenshot. Call
+`runtime_screenshot_view`, look at the returned image, and pass pixel
+coordinates from that exact image to `runtime_gui_move`, `runtime_gui_click`,
+or `runtime_gui_drag`. Every action also takes the returned `capture_id` and a
+`request_id` that the caller generates.
 
 The screenshot metadata declares `coordinate_space="screenshot_pixels"`, the
-image dimensions, and a half-open `actionable_bounds` rectangle. Points must be
-integer screenshot pixels inside both the image and those bounds. The service
-performs scaling, HiDPI, viewport, and monitor translation; callers should not
+image size, and a half-open `actionable_bounds` rectangle. Points must be
+integer pixels inside both the image and those bounds. The server translates
+them for scaling, HiDPI, viewport, and monitor layout; callers should not
 convert coordinates themselves.
 
 | Tool | Required fields | Optional fields |
@@ -579,747 +467,384 @@ convert coordinates themselves.
 | `runtime_gui_click` | `capture_id`, `request_id`, `x`, `y` | `button` (`left`, `right`, or `middle`; default `left`), `click_count` (`1` or `2`; default `1`) |
 | `runtime_gui_drag` | `capture_id`, `request_id`, `start_x`, `start_y`, `end_x`, `end_y` | `button` (`left`, `right`, or `middle`; default `left`) |
 
-`request_id` must be 1-128 characters from `A-Z`, `a-z`, `0-9`, `.`, `_`, `:`,
-or `-`. An identical retained retry returns the original result with
-`deduplicated=true`; reusing the same ID with a changed payload returns
-`request_id_conflict`. Retention is bounded, so an ID is an idempotency key for
-the controller's retained window, not a permanent global record.
+`request_id` is 1-128 characters from `A-Z`, `a-z`, `0-9`, `.`, `_`, `:`, and
+`-`. Retrying with the same ID and payload returns the original result with
+`deduplicated=true`. Reusing an ID with a different payload returns
+`request_id_conflict`. The server keeps only a bounded number of past results,
+so an ID deduplicates retries within that window, not forever.
 
-Every action returns a versioned result with `ok`, `code`, `message`,
+Each action returns a versioned result with `ok`, `code`, `message`,
 `controller_id`, `request_id`, `action`, `execution_state`, `failure_phase`,
 `next_action`, `retryable`, `recapture_required`, `cleanup_state`,
-`cleanup_context`, `deduplicated`, and capture/runtime/coordinate context. Treat
-`next_action` and `recapture_required` as mandatory recovery guidance. In
-particular, `cleanup_unconfirmed` means the action outcome is unknown: reconcile
-the visible state and do not blindly replay it.
+`cleanup_context`, `deduplicated`, and capture, runtime, and coordinate
+context. Follow `next_action` and `recapture_required` when recovering from a
+failure. `cleanup_unconfirmed` means the outcome is unknown: check what is on
+screen before deciding whether to repeat the action.
 
-`capture_id` and `request_id` state belong to one controller process. A capture
-can only be reused while its selected instance, runtime identity, monitor, and
-geometry revision still match; recapture whenever directed. Run either the MCP
-server or the HTTP server as the controller for a given Amiberry instance.
-Simultaneous MCP and HTTP controller processes for the same runtime instance
-are unsupported.
+Captures and request IDs belong to one controller process. A capture stays
+valid only while its instance, runtime identity, monitor, and geometry
+revision still match; take a new screenshot whenever the result asks for one.
+Use either the MCP server or the HTTP server as the controller for a given
+Amiberry instance, not both at once.
 
-Older Amiberry builds can still return a visible screenshot, but its metadata
-has `actionable=false`, `capture_id=null`, and `next_action="upgrade_runtime"`.
-Actionable capture currently requires Amiberry's SDL or OpenGL renderer; Vulkan
-continues to support legacy screenshots but rejects coordinate automation until
-it can pair screenshot pixels with the exact presented frame geometry.
-There is deliberately no relative-coordinate fallback. Actionable GUI
-automation is supported on Linux and macOS; live platform validation remains a
-separate release check from the automated contract and geometry tests.
+Older Amiberry builds still return a screenshot, but the metadata has
+`actionable=false`, `capture_id=null`, and `next_action="upgrade_runtime"`.
+Actionable captures need Amiberry's SDL or OpenGL renderer. The Vulkan
+renderer returns plain screenshots and rejects GUI actions, because it cannot
+yet tie screenshot pixels to the geometry of the presented frame. There is no
+fallback to relative coordinates. GUI automation is supported on Linux and
+macOS. Automated tests cover the action contract and coordinate geometry; each
+release is also checked against a live Amiberry separately.
 
-## Usage Examples
+## Example prompts
 
-### Basic Usage
-Ask your AI assistant:
+**Library and launching**
 - "List my Amiberry configurations"
-- "Show me all Workbench disk images"
-- "Launch Amiberry with the A1200 model"
-- "What savestates do I have?"
 - "Find disk images containing 'Shadow of the Beast'"
-
-### WHDLoad Games
+- "Launch Amiberry with the A1200 model"
 - "Launch the WHDLoad game 'Turrican'"
-- "Search for WHDLoad games with 'Adventure' in the name"
-
-### CD32/CDTV Games
-- "List my CD images"
 - "Launch the CD32 game from /path/to/game.iso"
-
-### Configuration Management
-- "Parse my A500 config file and show the memory settings"
 - "Create a new A1200 config with 8MB Fast RAM"
-- "Change the floppy speed to 800 in my gaming config"
+- "What CPU and chipset does my savestate use?"
 
-### Debugging
-- "Launch Amiberry with logging enabled"
-- "Show me the last captured log file"
-- "What ROMs do I have available?"
-- "Inspect my savestate from yesterday"
-
-### Savestate Analysis
-- "What CPU and chipset is my savestate using?"
-- "Show me metadata from my Shadow of the Beast savestate"
-
-### Runtime Control
-- "Pause the emulation"
-- "Take a screenshot of the current state"
-- "Save the game state to checkpoint.uss"
+**Running emulation**
+- "Pause the emulation" / "Take a screenshot"
 - "Quick save to slot 0"
-- "Quick load from slot 1"
 - "Insert disk 2 into drive DF0"
-- "Eject the floppy from drive 0"
-- "List what's in all the floppy drives"
-- "List mounted hard drives"
-- "What's the current emulation status?"
-- "Set the floppy speed to 800"
-- "Set the volume to 50%"
-- "Mute the audio"
-- "Toggle fullscreen mode"
-- "Enable warp mode"
-- "Switch to NTSC mode"
-- "Set display to fullscreen mode"
-- "Set sound mode to stereo"
-- "Get joystick port 0 mode"
-- "Set port 0 to joystick mode"
-- "Enable autofire on port 0"
-- "Get LED status"
-- "Advance one frame"
-- "What version of Amiberry is running?"
-- "Ping Amiberry to check the connection"
-- "Set floppy speed to maximum"
-- "What's the current FPS?"
-- "Toggle RTG display"
-- "Switch to AGA chipset"
-- "What's the CPU speed?"
-- "Set CPU to maximum speed"
-- "Show me the memory configuration"
-- "Toggle mouse grab"
-- "Protect disk in drive 0"
+- "Set the floppy speed to 800" / "Enable warp mode"
+- "Switch to the AGA chipset and a 68030 CPU"
 - "Set Chip RAM to 2MB"
-- "Set Fast RAM to 8MB"
-- "What CPU model is being used?"
-- "Switch to 68030 CPU"
-- "Set window size to 800x600"
-- "Set scaling mode to linear"
-- "Set line mode to scanlines"
-- "Switch to hires resolution"
-- "Enable autocrop"
-- "Is autocrop enabled?"
-- "Load the Turrican WHDLoad game"
-- "What WHDLoad game is loaded?"
-- "Eject the WHDLoad game"
-
-### Keyboard Input
-- "Press the space bar"
 - "Type 'dir' and press Return"
-- "Press F1"
-- "Press Escape"
-- "Hold Ctrl and press C"
-- "Type 'list' followed by Enter"
 
-### Debugging and Diagnostics
-- "Activate the debugger"
-- "What's the debugger status?"
-- "Single-step 10 instructions"
-- "Continue execution"
-- "Deactivate the debugger"
-- "Show me the CPU registers"
-- "Disassemble at address 0xFC0000"
-- "Get the custom chip registers"
-- "Set a breakpoint at 0x400"
-- "List all breakpoints"
-- "Clear the breakpoint at 0x400"
-- "Clear all breakpoints"
-- "Get the Copper state"
-- "Get the Blitter state"
-- "Get floppy drive 0 state"
-- "Get audio channel states"
-- "Get DMA state"
+**Debugging**
+- "Launch Amiberry with logging enabled and show me the log"
+- "Activate the debugger and show me the CPU registers"
+- "Disassemble at 0xFC0000"
+- "Set a breakpoint at 0x400 and continue"
+- "Get the Copper and Blitter state"
 
 ## HTTP API
 
-Control Amiberry via REST API for voice assistants and automation.
-
-### Quick Start
+The HTTP server (FastAPI) exposes the same functions as REST endpoints for
+scripts, home automation, and voice assistants such as Siri Shortcuts.
 
 ```bash
-# Install HTTP API dependencies
-./scripts/install_http_api.sh
-
-# Start the server
-./scripts/start_http_api.sh
+./scripts/install_http_api.sh   # install the HTTP dependencies
+./scripts/start_http_api.sh     # start the server
 ```
 
-The API runs on `http://localhost:8080`. View documentation at `http://localhost:8080/docs`.
+The API listens on `http://localhost:8080`; interactive docs are at
+`http://localhost:8080/docs`. [docs/HTTP_API_GUIDE.md](docs/HTTP_API_GUIDE.md)
+has request formats, curl examples for every endpoint, and voice assistant
+setup. [docs/QUICKSTART_HTTP_API.md](docs/QUICKSTART_HTTP_API.md) is a short
+reference.
 
-### Example Commands
+A few examples:
 
-**Siri/Voice:**
-- "Hey Siri, launch Amiga 500"
-- "Hey Siri, stop Amiberry"
-
-**curl:**
 ```bash
-# Basic operations
+# Launch a model, list configs, stop Amiberry
 curl -X POST http://localhost:8080/quick-launch/A500
-curl -X POST http://localhost:8080/stop
 curl http://localhost:8080/configs
+curl -X POST http://localhost:8080/stop
 
-# Launch with logging
-curl -X POST http://localhost:8080/launch-with-logging \
-  -H "Content-Type: application/json" \
-  -d '{"model": "A500"}'
-
-# Create a config
-curl -X POST "http://localhost:8080/configs/create/my-config?model=A1200"
-
-# Launch WHDLoad game
+# Launch a WHDLoad game
 curl -X POST "http://localhost:8080/launch-whdload?search=Turrican"
 
-# Launch CD image
-curl -X POST http://localhost:8080/launch-cd \
-  -H "Content-Type: application/json" \
-  -d '{"cd_path": "/path/to/game.iso"}'
-
-# Inspect savestate
-curl http://localhost:8080/savestates/mysave.uss/inspect
-
-# List ROMs, or identify one by path (must be inside the Amiberry home directory)
-curl http://localhost:8080/roms
-curl "http://localhost:8080/roms/identify?rom_path=$HOME/Amiberry/ROMs/kick13.rom"
-
-# Runtime control (requires Amiberry with USE_IPC_SOCKET=ON)
-curl http://localhost:8080/runtime/status
+# Control a running emulation
 curl -X POST http://localhost:8080/runtime/pause
-curl -X POST http://localhost:8080/runtime/resume
-curl -X POST http://localhost:8080/runtime/screenshot \
-  -H "Content-Type: application/json" \
-  -d '{"filename": "/tmp/screenshot.png"}'
 curl -X POST http://localhost:8080/runtime/insert-floppy \
   -H "Content-Type: application/json" \
   -d '{"drive": 0, "image_path": "/path/to/disk2.adf"}'
-curl -X POST http://localhost:8080/runtime/eject-floppy \
-  -H "Content-Type: application/json" \
-  -d '{"drive": 0}'
-curl http://localhost:8080/runtime/list-floppies
-
-# Audio control
-curl http://localhost:8080/runtime/volume
-curl -X POST http://localhost:8080/runtime/volume \
-  -H "Content-Type: application/json" \
-  -d '{"volume": 50}'
-curl -X POST http://localhost:8080/runtime/mute
-curl -X POST http://localhost:8080/runtime/unmute
-
-# Display control
-curl -X POST http://localhost:8080/runtime/fullscreen
-curl http://localhost:8080/runtime/warp
-curl -X POST http://localhost:8080/runtime/warp \
-  -H "Content-Type: application/json" \
-  -d '{"enabled": true}'
-
-# Display mode (0=window, 1=fullscreen, 2=fullwindow)
-curl http://localhost:8080/runtime/display-mode
-curl -X POST http://localhost:8080/runtime/display-mode \
-  -H "Content-Type: application/json" \
-  -d '{"mode": 1}'
-
-# Video mode (PAL/NTSC)
-curl http://localhost:8080/runtime/ntsc
-curl -X POST http://localhost:8080/runtime/ntsc \
-  -H "Content-Type: application/json" \
-  -d '{"enabled": true}'
-
-# Sound mode (0=off, 1=normal, 2=stereo, 3=best)
-curl http://localhost:8080/runtime/sound-mode
-curl -X POST http://localhost:8080/runtime/sound-mode \
-  -H "Content-Type: application/json" \
-  -d '{"mode": 2}'
-
-# Quick save/load (slots 0-9)
-curl -X POST http://localhost:8080/runtime/quicksave \
-  -H "Content-Type: application/json" \
-  -d '{"slot": 0}'
-curl -X POST http://localhost:8080/runtime/quickload \
-  -H "Content-Type: application/json" \
-  -d '{"slot": 0}'
-
-# Joystick port control (port 0-3, mode: 0=default, 2=mouse, 3=joy, 7=cd32)
-curl http://localhost:8080/runtime/joyport/0
-curl -X POST http://localhost:8080/runtime/joyport \
-  -H "Content-Type: application/json" \
-  -d '{"port": 0, "mode": 3}'
-
-# Autofire control (0=off, 1=normal, 2=toggle, 3=always, 4=toggle_noaf)
-curl http://localhost:8080/runtime/autofire/0
-curl -X POST http://localhost:8080/runtime/autofire \
-  -H "Content-Type: application/json" \
-  -d '{"port": 0, "mode": 1}'
-
-# Status
-curl http://localhost:8080/runtime/led-status
-curl http://localhost:8080/runtime/harddrives
-
-# Floppy speed control
-curl http://localhost:8080/runtime/floppy-speed
-curl -X POST http://localhost:8080/runtime/floppy-speed \
-  -H "Content-Type: application/json" \
-  -d '{"speed": 800}'
-
-# Disk write protection
-curl http://localhost:8080/runtime/disk-write-protect/0
-curl -X POST http://localhost:8080/runtime/disk-write-protect \
-  -H "Content-Type: application/json" \
-  -d '{"drive": 0, "protected": true}'
-
-# RTG and status line
-curl -X POST http://localhost:8080/runtime/rtg
-curl -X POST http://localhost:8080/runtime/status-line
-
-# FPS monitoring
-curl http://localhost:8080/runtime/fps
-
-# Mouse grab
-curl -X POST http://localhost:8080/runtime/mouse-grab
-curl http://localhost:8080/runtime/mouse-speed
-
-# Chipset control
-curl http://localhost:8080/runtime/chipset
-curl -X POST http://localhost:8080/runtime/chipset \
-  -H "Content-Type: application/json" \
-  -d '{"chipset": "AGA"}'
-
-# CPU speed
-curl http://localhost:8080/runtime/cpu-speed
-curl -X POST http://localhost:8080/runtime/cpu-speed \
-  -H "Content-Type: application/json" \
-  -d '{"speed": -1}'
-
-# Memory configuration
-curl http://localhost:8080/runtime/memory-config
-
-# Memory management (changes require reset)
-curl -X POST http://localhost:8080/runtime/chip-mem \
-  -H "Content-Type: application/json" \
-  -d '{"size_kb": 2048}'
-curl -X POST http://localhost:8080/runtime/fast-mem \
-  -H "Content-Type: application/json" \
-  -d '{"size_kb": 8192}'
-curl -X POST http://localhost:8080/runtime/slow-mem \
-  -H "Content-Type: application/json" \
-  -d '{"size_kb": 512}'
-curl -X POST http://localhost:8080/runtime/z3-mem \
-  -H "Content-Type: application/json" \
-  -d '{"size_mb": 64}'
-
-# CPU model
-curl http://localhost:8080/runtime/cpu-model
-curl -X POST http://localhost:8080/runtime/cpu-model \
-  -H "Content-Type: application/json" \
-  -d '{"model": 68030}'
-
-# Window size
-curl http://localhost:8080/runtime/window-size
-curl -X POST http://localhost:8080/runtime/window-size \
-  -H "Content-Type: application/json" \
-  -d '{"width": 800, "height": 600}'
-
-# Scaling mode (-1=auto, 0=nearest, 1=linear, 2=integer)
-curl http://localhost:8080/runtime/scaling
-curl -X POST http://localhost:8080/runtime/scaling \
-  -H "Content-Type: application/json" \
-  -d '{"mode": 1}'
-
-# Line mode (single, double, scanlines)
-curl http://localhost:8080/runtime/line-mode
-curl -X POST http://localhost:8080/runtime/line-mode \
-  -H "Content-Type: application/json" \
-  -d '{"mode": "scanlines"}'
-
-# Resolution (lores, hires, superhires)
-curl http://localhost:8080/runtime/resolution
-curl -X POST http://localhost:8080/runtime/resolution \
-  -H "Content-Type: application/json" \
-  -d '{"mode": "hires"}'
-
-# Autocrop
-curl http://localhost:8080/runtime/autocrop
-curl -X POST http://localhost:8080/runtime/autocrop \
-  -H "Content-Type: application/json" \
-  -d '{"enabled": true}'
-
-# WHDLoad
-curl http://localhost:8080/runtime/whdload
-curl -X POST http://localhost:8080/runtime/whdload \
-  -H "Content-Type: application/json" \
-  -d '{"path": "/path/to/game.lha"}'
-curl -X DELETE http://localhost:8080/runtime/whdload
-
-# Debugging and Diagnostics
-curl -X POST http://localhost:8080/runtime/debug/activate
-curl http://localhost:8080/runtime/debug/status
-curl -X POST http://localhost:8080/runtime/debug/step \
-  -H "Content-Type: application/json" \
-  -d '{"count": 10}'
-curl -X POST http://localhost:8080/runtime/debug/continue
-curl -X POST http://localhost:8080/runtime/debug/deactivate
-curl http://localhost:8080/runtime/cpu/regs
-curl http://localhost:8080/runtime/custom/regs
-curl -X POST http://localhost:8080/runtime/disassemble \
-  -H "Content-Type: application/json" \
-  -d '{"address": "0xFC0000", "count": 10}'
-curl http://localhost:8080/runtime/breakpoints
-curl -X POST http://localhost:8080/runtime/breakpoints \
-  -H "Content-Type: application/json" \
-  -d '{"address": "0x400", "slot": 2}'
-curl -X DELETE http://localhost:8080/runtime/breakpoints \
-  -H "Content-Type: application/json" \
-  -d '{"address": "ALL"}'
-curl http://localhost:8080/runtime/copper/state
-curl http://localhost:8080/runtime/blitter/state
-curl "http://localhost:8080/runtime/drive/state?drive=0"
-curl http://localhost:8080/runtime/audio/state
-curl http://localhost:8080/runtime/dma/state
-
-# Keyboard input
-curl -X POST http://localhost:8080/runtime/key \
-  -H "Content-Type: application/json" \
-  -d '{"keycode": 64, "state": 1}'   # Press SPACE (keycode 64)
-curl -X POST http://localhost:8080/runtime/key \
-  -H "Content-Type: application/json" \
-  -d '{"keycode": 64, "state": 0}'   # Release SPACE
-
-# Type text into emulation
 curl -X POST http://localhost:8080/runtime/type \
   -H "Content-Type: application/json" \
   -d '{"text": "dir\n", "delay_ms": 50}'
 
-# Utility
-curl http://localhost:8080/runtime/version
-curl http://localhost:8080/runtime/ping
-curl http://localhost:8080/runtime/help
+# Debugger
+curl -X POST http://localhost:8080/runtime/breakpoints \
+  -H "Content-Type: application/json" \
+  -d '{"address": "0x400", "slot": 2}'
+curl http://localhost:8080/runtime/cpu/regs
 ```
 
-### API Endpoints
+### Endpoints
 
-#### Core Endpoints
+Endpoints under `/runtime` need a running Amiberry with IPC support.
+
+#### Library, launching, and processes
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/` | GET | API name, version, platform, status |
-| `/status` | GET | Check if Amiberry is running |
+| `/status` | GET | Check whether Amiberry is running |
 | `/stop` | POST | Stop all Amiberry instances |
+| `/platform` | GET | Platform info |
+| `/version` | GET | Amiberry version |
 | `/configs` | GET | List configurations |
+| `/configs/{name}` | GET | Raw config file contents |
+| `/configs/{name}/parsed` | GET | Parsed config as JSON |
+| `/configs/create/{name}` | POST | Create a config from a template |
+| `/configs/{name}` | PATCH | Modify a config |
 | `/disk-images` | GET | List disk images |
-| `/savestates` | GET | List savestates |
-| `/launch` | POST | Launch with full options |
-| `/quick-launch/{name}` | POST | Quick launch by model/config |
-| `/platform` | GET | Get platform info |
-
-#### Configuration Endpoints
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/configs/{name}` | GET | Get raw config file contents |
-| `/configs/{name}/parsed` | GET | Get parsed config as JSON |
-| `/configs/create/{name}` | POST | Create new config from template |
-| `/configs/{name}` | PATCH | Modify existing config |
-
-#### Launch Endpoints
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/launch-with-logging` | POST | Launch with log capture |
-| `/launch-lha` | POST | Launch an .lha archive directly |
-| `/launch-whdload` | POST | Launch WHDLoad game |
-| `/launch-cd` | POST | Launch CD image |
-| `/launch-and-wait` | POST | Launch and wait until the IPC socket is ready |
-| `/disk-swapper` | POST | Configure disk swapper |
-
-#### Media Endpoints
-| Endpoint | Method | Description |
-|----------|--------|-------------|
 | `/cd-images` | GET | List CD images |
-| `/logs` | GET | List captured logs |
-| `/logs/{name}` | GET | Get log content |
-| `/logs/tail` | POST | Get new log lines since last read (incremental) |
-| `/logs/wait-for-pattern` | POST | Wait for a regex pattern in log output |
-
-#### Analysis Endpoints
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/savestates/{name}/inspect` | GET | Get savestate metadata |
+| `/savestates` | GET | List savestates |
+| `/savestates/{name}/inspect` | GET | Savestate metadata |
 | `/roms` | GET | List identified ROMs |
-| `/roms/identify` | GET | Identify a ROM by `rom_path` query parameter |
-| `/version` | GET | Get Amiberry version |
-
-#### Process Lifecycle Endpoints
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Combined check: process + IPC + emulation status |
-| `/process/alive` | GET | Check if the Amiberry process is running |
-| `/process/info` | GET | Detailed process info with crash detection |
-| `/process/kill` | POST | Force kill a running/hung process |
+| `/roms/identify` | GET | Identify a ROM by the `rom_path` query parameter (must be inside the Amiberry home directory) |
+| `/launch` | POST | Launch with full options |
+| `/quick-launch/{name}` | POST | Launch by model or config name |
+| `/launch-with-logging` | POST | Launch with log capture |
+| `/launch-lha` | POST | Launch an `.lha` archive |
+| `/launch-whdload` | POST | Launch a WHDLoad game |
+| `/launch-cd` | POST | Launch a CD image |
+| `/launch-and-wait` | POST | Launch and wait until IPC is ready |
+| `/disk-swapper` | POST | Set up the disk swapper |
+| `/logs` | GET | List captured logs |
+| `/logs/{name}` | GET | Log contents |
+| `/logs/tail` | POST | Log lines added since the last read |
+| `/logs/wait-for-pattern` | POST | Wait for a regex in the log |
+| `/health` | GET | Process, IPC, and emulation status in one call |
+| `/process/alive` | GET | Check whether the process is running |
+| `/process/info` | GET | Process details with crash detection |
+| `/process/kill` | POST | Force-kill the process |
 | `/process/wait-for-exit` | POST | Wait for the process to exit |
-| `/process/restart` | POST | Kill and re-launch with the same command |
-| `/process/crash-info` | POST | Detect crashes via process state and log scanning |
+| `/process/restart` | POST | Kill and relaunch with the same command |
+| `/process/crash-info` | POST | Detect a crash from process state and logs |
 
-#### Runtime Control Endpoints
+#### Runtime: emulation and state
 
-**Emulation Control**
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/runtime/status` | GET | Get emulation status |
-| `/runtime/pause` | POST | Pause emulation |
-| `/runtime/resume` | POST | Resume emulation |
+| `/runtime/status` | GET | Emulation status |
+| `/runtime/pause` | POST | Pause |
+| `/runtime/resume` | POST | Resume |
 | `/runtime/reset` | POST | Soft or hard reset |
 | `/runtime/quit` | POST | Quit Amiberry |
-| `/runtime/frame-advance` | POST | Advance N frames when paused |
-
-**Media Control**
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/runtime/insert-floppy` | POST | Insert floppy disk |
-| `/runtime/disk-swap` | POST | Insert swapper disk `{"disk_num", "drive"}` |
-| `/runtime/disk-swap/{drive}` | GET | Query swapper slot in a drive |
-| `/runtime/eject-floppy` | POST | Eject floppy from drive |
-| `/runtime/insert-cd` | POST | Insert CD image |
-| `/runtime/eject-cd` | POST | Eject CD |
-
-**State Management**
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/runtime/screenshot` | POST | Take a screenshot |
-| `/runtime/screenshot-view` | POST | Return exact screenshot bytes and actionable metadata |
-| `/runtime/save-state` | POST | Save state while running |
+| `/runtime/frame-advance` | POST | Advance N frames while paused |
+| `/runtime/screenshot` | POST | Save a screenshot |
+| `/runtime/screenshot-view` | POST | Screenshot bytes plus capture metadata |
+| `/runtime/save-state` | POST | Save state |
 | `/runtime/load-state` | POST | Load a savestate |
-| `/runtime/quicksave` | POST | Quick save to slot (0-9) |
-| `/runtime/quickload` | POST | Quick load from slot (0-9) |
+| `/runtime/quicksave` | POST | Quick save to slot 0-9 |
+| `/runtime/quickload` | POST | Quick load from slot 0-9 |
+| `/runtime/config/{option}` | GET | Get a config option |
+| `/runtime/config` | POST | Set a config option |
+| `/runtime/configs` | GET | List configs known to the emulator |
+| `/runtime/load-config` | POST | Load a `.uae` file into the running emulation |
+| `/runtime/led-status` | GET | LED states |
+| `/runtime/fps` | GET | Frame rate and idle percentage |
 
-**Audio Control**
+#### Runtime: media
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/runtime/volume` | GET | Get current volume |
-| `/runtime/volume` | POST | Set volume (0-100) |
-| `/runtime/mute` | POST | Mute audio |
-| `/runtime/unmute` | POST | Unmute audio |
+| `/runtime/insert-floppy` | POST | Insert a floppy |
+| `/runtime/eject-floppy` | POST | Eject a floppy |
+| `/runtime/list-floppies` | GET | List floppy drives and their contents |
+| `/runtime/disk-swap` | POST | Insert a swapper disk (`{"disk_num", "drive"}`) |
+| `/runtime/disk-swap/{drive}` | GET | Swapper slot in a drive |
+| `/runtime/floppy-speed` | GET | Floppy speed |
+| `/runtime/floppy-speed` | POST | Set floppy speed (0=turbo, 100=1x, 200=2x, 400=4x, 800=8x) |
+| `/runtime/disk-write-protect/{drive}` | GET | Write protection for a drive |
+| `/runtime/disk-write-protect` | POST | Set write protection |
+| `/runtime/insert-cd` | POST | Insert a CD image |
+| `/runtime/eject-cd` | POST | Eject the CD |
+| `/runtime/harddrives` | GET | List mounted hard drives |
+| `/runtime/whdload` | GET | Loaded WHDLoad game |
+| `/runtime/whdload` | POST | Load a WHDLoad game (LHA or directory) |
+| `/runtime/whdload` | DELETE | Eject the WHDLoad game |
 
-**Display Control**
+#### Runtime: hardware
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/runtime/chipset` | GET | Chipset |
+| `/runtime/chipset` | POST | Set chipset (OCS, ECS_AGNUS, ECS_DENISE, ECS, AGA) |
+| `/runtime/cpu-model` | GET | CPU model |
+| `/runtime/cpu-model` | POST | Set CPU model (68000, 68010, 68020, 68030, 68040, 68060) |
+| `/runtime/cpu-speed` | GET | CPU speed |
+| `/runtime/cpu-speed` | POST | Set CPU speed (-1=max, 0=cycle-exact, >0=percent) |
+| `/runtime/memory-config` | GET | Memory sizes (chip, fast, bogo, Z3, RTG) |
+| `/runtime/chip-mem` | POST | Set Chip RAM (256, 512, 1024, 2048, 4096, 8192 KB) |
+| `/runtime/fast-mem` | POST | Set Fast RAM (0, 1024, 2048, 4096, 8192 KB) |
+| `/runtime/slow-mem` | POST | Set Slow (Bogo) RAM (0, 256, 512, 1024, 1792 KB) |
+| `/runtime/z3-mem` | POST | Set Zorro III RAM (0-1024 MB) |
+
+Memory changes take effect after a reset.
+
+#### Runtime: display and sound
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/runtime/fullscreen` | POST | Toggle fullscreen |
-| `/runtime/warp` | GET | Get warp mode status |
-| `/runtime/warp` | POST | Set warp mode |
-| `/runtime/display-mode` | GET | Get display mode |
-| `/runtime/display-mode` | POST | Set mode (0=window, 1=fullscreen, 2=fullwindow) |
-| `/runtime/ntsc` | GET | Get video mode (PAL/NTSC) |
-| `/runtime/ntsc` | POST | Set video mode (0=PAL, 1=NTSC) |
-
-**Sound Control**
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/runtime/sound-mode` | GET | Get sound mode |
-| `/runtime/sound-mode` | POST | Set mode (0=off, 1=normal, 2=stereo, 3=best) |
-
-**Joystick/Input Control**
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/runtime/joyport/{port}` | GET | Get port mode |
-| `/runtime/joyport` | POST | Set port mode |
-| `/runtime/autofire/{port}` | GET | Get autofire mode |
-| `/runtime/autofire` | POST | Set autofire mode |
-
-**Floppy Control**
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/runtime/floppy-speed` | GET | Get current floppy speed |
-| `/runtime/floppy-speed` | POST | Set floppy speed (0=turbo, 100=1x, 200=2x, 400=4x, 800=8x) |
-| `/runtime/disk-write-protect/{drive}` | GET | Get disk write protection status |
-| `/runtime/disk-write-protect` | POST | Set disk write protection for drive |
-
-**Display Control (additional)**
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/runtime/rtg` | POST | Toggle between RTG and chipset display |
-| `/runtime/status-line` | POST | Cycle status line (off/chipset/rtg/both) |
-| `/runtime/fps` | GET | Get current frame rate and idle percentage |
-
-**Input Control (additional)**
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/runtime/mouse-grab` | POST | Toggle mouse capture/grab |
-| `/runtime/mouse-speed` | GET | Get current mouse sensitivity |
-
-**Hardware/Chipset Control**
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/runtime/chipset` | GET | Get current chipset |
-| `/runtime/chipset` | POST | Set chipset (OCS, ECS_AGNUS, ECS_DENISE, ECS, AGA) |
-| `/runtime/cpu-speed` | GET | Get current CPU speed setting |
-| `/runtime/cpu-speed` | POST | Set CPU speed (-1=max, 0=cycle-exact, >0=%) |
-| `/runtime/memory-config` | GET | Get all memory sizes (chip, fast, bogo, z3, rtg) |
-
-**Memory Configuration**
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/runtime/chip-mem` | POST | Set Chip RAM size (256, 512, 1024, 2048, 4096, 8192 KB) |
-| `/runtime/fast-mem` | POST | Set Fast RAM size (0, 1024, 2048, 4096, 8192 KB) |
-| `/runtime/slow-mem` | POST | Set Slow/Bogo RAM size (0, 256, 512, 1024, 1792 KB) |
-| `/runtime/z3-mem` | POST | Set Zorro III RAM size (0-1024 MB) |
-| `/runtime/cpu-model` | GET | Get current CPU model |
-| `/runtime/cpu-model` | POST | Set CPU model (68000, 68010, 68020, 68030, 68040, 68060) |
-
-**Window/Display Control**
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/runtime/window-size` | GET | Get current window dimensions |
+| `/runtime/display-mode` | GET | Display mode |
+| `/runtime/display-mode` | POST | Set display mode (0=window, 1=fullscreen, 2=fullwindow) |
+| `/runtime/window-size` | GET | Window size |
 | `/runtime/window-size` | POST | Set window size (width x height) |
-| `/runtime/scaling` | GET | Get current scaling mode |
-| `/runtime/scaling` | POST | Set scaling mode (-1=auto, 0=nearest, 1=linear, 2=integer) |
-| `/runtime/line-mode` | GET | Get current line mode |
+| `/runtime/scaling` | GET | Scaling mode |
+| `/runtime/scaling` | POST | Set scaling (-1=auto, 0=nearest, 1=linear, 2=integer) |
+| `/runtime/line-mode` | GET | Line mode |
 | `/runtime/line-mode` | POST | Set line mode (single, double, scanlines) |
-| `/runtime/resolution` | GET | Get current resolution mode |
+| `/runtime/resolution` | GET | Resolution |
 | `/runtime/resolution` | POST | Set resolution (lores, hires, superhires) |
-| `/runtime/autocrop` | GET | Get current autocrop status |
-| `/runtime/autocrop` | POST | Enable/disable automatic display cropping |
+| `/runtime/autocrop` | GET | Autocrop state |
+| `/runtime/autocrop` | POST | Turn autocrop on or off |
+| `/runtime/ntsc` | GET | Video mode (PAL or NTSC) |
+| `/runtime/ntsc` | POST | Set video mode |
+| `/runtime/rtg` | POST | Switch between RTG and chipset display |
+| `/runtime/status-line` | POST | Cycle the status line (off, chipset, RTG, both) |
+| `/runtime/warp` | GET | Warp mode |
+| `/runtime/warp` | POST | Set warp mode |
+| `/runtime/volume` | GET | Volume |
+| `/runtime/volume` | POST | Set volume (0-100) |
+| `/runtime/mute` | POST | Mute |
+| `/runtime/unmute` | POST | Unmute |
+| `/runtime/sound-mode` | GET | Sound mode |
+| `/runtime/sound-mode` | POST | Set sound mode (0=off, 1=normal, 2=stereo, 3=best) |
 
-**WHDLoad Control**
+#### Runtime: input and GUI automation
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/runtime/whdload` | GET | Get currently loaded WHDLoad game info |
-| `/runtime/whdload` | POST | Load a WHDLoad game (LHA or directory) |
-| `/runtime/whdload` | DELETE | Eject the currently loaded WHDLoad game |
-
-**Debugging and Diagnostics**
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/runtime/debug/activate` | POST | Activate the built-in debugger |
-| `/runtime/debug/deactivate` | POST | Deactivate debugger and resume |
-| `/runtime/debug/status` | GET | Get debugger status |
-| `/runtime/debug/step` | POST | Single-step CPU instructions |
-| `/runtime/debug/step-over` | POST | Step over subroutine calls (JSR/BSR) |
-| `/runtime/debug/continue` | POST | Continue execution |
-| `/runtime/cpu/regs` | GET | Get all CPU registers |
-| `/runtime/custom/regs` | GET | Get custom chip registers |
-| `/runtime/disassemble` | POST | Disassemble at address |
-| `/runtime/breakpoints` | GET | List all breakpoints |
-| `/runtime/breakpoints` | POST | Set a breakpoint (`address`, optional `slot` 0-19) |
-| `/runtime/breakpoints` | DELETE | Clear breakpoint(s) |
-| `/runtime/copper/state` | GET | Get Copper state |
-| `/runtime/blitter/state` | GET | Get Blitter state |
-| `/runtime/drive/state` | GET | Get floppy drive state |
-| `/runtime/audio/state` | GET | Get audio channel states |
-| `/runtime/dma/state` | GET | Get DMA channel states |
-
-**Status**
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/runtime/led-status` | GET | Get all LED states |
-| `/runtime/harddrives` | GET | List mounted hard drives |
-
-**Configuration**
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/runtime/config/{option}` | GET | Get config option value |
-| `/runtime/config` | POST | Set config option |
-| `/runtime/configs` | GET | List available configs |
-| `/runtime/load-config` | POST | Load a .uae config into the running emulation |
-
-**Memory Access**
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/runtime/memory/read` | POST | Read emulated Amiga memory (1/2/4 bytes) |
-| `/runtime/memory/write` | POST | Write emulated Amiga memory (1/2/4 bytes) |
-
-**Input Control**
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/runtime/key` | POST | Send keyboard input (keycode + state) |
-| `/runtime/type` | POST | Type a string of text character by character |
+| `/runtime/key` | POST | Send a key (keycode and state) |
+| `/runtime/type` | POST | Type a string |
 | `/runtime/mouse` | POST | Send mouse input |
+| `/runtime/mouse-speed` | GET | Mouse sensitivity |
 | `/runtime/mouse-speed` | POST | Set mouse sensitivity |
+| `/runtime/mouse-grab` | POST | Toggle mouse capture |
+| `/runtime/joyport/{port}` | GET | Port mode |
+| `/runtime/joyport` | POST | Set port mode |
+| `/runtime/autofire/{port}` | GET | Autofire mode |
+| `/runtime/autofire` | POST | Set autofire mode |
+| `/runtime/gui/move` | POST | Move or hover at a screenshot pixel |
+| `/runtime/gui/click` | POST | Click or double-click at a screenshot pixel |
+| `/runtime/gui/drag` | POST | Drag between screenshot pixels |
 
-**Screenshot-driven GUI Automation**
+#### Runtime: debugging
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/runtime/gui/move` | POST | Move or hover using screenshot pixels |
-| `/runtime/gui/click` | POST | Click or double-click using screenshot pixels |
-| `/runtime/gui/drag` | POST | Drag using screenshot pixels |
+| `/runtime/debug/activate` | POST | Enter the debugger |
+| `/runtime/debug/deactivate` | POST | Leave the debugger and resume |
+| `/runtime/debug/status` | GET | Debugger status |
+| `/runtime/debug/step` | POST | Single-step instructions |
+| `/runtime/debug/step-over` | POST | Step over subroutine calls (JSR, BSR) |
+| `/runtime/debug/continue` | POST | Continue execution |
+| `/runtime/debug/monitor` | POST | Run one GDB monitor command (`{"text": "tasks"}`) |
+| `/runtime/cpu/regs` | GET | CPU registers |
+| `/runtime/custom/regs` | GET | Custom chip registers |
+| `/runtime/disassemble` | POST | Disassemble at an address |
+| `/runtime/breakpoints` | GET | List breakpoints |
+| `/runtime/breakpoints` | POST | Set a breakpoint (`address`, optional `slot` 0-19) |
+| `/runtime/breakpoints` | DELETE | Clear breakpoints |
+| `/runtime/memory/read` | POST | Read 1, 2, or 4 bytes of memory |
+| `/runtime/memory/write` | POST | Write 1, 2, or 4 bytes of memory |
+| `/runtime/copper/state` | GET | Copper state |
+| `/runtime/blitter/state` | GET | Blitter state |
+| `/runtime/drive/state` | GET | Floppy drive state |
+| `/runtime/audio/state` | GET | Audio channel states |
+| `/runtime/dma/state` | GET | DMA channel states |
 
-**Utility**
+#### Runtime: instances and IPC
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/runtime/version` | GET | Get Amiberry version |
-| `/runtime/ping` | GET | Test IPC connection |
-| `/runtime/help` | GET | List IPC commands |
+| `/runtime/active-instance` | GET | Instance being controlled |
+| `/runtime/active-instance` | POST | Choose an instance (`null` to auto-discover) |
 | `/runtime/ipc-check` | GET | Check IPC availability |
-| `/runtime/active-instance` | GET | Get the instance currently being controlled |
-| `/runtime/active-instance` | POST | Set the instance to control (`null` to auto-discover) |
+| `/runtime/ping` | GET | Test the IPC connection |
+| `/runtime/version` | GET | Amiberry version from the running emulator |
+| `/runtime/help` | GET | List IPC commands |
 
-> **Note:** Runtime endpoints require Amiberry built with `USE_IPC_SOCKET=ON`
+### Starting at login
 
-See [docs/HTTP_API_GUIDE.md](docs/HTTP_API_GUIDE.md) for complete documentation.
+`install_http_api.sh` creates a LaunchAgent on macOS and a systemd user unit
+on Linux. Enable them with:
 
-### Auto-start
-
-**macOS:**
 ```bash
+# macOS
 launchctl load ~/Library/LaunchAgents/com.amiberry.httpapi.plist
-```
 
-**Linux:**
-```bash
-systemctl --user enable amiberry-http-api.service
-systemctl --user start amiberry-http-api.service
-```
-
-## Development
-
-```bash
-# Clone and setup
-git clone https://github.com/BlitterStudio/amiberry-mcp-server.git
-cd amiberry-mcp-server
-
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install with dev dependencies
-pip install -e ".[all]"
-
-# Run tests
-pytest tests/ -v
-
-# Lint and format
-ruff check src/ tests/
-ruff format src/ tests/
+# Linux
+systemctl --user enable --now amiberry-http-api.service
 ```
 
 ## Troubleshooting
 
-### MCP tools not appearing in your client
-- Restart the MCP client completely (quit and reopen) — most clients only load MCP servers at startup
-- Check the `command` path in your client's config points at this project's `venv/bin/python`
-- Verify the virtual environment exists (`ls venv/bin/python`)
-- Run `python -m amiberry_mcp.server` directly — it should sit waiting for stdio input. If it errors, fix that first.
-- Inspect the client's MCP log:
+### The tools do not appear in the client
+- Quit and reopen the client. Most clients load MCP servers only at startup.
+- Check that the `command` path points at this project's `venv/bin/python`
+  (`venv\Scripts\python.exe` on Windows) and that the file exists.
+- Run `python -m amiberry_mcp.server` from the virtual environment. It should
+  wait silently for input on stdin; if it prints an error, fix that first.
+- Read the client's MCP log:
   - Claude Desktop (macOS): `~/Library/Logs/Claude/mcp*.log`
-  - Claude Code: `claude mcp list` then check stderr for the server
+  - Claude Code: `claude mcp list`, then check the server's stderr
   - Cursor: View → Output → "MCP" channel
 
-### "Command not found" errors
-- **Linux**: Ensure `amiberry` is in your PATH
-- **macOS**: Verify Amiberry.app is in `/Applications`
-- **Windows**: Ensure `Amiberry.exe` is in your PATH
+### "Command not found" when launching
+- **Linux and FreeBSD**: put `amiberry` on `PATH`
+- **macOS**: install `Amiberry.app` in `/Applications`
+- **Windows**: put `Amiberry.exe` on `PATH`
 
-### Permission errors
-- Check that scripts are executable: `chmod +x scripts/*.sh`
+### Permission errors running the scripts
+Make them executable: `chmod +x scripts/*.sh`
 
-### View captured Amiberry logs
+### Where captured logs go
+The `logs` directory under the content root: `~/Documents/Amiberry/logs` on
+macOS, `~/Amiberry/logs` on Linux and FreeBSD, `%USERPROFILE%\Amiberry\logs`
+on Windows.
+
+### Runtime control does not work
+- Check that Amiberry is running and was built with `USE_IPC_SOCKET=ON`
+  (a CMake option).
+- On Linux, FreeBSD, and macOS, check that the socket exists:
+  `ls "${XDG_RUNTIME_DIR:-/tmp}/amiberry.sock"`. Test it directly with
+  `echo "GET_STATUS" | nc -U "${XDG_RUNTIME_DIR:-/tmp}/amiberry.sock"`.
+- With several instances running, instance 0 uses `amiberry.sock` and the
+  others use `amiberry_1.sock`, `amiberry_2.sock`, and so on up to instance 9.
+  Pick one with `set_active_instance`.
+- On Windows, list the pipes with
+  `Get-ChildItem \\.\pipe\ | Where-Object Name -like 'amiberry*'`. Do not use
+  `Test-Path`: it opens a client connection to the pipe.
+- The Windows pipe transport needs asyncio's Proactor event loop, which is the
+  default on Windows. If a dependency switches to a selector loop, the server
+  reports an error saying so.
+
+## Development
+
 ```bash
-# macOS
-ls ~/Documents/Amiberry/logs/
+git clone https://github.com/BlitterStudio/amiberry-mcp-server.git
+cd amiberry-mcp-server
+python3 -m venv venv
+source venv/bin/activate
+pip install -e ".[all]"         # HTTP, D-Bus, and dev dependencies
 
-# Linux
-ls ~/Amiberry/logs/
+pytest tests/ -v                # run the tests
+ruff check src/ tests/          # lint
+ruff format src/ tests/         # format
 ```
 
-### Runtime control not working
-- Ensure Amiberry was built with `USE_IPC_SOCKET=ON` (CMake option)
-- Check if the socket exists. It lives in `$XDG_RUNTIME_DIR` when that is set,
-  otherwise `/tmp`: `ls "${XDG_RUNTIME_DIR:-/tmp}/amiberry.sock"`
-- With multiple instances, instance 0 uses `amiberry.sock` and the rest use
-  `amiberry_1.sock`, `amiberry_2.sock`, … (searched up to instance 9) — pick one
-  with `set_active_instance`
-- On Windows the endpoint is the named pipe `\\.\pipe\amiberry` (further
-  instances `\\.\pipe\amiberry_1` … `\\.\pipe\amiberry_9`). List it with
-  `Get-ChildItem \\.\pipe\ | Where-Object Name -like 'amiberry*'` — do not use
-  `Test-Path`, which opens a client connection to the pipe
-- The Windows pipe transport needs an asyncio Proactor event loop (the default
-  on Windows). The server reports an explicit error if some dependency forced
-  a selector loop
-- Verify Amiberry is running before using runtime control tools
-- Test the socket directly: `echo "GET_STATUS" | nc -U "${XDG_RUNTIME_DIR:-/tmp}/amiberry.sock"`
+Project layout:
+
+```
+amiberry-mcp-server/
+├── src/amiberry_mcp/
+│   ├── config.py          # platform detection and paths
+│   ├── common.py          # shared helpers (launch, scan, validation)
+│   ├── shared_state.py    # process state, IPC client caching, launch helpers
+│   ├── server.py          # MCP server (150 tools)
+│   ├── http_server.py     # HTTP API (FastAPI)
+│   ├── ipc_client.py      # IPC client (Unix socket, named pipe, D-Bus)
+│   ├── monitor.py         # MONITOR command builders and reply parsing
+│   ├── gui_automation.py  # screenshot capture registry and GUI actions
+│   ├── uae_config.py      # .uae parser and generator
+│   ├── savestate.py       # .uss metadata parser
+│   └── rom_manager.py     # ROM identification
+├── scripts/               # install, uninstall, and HTTP API scripts
+├── tests/                 # pytest suite, one file per module
+├── docs/                  # HTTP API guide and quick reference
+└── AGENTS.md              # architecture and code conventions
+```
 
 ## Uninstall
 
@@ -1329,17 +854,21 @@ ls ~/Amiberry/logs/
 
 ## Contributing
 
-Contributions welcome! Please open an issue or pull request.
-See [AGENTS.md](AGENTS.md) for the architecture overview and code conventions
-(ruff config, type-annotation style, error handling, test layout).
+Issues and pull requests are welcome. [AGENTS.md](AGENTS.md) describes the
+architecture and code conventions: ruff settings, type annotations, error
+handling, and test layout.
 
 ## License
 
-GPL-3.0 License - see [LICENSE](LICENSE) file.
+GPL-3.0. See [LICENSE](LICENSE).
 
-## Resources
+## Links
 
-- [MCP Documentation](https://modelcontextprotocol.io)
-- [Amiberry Project](https://github.com/BlitterStudio/amiberry)
-- MCP-compatible clients: [Claude Desktop](https://claude.ai/download), [Claude Code](https://claude.com/claude-code), [Codex](https://github.com/openai/codex), [Cursor](https://cursor.com), [Cline](https://github.com/cline/cline), [Continue](https://continue.dev), [Windsurf](https://codeium.com/windsurf)
-- [FastAPI Documentation](https://fastapi.tiangolo.com)
+- [Model Context Protocol](https://modelcontextprotocol.io)
+- [Amiberry](https://github.com/BlitterStudio/amiberry)
+- [FastAPI](https://fastapi.tiangolo.com)
+- MCP clients: [Claude Desktop](https://claude.ai/download),
+  [Claude Code](https://claude.com/claude-code),
+  [Codex](https://github.com/openai/codex), [Cursor](https://cursor.com),
+  [Cline](https://github.com/cline/cline), [Continue](https://continue.dev),
+  [Windsurf](https://codeium.com/windsurf)
