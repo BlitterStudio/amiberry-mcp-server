@@ -55,6 +55,7 @@ from .config import (
     CONFIG_DIR,
     EMULATOR_BINARY,
     IS_MACOS,
+    IS_WINDOWS,
     LOG_DIR,
     SAVESTATE_DIR,
     SCREENSHOT_DIR,
@@ -619,8 +620,30 @@ class LaunchAndWaitRequest(LaunchRequest):
     timeout: int = Field(default=30, ge=1)
 
 
+def _windows_process_name() -> str:
+    """Return the Windows image name used to find and stop Amiberry."""
+    return Path(EMULATOR_BINARY).name
+
+
 def _is_amiberry_running() -> bool:
     """Check if Amiberry process is currently running."""
+    if IS_WINDOWS:
+        try:
+            result = subprocess.run(
+                [
+                    "tasklist",
+                    "/FI",
+                    f"IMAGENAME eq {_windows_process_name()}",
+                    "/FO",
+                    "CSV",
+                    "/NH",
+                ],
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, FileNotFoundError):
+            return False
+        return _windows_process_name().lower() in result.stdout.lower()
     try:
         result = subprocess.run(["pgrep"] + _PGREP_ARGS, capture_output=True, text=True)
         return result.returncode == 0
@@ -634,6 +657,17 @@ def _stop_amiberry() -> bool:
     if _state.process is not None and _state.process.poll() is None:
         terminate_process(_state.process)
         return True
+    if IS_WINDOWS:
+        # taskkill for externally started instances
+        try:
+            subprocess.run(
+                ["taskkill", "/IM", _windows_process_name(), "/F"],
+                check=False,
+                capture_output=True,
+            )
+            return True
+        except (OSError, FileNotFoundError):
+            return False
     # Fall back to pkill for externally started instances
     try:
         subprocess.run(["pkill"] + _PGREP_ARGS, check=False)

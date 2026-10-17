@@ -8,44 +8,14 @@ Covers:
 - Fix #10: Specific pgrep pattern, tracked process preferred
 """
 
-import platform
-import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 from fastapi import HTTPException
-
-if platform.system() not in ("Darwin", "Linux"):
-    _cfg = "amiberry_mcp.config"
-    if _cfg not in sys.modules:
-        _mod = ModuleType(_cfg)
-        _root = Path.home() / "Amiberry"
-        _mod.IS_MACOS = False  # type: ignore[attr-defined]
-        _mod.IS_LINUX = True  # type: ignore[attr-defined]
-        _mod.EMULATOR_BINARY = "amiberry"  # type: ignore[attr-defined]
-        for _name, _value in {
-            "AMIBERRY_HOME": _root,
-            "CONFIG_DIR": _root / "conf",
-            "SYSTEM_CONFIG_DIR": None,
-            "SAVESTATE_DIR": _root / "savestates",
-            "SCREENSHOT_DIR": _root / "screenshots",
-            "LOG_DIR": _root / "logs",
-            "ROM_DIR": _root / "kickstarts",
-            "DISK_IMAGE_DIRS": [_root / "floppies"],
-            "FLOPPY_EXTENSIONS": [".adf"],
-            "HARDFILE_EXTENSIONS": [".hdf"],
-            "LHA_EXTENSIONS": [".lha"],
-            "CD_EXTENSIONS": [".iso"],
-            "SUPPORTED_MODELS": ["A500", "A1200", "CD32"],
-        }.items():
-            setattr(_mod, _name, _value)
-        _mod.ensure_directories_exist = lambda: None  # type: ignore[attr-defined]
-        _mod.get_platform_info = lambda: {}  # type: ignore[attr-defined]
-        sys.modules[_cfg] = _mod
 
 from amiberry_mcp.common import _is_path_within
 from amiberry_mcp.gui_automation import (
@@ -214,6 +184,60 @@ class TestPgrepPattern:
 
                 assert result is True
                 mock_term.assert_called_once_with(mock_proc)
+        finally:
+            _state.process = original_process
+
+
+class TestWindowsProcessDetection:
+    """Windows status/stop endpoints use tasklist/taskkill, not pgrep/pkill."""
+
+    def test_running_check_parses_tasklist_output(self):
+        from amiberry_mcp import http_server
+
+        result = SimpleNamespace(returncode=0, stdout='"Amiberry.exe","1234"')
+        with (
+            patch.object(http_server, "IS_WINDOWS", True),
+            patch("subprocess.run", return_value=result) as run,
+        ):
+            assert http_server._is_amiberry_running() is True
+
+        assert run.call_args[0][0][0] == "tasklist"
+
+    def test_running_check_reports_no_match(self):
+        from amiberry_mcp import http_server
+
+        result = SimpleNamespace(
+            returncode=0, stdout="INFO: No tasks are running which match"
+        )
+        with (
+            patch.object(http_server, "IS_WINDOWS", True),
+            patch("subprocess.run", return_value=result),
+        ):
+            assert http_server._is_amiberry_running() is False
+
+    def test_running_check_treats_missing_tasklist_as_not_running(self):
+        from amiberry_mcp import http_server
+
+        with (
+            patch.object(http_server, "IS_WINDOWS", True),
+            patch("subprocess.run", side_effect=FileNotFoundError("tasklist")),
+        ):
+            assert http_server._is_amiberry_running() is False
+
+    def test_stop_falls_back_to_taskkill(self):
+        from amiberry_mcp import http_server
+        from amiberry_mcp.http_server import _state
+
+        original_process = _state.process
+        try:
+            _state.process = None
+            with (
+                patch.object(http_server, "IS_WINDOWS", True),
+                patch("subprocess.run") as run,
+            ):
+                assert http_server._stop_amiberry() is True
+
+            assert run.call_args[0][0][:2] == ["taskkill", "/IM"]
         finally:
             _state.process = original_process
 

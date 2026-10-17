@@ -8,14 +8,17 @@ Covers:
 """
 
 import subprocess
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from amiberry_mcp.common import (
+    _popen_session_kwargs,
     classify_image_type,
     disk_search_dirs,
     iter_files_by_suffix,
+    launch_process,
     rom_search_dirs,
     savestate_search_dirs,
     scan_disk_images,
@@ -165,6 +168,10 @@ class TestLegacyContentSearch:
 
         assert [image["name"] for image in images] == ["game.adf"]
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="needs a case-sensitive filesystem and symlink privilege",
+    )
     def test_same_inode_is_listed_once(self, tmp_path):
         real = tmp_path / "Floppies"
         real.mkdir()
@@ -176,6 +183,39 @@ class TestLegacyContentSearch:
 
         assert [image["name"] for image in images] == ["game.adf"]
         assert len(unique_existing_dirs([real, alias])) == 1
+
+
+class TestLaunchProcessSessionFlags:
+    """launch_process only passes session flags the platform supports."""
+
+    def test_unix_detaches_with_start_new_session(self):
+        from amiberry_mcp import common
+
+        proc = MagicMock()
+        with (
+            patch.object(common, "IS_WINDOWS", False),
+            patch("subprocess.Popen", return_value=proc) as popen,
+        ):
+            launch_process(["amiberry"])
+
+        assert popen.call_args.kwargs.get("start_new_session") is True
+
+    def test_windows_omits_start_new_session(self):
+        from amiberry_mcp import common
+
+        proc = MagicMock()
+        with (
+            patch.object(common, "IS_WINDOWS", True),
+            patch("subprocess.Popen", return_value=proc) as popen,
+        ):
+            launch_process(["Amiberry.exe"])
+
+        assert "start_new_session" not in popen.call_args.kwargs
+
+    def test_platform_flags_follow_the_host(self):
+        assert _popen_session_kwargs() == (
+            {} if sys.platform == "win32" else {"start_new_session": True}
+        )
 
 
 if __name__ == "__main__":
