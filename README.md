@@ -47,7 +47,10 @@ home automation, and voice assistants.
 - Amiberry:
   - **macOS**: `Amiberry.app` in `/Applications`
   - **Linux and FreeBSD**: `amiberry` on `PATH`
-  - **Windows**: `Amiberry.exe` on `PATH`
+  - **Windows**: installed by the Amiberry installer or `Amiberry.exe` on
+    `PATH`. The server finds the installer's copy through its registry
+    entry (per-user under `%LOCALAPPDATA%\Programs\amiberry`, all-users
+    under `%ProgramFiles%\amiberry`) without any PATH setup.
 - An MCP client
 
 The server runs on Linux, FreeBSD, macOS, and Windows, and raises
@@ -187,6 +190,10 @@ tree.
 
 Overrides:
 
+- `AMIBERRY_BINARY` points the server at a specific Amiberry executable, on
+  any platform, ahead of the automatic discovery (`PATH`, the Windows
+  installer's registry entry, and the default Windows install directories).
+  Handy for a portable copy or a development build.
 - `AMIBERRY_HOME_DIR` replaces the content root, unless portable mode is on.
 - An `amiberry.portable` file next to the Amiberry binary switches Amiberry to
   portable mode, and the server follows that root. macOS ignores the marker.
@@ -784,7 +791,11 @@ systemctl --user enable --now amiberry-http-api.service
 ### "Command not found" when launching
 - **Linux and FreeBSD**: put `amiberry` on `PATH`
 - **macOS**: install `Amiberry.app` in `/Applications`
-- **Windows**: put `Amiberry.exe` on `PATH`
+- **Windows**: install Amiberry with its installer, or put `Amiberry.exe` on
+  `PATH`. The server checks `PATH` first, then the installer's registry entry
+  (HKCU, then HKLM), then `%LOCALAPPDATA%\Programs\amiberry\Amiberry.exe` and
+  `%ProgramFiles%\amiberry\Amiberry.exe`. Set `AMIBERRY_BINARY` to point at
+  any other copy, such as a portable one.
 
 ### Permission errors running the scripts
 Make them executable: `chmod +x scripts/*.sh`
