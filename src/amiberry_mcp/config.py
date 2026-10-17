@@ -38,13 +38,93 @@ HARDFILE_EXTENSIONS = [".hdf", ".hdz"]
 LHA_EXTENSIONS = [".lha"]
 CD_EXTENSIONS = [".iso", ".cue", ".chd", ".bin", ".nrg"]
 
-EMULATOR_BINARY = (
-    "/Applications/Amiberry.app/Contents/MacOS/Amiberry"
-    if IS_MACOS
-    else "Amiberry.exe"
-    if IS_WINDOWS
-    else "amiberry"
+# Where the emulator executable lives when no override is set. Windows
+# resolves the real path below by searching PATH, the registry, and the
+# default install directories; the other platforms keep their conventional
+# locations.
+MACOS_EMULATOR_BINARY = "/Applications/Amiberry.app/Contents/MacOS/Amiberry"
+WINDOWS_EMULATOR_BINARY = "Amiberry.exe"
+POSIX_EMULATOR_BINARY = "amiberry"
+
+# Environment variable that overrides every binary discovery step, on any
+# platform. Useful for portable installs and development builds.
+EMULATOR_BINARY_OVERRIDE_ENV = "AMIBERRY_BINARY"
+
+# Uninstall key the Inno Setup installer writes. HKCU holds the per-user
+# install, HKLM the all-users one; neither adds Amiberry to PATH.
+_WINDOWS_UNINSTALL_KEY = (
+    "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\amiberry_is1"
 )
+
+
+def _windows_registry_binary() -> Path | None:
+    """Locate Amiberry.exe through the Inno Setup uninstall key.
+
+    ``InstallLocation`` is the directory the installer used, so it is the
+    only reliable pointer to an installed copy. HKCU (per-user install) is
+    checked before HKLM (all-users install).
+    """
+    try:
+        import winreg
+    except ImportError:
+        return None
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            with winreg.OpenKey(hive, _WINDOWS_UNINSTALL_KEY) as key:
+                location, _ = winreg.QueryValueEx(key, "InstallLocation")
+        except OSError:
+            continue
+        if not location:
+            continue
+        binary = Path(location) / "Amiberry.exe"
+        if binary.is_file():
+            return binary
+    return None
+
+
+def _windows_binary(environ: Mapping[str, str]) -> str:
+    """Find Amiberry.exe: PATH, the installer, then default install dirs."""
+    found = shutil.which(WINDOWS_EMULATOR_BINARY)
+    if found:
+        return found
+    registry = _windows_registry_binary()
+    if registry is not None:
+        return str(registry)
+    candidates = []
+    local_app_data = _nonempty(environ, "LOCALAPPDATA")
+    if local_app_data:
+        candidates.append(
+            Path(local_app_data) / "Programs" / "amiberry" / WINDOWS_EMULATOR_BINARY
+        )
+    program_files = _nonempty(environ, "ProgramFiles")
+    if program_files:
+        candidates.append(Path(program_files) / "amiberry" / WINDOWS_EMULATOR_BINARY)
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return WINDOWS_EMULATOR_BINARY
+
+
+def resolve_emulator_binary(platform_name: str, environ: Mapping[str, str]) -> str:
+    """Resolve the Amiberry executable to launch.
+
+    ``AMIBERRY_BINARY`` wins over every discovery step when set to a
+    non-empty value. Otherwise macOS uses the app bundle, Windows searches
+    ``PATH``, the Inno Setup uninstall key (HKCU, then HKLM), and the
+    default install directories, and every other platform uses ``amiberry``
+    from ``PATH``. The bare name is kept when nothing is found, so
+    subprocesses still search ``PATH`` at exec time and error messages name
+    the binary.
+    """
+    override = _nonempty(environ, EMULATOR_BINARY_OVERRIDE_ENV)
+    if override:
+        return override
+    if platform_name == "Darwin":
+        return MACOS_EMULATOR_BINARY
+    if platform_name == "Windows":
+        return _windows_binary(environ)
+    found = shutil.which(POSIX_EMULATOR_BINARY)
+    return found if found else POSIX_EMULATOR_BINARY
 
 
 @dataclass(frozen=True)
@@ -73,6 +153,11 @@ def _nonempty(environ: Mapping[str, str], name: str) -> str | None:
     if value:
         return value
     return None
+
+
+# Resolved once at import; every consumer (launch, version probe, /status
+# image name, portable-marker detection, get_platform_info) uses this.
+EMULATOR_BINARY = resolve_emulator_binary(_PLATFORM, os.environ)
 
 
 def _legacy_content_dirs(
